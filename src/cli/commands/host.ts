@@ -29,6 +29,7 @@ export interface HostCommandOptions {
   readonly apply: boolean;
   readonly out: string | null;
   readonly mode: 'project-settings' | 'plugin' | null;
+  readonly marketplace: boolean;
 }
 
 function printDiagnostics(
@@ -177,6 +178,7 @@ export async function runHostCommand(
         hostVersion: options.hostVersion ?? HOST_SUPPORT[options.host].version,
         outDir: options.out,
         packageVersion: getPackageInfo().version,
+        marketplace: options.marketplace,
       });
       if (options.json) {
         output.stdout(

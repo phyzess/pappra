@@ -63,7 +63,7 @@ requires an explicit controller. They are not needed for the core workflow above
 - **Knowledge:** workspace and private document catalogs with explicit preview/apply operations.
 - **Continuity:** private task checkpoints and bounded advisory resume packets. Resume never grants execution by itself.
 - **Code intelligence:** status, explicit preparation and bounded query for selected repositories. Text/structure fallback is available when the optional graph engine is absent.
-- **Host integrations:** optional Pi, Codex and Claude Code adapters that merge Pappra-owned entries without taking over user configuration. Hooks are copied as a dependency-free bundle into the host root; `host bundle` exports a native plugin/package directory without registering it. `host install --mode plugin` fails closed until plugin registration and callability are verified.
+- **Host integrations:** optional Pi, Codex and Claude Code adapters that merge Pappra-owned entries without taking over user configuration. Hooks are copied as a dependency-free bundle into the host root; `host bundle --marketplace` exports a local marketplace that Claude Code and Codex accept, without registering it. `host install --mode plugin` fails closed until plugin registration and callability are verified in a real session.
 - **Bounded collaboration:** an optional, explicitly controlled one-request workflow. It is not a scheduler or daemon.
 
 ## Optional integrations and support
@@ -87,7 +87,7 @@ The check runs the source policy, type checks, formatting, deterministic tests a
 
 ## Status and limits
 
-Pappra is development software (`0.1.0-beta.4`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.4`, because pre-release versions are never republished.
+Pappra is development software (`0.1.0-beta.5`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.5`, because pre-release versions are never republished.
 
 The deterministic suite covers synthetic workspaces, fixtures and local process boundaries. It does not establish real-model behavior, native host callability on every platform, CodeGraph completeness, Windows/Linux parity or production performance. A host adapter version pin is an observed support claim, not proof that a particular native installation will load or run correctly.
 

@@ -30,7 +30,8 @@ function hostManifest(
   readonly path: string;
   readonly value: Record<string, unknown>;
 } {
-  if (host === 'claude') {
+  if (host === 'claude' || host === 'codex') {
+    // Codex reads the Claude plugin manifest path, so one manifest serves both.
     return {
       path: '.claude-plugin/plugin.json',
       value: {
@@ -38,18 +39,7 @@ function hostManifest(
         version,
         description:
           'Portable workspace knowledge and continuity for coding agents.',
-        hooks: './hooks/hooks.json',
-      },
-    };
-  }
-  if (host === 'codex') {
-    return {
-      path: 'plugin.json',
-      value: {
-        name: 'pappra',
-        version,
-        description:
-          'Portable workspace knowledge and continuity for coding agents.',
+        author: { name: 'phyzess' },
         hooks: './hooks/hooks.json',
       },
     };
@@ -80,8 +70,18 @@ export async function exportHostPluginBundle(options: {
   readonly hostVersion: string;
   readonly outDir: string;
   readonly packageVersion: string;
+  /** Writes a marketplace root with the plugin under `pappra/`. */
+  readonly marketplace?: boolean;
 }): Promise<HostPluginBundle> {
-  const outDir = resolve(options.outDir);
+  const outRoot = resolve(options.outDir);
+  if (options.marketplace === true && options.host === 'pi') {
+    throw new Error(
+      'Pi installs a directory directly; a marketplace wrapper is not supported.',
+    );
+  }
+  const pluginPrefix = options.marketplace === true ? 'pappra/' : '';
+  const pluginRoot =
+    options.marketplace === true ? join(outRoot, 'pappra') : outRoot;
   const payload = await loadHostBundle(options.host, options.packageVersion, {
     hookSource: join(
       getPackageRoot(),
@@ -91,8 +91,8 @@ export async function exportHostPluginBundle(options: {
   });
   const written: string[] = [];
   const writeEntry = async (path: string, bytes: Buffer): Promise<void> => {
-    const target = join(outDir, ...path.split('/'));
-    if (!isPathInside(outDir, target)) {
+    const target = join(outRoot, ...path.split('/'));
+    if (!isPathInside(outRoot, target)) {
       throw new Error(`Unsafe plugin bundle path: ${path}`);
     }
     await mkdir(dirname(target), { recursive: true });
@@ -103,7 +103,7 @@ export async function exportHostPluginBundle(options: {
     // Plugin manifests point at hooks/hooks.json directly; the rendered
     // templates are only an intermediate artifact.
     if (options.host !== 'pi' && path.startsWith('templates/')) continue;
-    await writeEntry(path, bytes);
+    await writeEntry(`${pluginPrefix}${path}`, bytes);
   }
   const expression = pluginHookExpression(options.host);
   if (options.host === 'pi') {
@@ -111,25 +111,52 @@ export async function exportHostPluginBundle(options: {
     if (entry === undefined) {
       throw new Error('Pi plugin bundle is missing its extension entry.');
     }
-    await writeEntry('extensions/pappra/index.ts', entry);
+    await writeEntry(`${pluginPrefix}extensions/pappra/index.ts`, entry);
   } else {
     const patch = renderHookConfigPatch(options.host, expression);
     await writeEntry(
-      'hooks/hooks.json',
+      `${pluginPrefix}hooks/hooks.json`,
       Buffer.from(`${JSON.stringify(patch, null, 2)}\n`),
     );
   }
   const manifest = hostManifest(options.host, options.packageVersion);
   await writeEntry(
-    manifest.path,
+    `${pluginPrefix}${manifest.path}`,
     Buffer.from(`${JSON.stringify(manifest.value, null, 2)}\n`),
   );
+  if (options.marketplace === true) {
+    await writeEntry(
+      '.claude-plugin/marketplace.json',
+      Buffer.from(
+        `${JSON.stringify(
+          {
+            name: 'pappra-local',
+            owner: { name: 'phyzess' },
+            description:
+              'Local Pappra plugin marketplace exported by pappra host bundle.',
+            plugins: [
+              {
+                name: 'pappra',
+                source: './pappra',
+                description:
+                  'Portable workspace knowledge and continuity for coding agents.',
+                author: { name: 'phyzess' },
+              },
+            ],
+          },
+          null,
+          2,
+        )}\n`,
+      ),
+    );
+  }
   return {
     host: options.host,
-    outDir,
+    outDir: pluginRoot,
     files: written.sort((left, right) => left.localeCompare(right)),
-    pluginManifest: manifest.path,
-    hookConfig: options.host === 'pi' ? null : 'hooks/hooks.json',
+    pluginManifest: `${pluginPrefix}${manifest.path}`,
+    hookConfig:
+      options.host === 'pi' ? null : `${pluginPrefix}hooks/hooks.json`,
     registration:
       options.host === 'claude'
         ? [

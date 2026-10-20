@@ -35,6 +35,7 @@ function parseOptions(args: readonly string[]) {
       tarball: { type: 'string' },
       out: { type: 'string' },
       mode: { type: 'string' },
+      marketplace: { type: 'boolean' },
       bind: { type: 'boolean' },
       force: { type: 'boolean' },
       'no-interactive': { type: 'boolean' },
@@ -299,6 +300,15 @@ export async function runCli(
   }
   if (command !== 'host' && values.out !== undefined) {
     failure(output, json, 'invalid_arguments', '--out is only valid for host.');
+    return 2;
+  }
+  if (command !== 'host' && values.marketplace === true) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--marketplace is only valid for host bundle.',
+    );
     return 2;
   }
   if (
@@ -872,6 +882,7 @@ export async function runCli(
       hasContinuityOptions(values) ||
       (values.apply === true && action !== 'install') ||
       (values.mode !== undefined && action !== 'install') ||
+      (values.marketplace === true && action !== 'bundle') ||
       (values['host-root'] !== undefined && action === null) ||
       (values['host-version'] !== undefined && action === null);
     if (values.help) {
@@ -907,6 +918,7 @@ export async function runCli(
           values.mode === 'project-settings' || values.mode === 'plugin'
             ? values.mode
             : null,
+        marketplace: values.marketplace === true,
       },
       output,
     );

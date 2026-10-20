@@ -337,7 +337,7 @@ test('exports host-native plugin bundles without registering them', async () => 
       outDir: join(out, 'codex'),
       packageVersion: '9.9.9',
     });
-    assert(codex.files.includes('plugin.json'));
+    assert(codex.files.includes('.claude-plugin/plugin.json'));
     assert.equal(
       JSON.stringify(
         JSON.parse(
@@ -362,6 +362,30 @@ test('exports host-native plugin bundles without registering them', async () => 
       './extensions/pappra/index.ts',
     ]);
     assert.equal(pi.verification, 'unsupported');
+
+    const marketplace = await exportHostPluginBundle({
+      host: 'claude',
+      hostVersion: '2.1.292',
+      outDir: join(out, 'marketplace'),
+      packageVersion: '9.9.9',
+      marketplace: true,
+    });
+    assert.equal(marketplace.outDir, join(out, 'marketplace', 'pappra'));
+    assert(marketplace.files.includes('.claude-plugin/marketplace.json'));
+    assert(marketplace.files.includes('pappra/.claude-plugin/plugin.json'));
+    assert(marketplace.files.includes('pappra/hooks/hooks.json'));
+    assert(marketplace.files.includes('pappra/hooks/pappra-hook.mjs'));
+    const marketplaceManifest = JSON.parse(
+      readFileSync(
+        join(out, 'marketplace', '.claude-plugin', 'marketplace.json'),
+        'utf8',
+      ),
+    ) as Record<string, unknown>;
+    assert.deepEqual(
+      (marketplaceManifest.plugins as readonly Record<string, unknown>[])[0]
+        ?.source,
+      './pappra',
+    );
   } finally {
     cleanup(out);
   }
