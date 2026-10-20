@@ -236,6 +236,19 @@ npx @phyzess/pappra@<beta> init --yes --apply --json             # one command, 
 | M4 | B2: plugin bundles for 3 hosts, `--mode`, `host verify` drift, migration from absolute-path manifest | 3–4 d | M3 |
 | M5 | Docs rewrite (quickstart/README/support), oodon dogfood, `skills` interop check | 1 d | M4 |
 
+M5 status (2026-10-20): docs updated for the beta install path, `--yes`/`--print-choices`,
+the durable runtime and the hook bundle. Dogfood on the `oodon` repository: `init --yes
+--apply` converged (exit 0) with the root checkout at write access, `AGENTS.md`/`CLAUDE.md`/
+`docs` as knowledge sources, `lint`/`typecheck`/`test` validation, the codegraph engine and
+all three pinned hosts; `runtime verify` reported `complete` with `source: self`; the Claude
+host plan produced `${CLAUDE_PROJECT_DIR}/.claude/hooks/pappra-hook.mjs`.
+
+Known gaps found during dogfood: (a) `code status` reports `partial` with reason
+`registration_missing` until an explicit `pappra code prepare --repo <id> --apply`, which is
+by design but not yet surfaced by `init`; (b) `pappra docs list` returns an empty catalog
+even though discovery reports the configured sources, so the knowledge catalog still needs a
+seeding/scan operation; (c) plugin install mode stays opt-in as described above.
+
 M4 status (2026-10-20): partially landed, with an explicit deviation. The host hook is now
 a single dependency-free esbuild bundle (`dist/hosts/integration/pappra-hook.mjs`), copied
 into the host root; Claude Code hook commands use `${CLAUDE_PROJECT_DIR}` and Pi imports its
