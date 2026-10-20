@@ -71,8 +71,8 @@ export const HOST_PLUGIN_HOOKS = {
       'Codex 0.163.0 does not load plugin hooks: a control hook in CODEX_HOME fired during `codex exec --dangerously-bypass-hook-trust` while the bundled plugin hook never ran, including with a .codex-plugin/plugin.json copy.',
   },
   claude: {
-    state: 'unverified',
+    state: 'verified',
     evidence:
-      'Claude Code 2.1.292 validation passes, but no authenticated session was available to run a lifecycle event.',
+      'Claude Code 2.1.292 passed `claude plugin validate`, then a project-scope marketplace install and `claude -p` wrote a SessionStart event from ${CLAUDE_PLUGIN_ROOT}/hooks/pappra-hook.mjs.',
   },
 } as const;

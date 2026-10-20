@@ -68,34 +68,50 @@ absolute hook path. This matches the upstream Agent Plugins hook-loading issue.
 Conclusion: keep `--mode project-settings` (which writes `.codex/hooks.json` in the target
 workspace) for Codex at this version. Do not advertise plugin hooks for Codex.
 
-## Claude Code 2.1.292 — unverified (no authenticated session)
+## Claude Code 2.1.292 — verified (startup)
 
-The exported marketplace validates with the host's own validator:
+The exported marketplace validates with the host's own validator, installs at project
+scope, and a real session wrote a host event:
 
 ```sh
-claude plugin validate .market
-# Validating marketplace manifest: .../.claude-plugin/marketplace.json
-# ✔ Validation passed
+pappra host bundle --host claude --host-version 2.1.292 --out .market --marketplace --json
+claude plugin validate .market                 # ✔ Validation passed
+
+claude plugin marketplace add .market --scope project --json
+claude plugin install pappra@pappra-local --scope project -y --json
+claude -p "reply with the single word ok"      # real session
 ```
 
-`claude -p` could not run on the recording machine:
+Observed `.pappra/local/host-events/claude/<digest>.json`:
 
+```json
+{
+  "schema": "pappra/host-event/1",
+  "host": "claude",
+  "event": "startup",
+  "nativeEvent": "SessionStart",
+  "sessionId": "89b1957e-...",
+  "source": "startup",
+  "observedAt": "2026-10-20T06:17:34.896Z"
+}
 ```
-Failed to authenticate: OAuth session expired and could not be refreshed
-```
 
-So no lifecycle event was produced. The hook command uses
-`"${CLAUDE_PLUGIN_ROOT}/hooks/pappra-hook.mjs"` (double-quoted, as the validator requires)
-and the same bundled hook runs correctly when invoked directly, but plugin callability in a
-real Claude session is still open.
-
-To close it: authenticate once (`claude` login flow), then repeat step 2-4 above with
-`claude plugin marketplace add .market` + `claude plugin install pappra@pappra-local`, run a
-session (including `/compact`), and check `.pappra/local/host-events/claude/*.json`.
+The hook command uses `"${CLAUDE_PLUGIN_ROOT}/hooks/pappra-hook.mjs"` (double-quoted; the
+validator rejects the unquoted form). `PostCompact` was not exercised from a non-interactive
+session, so only startup is verified for this host.
 
 ## Current gating
 
-`pappra host install --mode plugin` fails closed for every host and reports the state above
-in its diagnostic. `--mode project-settings` remains the install mode. Flipping a host to
-plugin-by-default requires a recorded event for that host and version, added to
-`HOST_PLUGIN_HOOKS` in `src/hosts/integration/support.ts`.
+Plugin hooks are verified for Pi 1.3.0 and Claude Code 2.1.292 (startup), and proven
+unsupported for Codex 0.163.0. Plugin delivery stays an explicit export because the hosts
+require their own registration step:
+
+- Claude Code: `host bundle --marketplace` → `claude plugin marketplace add <dir>` →
+  `claude plugin install pappra@pappra-local`
+- Pi: `host bundle` → `pi install <dir> -l -a`
+- Codex: not available; use `--mode project-settings`
+
+`pappra host install --mode plugin` therefore stays fail-closed and reports the per-host
+state and the exact commands, while `--mode project-settings` remains the automatic
+workspace wiring. `HOST_PLUGIN_HOOKS` in `src/hosts/integration/support.ts` records the
+evidence that gates this message.

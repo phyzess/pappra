@@ -587,7 +587,7 @@ test('plugin install mode fails closed with per-host evidence', async () => {
     for (const [host, version, state] of [
       ['pi', '1.3.0', 'verified'],
       ['codex', '0.163.0', 'unsupported'],
-      ['claude', '2.1.292', 'unverified'],
+      ['claude', '2.1.292', 'verified'],
     ] as const) {
       const service = new HostIntegrationService({
         root,

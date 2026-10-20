@@ -1366,11 +1366,13 @@ export class HostIntegrationService {
     if (options.mode === 'plugin') {
       const support = HOST_PLUGIN_HOOKS[host];
       const guidance =
-        support.state === 'verified'
-          ? 'Export the package with `pappra host bundle --host pi --out <dir> --json`, then run `pi install <dir> -l -a`; project-settings install is still available with --mode project-settings.'
-          : support.state === 'unsupported'
-            ? 'This host does not load plugin hooks at its pinned version; keep --mode project-settings. See docs/host-plugin-validation.md.'
-            : 'Plugin hooks are not verified for this host yet; an authenticated lifecycle session is required. Use --mode project-settings meanwhile.';
+        host === 'claude' && support.state === 'verified'
+          ? 'Export with `pappra host bundle --host claude --out <dir> --marketplace --json`, then run `claude plugin marketplace add <dir>` and `claude plugin install pappra@pappra-local`. Use --mode project-settings for automatic workspace wiring.'
+          : host === 'pi' && support.state === 'verified'
+            ? 'Export with `pappra host bundle --host pi --out <dir> --json`, then run `pi install <dir> -l -a`. Use --mode project-settings for automatic workspace wiring.'
+            : support.state === 'unsupported'
+              ? 'This host does not load plugin hooks at its pinned version; keep --mode project-settings. See docs/host-plugin-validation.md.'
+              : 'Plugin hooks are not verified for this host yet; an authenticated lifecycle session is required. Use --mode project-settings meanwhile.';
       return hostIntegrationResultSchema.parse({
         schema: 'pappra/host-integration/1',
         ok: false,
