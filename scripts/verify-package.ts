@@ -299,7 +299,11 @@ try {
     '--json',
   ]);
   if (runtimeInstall.error) throw runtimeInstall.error;
-  assert.equal(runtimeInstall.status, 0, runtimeInstall.stderr);
+  assert.equal(
+    runtimeInstall.status,
+    0,
+    `${runtimeInstall.stdout}\n${runtimeInstall.stderr}`,
+  );
   const runtimeValue = parseInstalled(runtimeInstall.stdout);
   assert.equal(runtimeValue.ok, true);
   assert.equal(
