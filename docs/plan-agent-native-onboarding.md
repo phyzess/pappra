@@ -235,10 +235,14 @@ added. Remaining decisions (MCP transport/server split, auto-resume scope) apply
 - **Sanitized upstream**: some prototype behaviours may not be reproducible; document the
   current contract and do not imply parity.
 
-## 9. Decisions needed
+## 9. Decisions (resolved 2026-10-20)
 
-1. MCP SDK dependency and stdio-only transport (no HTTP).
-2. Nexus: mirror `@phyzess` scope, or document per-scope registry override.
-3. `onboard --apply-host`: allowed by default with `--yes`, or always opt-in per host?
-4. Tool naming: one `pappra mcp` server with all tools, or split read/write servers?
-5. Auto-resume: task pin only, or also a workspace-config opt-in "last checkpoint"?
+1. MCP: one stdio server (`pappra mcp`) using `@modelcontextprotocol/sdk`; no HTTP transport.
+2. Registry: normal npm workflow only; public npm is the default. No Nexus-specific design;
+   a per-scope registry override can be documented for mirrored environments.
+3. `onboard --apply-host` is the default behaviour when `--yes` is present; host trust is
+   still never auto-approved.
+4. Single server with best-practice annotations: read-only tools by default, write tools gated
+   by `apply`/`confirm` and typed denials.
+5. Auto-resume: task pin plus a workspace-config-level "last checkpoint" switch (opt-in,
+   M9).
