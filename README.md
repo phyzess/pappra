@@ -6,36 +6,30 @@ Pappra is the manager. External coding hosts, code-graph engines and collaborati
 
 ## Quick start
 
-Requirements: Node.js 24 or later and `pnpm` 12.3.4. Git is required only when a command observes repository identity.
+Requirements: Node.js 24 or later. `pnpm` 12.3.4 is required only for development inside this repository; Git is required only when a command observes repository identity.
 
-Build the checkout, then invoke the built CLI by an explicit path from the **target workspace**; there is no global `pappra` binary to install for this workflow.
+The package is published as `@phyzess/pappra`. Run it with `npx` from the target workspace, or install it globally when you use it every day.
 
 ```sh
-# In the Pappra checkout
-pnpm install --frozen-lockfile
-pnpm build
-CHECKOUT="$(pwd)"
-PAPPRA_CLI="$CHECKOUT/dist/cli/main.js"
-
-# In a separate empty target workspace
+# In an empty target workspace
 mkdir -p /tmp/pappra-demo
 cd /tmp/pappra-demo
-cp "$CHECKOUT/examples/minimal-choices.json" ./minimal-choices.json
+curl -fsSL https://raw.githubusercontent.com/phyzess/pappra/main/examples/minimal-choices.json -o ./minimal-choices.json
 
 # Preview first. JSON/config mode is non-interactive and does not prompt.
-node "$PAPPRA_CLI" init --config ./minimal-choices.json --json
+npx @phyzess/pappra@beta init --config ./minimal-choices.json --json
 
 # Apply the same choices. With no runtime installed, apply intentionally
 # reports external-actions-pending and exits nonzero after writing config.
-node "$PAPPRA_CLI" init --config ./minimal-choices.json --apply --json
-node "$PAPPRA_CLI" doctor --json
+npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
+npx @phyzess/pappra@beta doctor --json
 ```
 
-`minimal-choices.json` is complete for a host-free, no-graph, single-directory
-workspace. The example intentionally has no repositories or optional hosts.
-`init --json` without `--config` fails closed because JSON mode does not open the
-interactive wizard; run `node "$PAPPRA_CLI" init` without `--json` in a TTY if you want to
-enter selections interactively. `--config` and `--json` never prompt.
+`examples/minimal-choices.json` is complete for a host-free, no-graph, single-directory workspace. The example intentionally has no repositories or optional hosts.
+
+`init --json` without `--config` fails closed because JSON mode does not open the interactive wizard; run `npx @phyzess/pappra@beta init` without `--json` in a TTY if you want to enter selections interactively. `--config` and `--json` never prompt.
+
+Development from a checkout works the same way: `pnpm install --frozen-lockfile`, `pnpm build`, then invoke `dist/cli/main.js` by absolute path from the target workspace.
 
 An apply result can be `ok:true` with `status:"external-actions-pending"` and a
 nonzero process exit. That is a successful, partial configuration write, not a
@@ -76,7 +70,7 @@ The check runs the source policy, type checks, formatting, deterministic tests a
 
 ## Status and limits
 
-Pappra is currently development software (`0.1.0-dev.0`). The repository is intentionally `private: true` in `package.json` so it cannot be published to npm accidentally. A public GitHub source repository does not authorize an npm release.
+Pappra is development software (`0.1.0-beta.1`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.1`, because pre-release versions are never republished.
 
 The deterministic suite covers synthetic workspaces, fixtures and local process boundaries. It does not establish real-model behavior, native host callability on every platform, CodeGraph completeness, Windows/Linux parity or production performance. A host adapter version pin is an observed support claim, not proof that a particular native installation will load or run correctly.
 

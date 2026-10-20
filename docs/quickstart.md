@@ -3,6 +3,20 @@
 Pappra is a workspace-local manager. It does not require a private repository,
 a running host, a model provider, a code-graph service or a global `pappra`
 binary.
+## Published package
+
+The package is published as `@phyzess/pappra`. From an empty target workspace:
+
+```sh
+npx @phyzess/pappra@beta init --config ./minimal-choices.json --json
+npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
+npx @phyzess/pappra@beta doctor --json
+```
+
+`examples/minimal-choices.json` in this repository is the selection file used above.
+`init --json` without `--config` still fails closed; the interactive wizard requires a TTY.
+
+## Development checkout
 
 The checkout and the target workspace are different directories. Build once in
 the checkout, then invoke `dist/cli/main.js` by absolute path from the target
