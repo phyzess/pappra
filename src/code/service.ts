@@ -284,8 +284,11 @@ async function observeCode(input: CodeStatusInput): Promise<ObservedCode> {
     ? raw.value
     : fallbackHealth('unsupported', raw.code, versionValue);
   if (!raw.ok) diagnostics.push(outcomeDiagnostic(raw, repository.root));
+  // Registrations belong to the workspace, not to a repository checkout: writing
+  // <repo>/.pappra/local/code would make that checkout look like a nested workspace
+  // and hide it from the outer workspace discovery.
   const registrationRead = await readCodeRegistration(
-    repository.root,
+    input.root,
     input.repositoryId,
   );
   let registration: CodeIndexRegistration | null = null;
@@ -307,7 +310,7 @@ async function observeCode(input: CodeStatusInput): Promise<ObservedCode> {
     rawHealth,
     health,
     registration,
-    registrationPath: codeRegistrationPath(repository.root, input.repositoryId),
+    registrationPath: codeRegistrationPath(input.root, input.repositoryId),
     excludedRoots,
     access: repository.access,
     diagnostics,
@@ -485,15 +488,18 @@ export class CodeIntelligenceService {
       };
     }
     const registrationTarget = codeRegistrationPath(
-      observed.identity.root,
+      input.root,
       observed.identity.repositoryId,
     );
-    for (const target of [plan.indexPath, registrationTarget]) {
-      const boundary = await ensureCodeMutationBoundary(
+    const boundaries = await Promise.all([
+      ensureCodeMutationBoundary(
         observed.identity.root,
-        target,
+        plan.indexPath,
         observed.excludedRoots,
-      );
+      ),
+      ensureCodeMutationBoundary(input.root, registrationTarget),
+    ]);
+    for (const boundary of boundaries) {
       if (!boundary.ok) {
         return {
           schema: 'pappra/code-prepare-result/1',
@@ -514,15 +520,12 @@ export class CodeIntelligenceService {
           registrationPath: null,
           diagnostics: [
             ...observed.diagnostics,
-            outcomeDiagnostic(boundary, target),
+            outcomeDiagnostic(boundary, registrationTarget),
           ],
         };
       }
     }
-    const lock = await acquireCodePrepareLock(
-      observed.identity.root,
-      observed.excludedRoots,
-    );
+    const lock = await acquireCodePrepareLock(input.root);
     if (!lock.ok) {
       return {
         schema: 'pappra/code-prepare-result/1',
@@ -669,11 +672,7 @@ export class CodeIntelligenceService {
         preparedAt: new Date().toISOString(),
         coverage: prepared.value.coverage,
       };
-      const written = await writeCodeRegistration(
-        afterIdentity.value.root,
-        registration,
-        observed.excludedRoots,
-      );
+      const written = await writeCodeRegistration(input.root, registration);
       if (!written.ok) {
         return {
           schema: 'pappra/code-prepare-result/1',

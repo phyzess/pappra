@@ -49,6 +49,44 @@ configured knowledge sources.
 Exit codes: `0` converged, `1` applied with a pending manual step (for example with
 `--no-runtime`), `2` invalid input, `3` unavailable environment.
 
+## Adopting an existing multi-repository workspace
+
+A workspace root often contains many checkouts plus vendored dependencies and worktrees.
+`init --yes` derives every discovered checkout, which is usually too broad; use an explicit
+selection instead:
+
+```sh
+cd /path/to/workspace
+PAPPRA="npx @phyzess/pappra@beta"
+
+# 1. Inventory the derived shape without writing (works even before .pappra exists).
+$PAPPRA init --print-choices --json
+
+# 2. Keep that document, then narrow it:
+#    - repositories: write access only for the checkouts you actively change
+#    - excludes: node_modules, dist, coverage, vendored deps, worktrees, temp clones
+#    - knowledge.sources: root rule files plus the notes directory you actually curate
+#    - validation: a few real lint/test commands, not one per package
+$PAPPRA init --config .pappra-choices.json --apply --json
+$PAPPRA doctor --json
+$PAPPRA docs scan --apply --json
+$PAPPRA code prepare --repo <active-repo> --apply --json
+
+# Later edits or a runtime upgrade:
+$PAPPRA init --config .pappra-choices.json --reconfigure --apply --json
+```
+
+Notes:
+
+- Excludes take effect after the first apply; a later `--print-choices` or `--reconfigure`
+  only sees the configured repositories plus the root, not the whole tree.
+- Code registrations live in `<workspace>/.pappra/local/code/<repo>.json`; no `.pappra`
+  directory is created inside a checkout, so outer discovery keeps resolving it.
+- `doctor` observes host manifests in the private default root, project directories and
+  `$CODEX_HOME`, but a Pi package installed with `pi install` has no such manifest: check it
+  with a real session instead.
+- The workspace root does not have to be a Git repository; checkpoints work without it.
+
 ## Development checkout
 
 The checkout and the target workspace are different directories. Build once in

@@ -40,6 +40,10 @@ Deterministic tests and fixtures do not prove:
 A passing check, an installed binary, or a host being present on `PATH` is not
 by itself proof that a live integration will work.
 
+`doctor` observes host manifests in the private default host root, project
+`.claude`/`.codex`/`.pi` directories and `$CODEX_HOME`. A Pi package installed with
+`pi install` has no manifest in those locations, so only a real session proves it.
+
 ## Reporting a problem
 
 Include the Pappra version, Node/pnpm versions, command, exit status, whether the

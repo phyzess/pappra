@@ -1124,20 +1124,27 @@ export async function runDoctor(
   );
 
   const selectedHosts = machine?.selectedHosts ?? [];
-  const hostRootBase = root ?? homeDir;
+  // Passive observation only: a host install can target the private default root, a
+  // project directory, or Codex's user configuration directory.
+  const hostInstallRoots = (host: 'pi' | 'codex' | 'claude'): string[] => {
+    const roots = [
+      join(root ?? homeDir, '.pappra', 'local', 'hosts', host),
+      join(root ?? homeDir, `.${host}`),
+    ];
+    if (host === 'codex') {
+      roots.push(process.env['CODEX_HOME'] ?? join(homeDir, '.codex'));
+    }
+    return roots;
+  };
   const installedHostBundle =
     (
       await Promise.all(
         selectedHosts.map(async (host) => {
-          const path = join(
-            hostRootBase,
-            '.pappra',
-            'local',
-            'hosts',
-            host,
-            'pappra-host.json',
-          );
-          return (await observePath(path)).kind === 'file' ? path : null;
+          for (const base of hostInstallRoots(host)) {
+            const path = join(base, 'pappra-host.json');
+            if ((await observePath(path)).kind === 'file') return path;
+          }
+          return null;
         }),
       )
     ).find((path) => path !== null) ?? null;
@@ -1145,17 +1152,11 @@ export async function runDoctor(
     (
       await Promise.all(
         selectedHosts.map(async (host) => {
-          const path = join(
-            hostRootBase,
-            '.pappra',
-            'local',
-            'hosts',
-            host,
-            'skills',
-            'pappra',
-            'SKILL.md',
-          );
-          return (await observePath(path)).kind === 'file' ? path : null;
+          for (const base of hostInstallRoots(host)) {
+            const path = join(base, 'skills', 'pappra', 'SKILL.md');
+            if ((await observePath(path)).kind === 'file') return path;
+          }
+          return null;
         }),
       )
     ).find((path) => path !== null) ?? null;

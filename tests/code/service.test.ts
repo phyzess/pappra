@@ -749,3 +749,41 @@ test('redirected private registration is not trusted as ready', async () => {
     cleanup(root);
   }
 });
+
+test(
+  'multi-repository preparation registers in the workspace, not inside the checkout',
+  { skip: codeGraphInstalled ? false : 'codegraph CLI is not installed' },
+  async () => {
+    const root = makeWorkspace([
+      { id: 'app', path: 'app' },
+      { id: 'other', path: 'other' },
+    ]);
+    try {
+      for (const path of ['app', 'other']) {
+        const directory = join(root, path);
+        mkdirSync(directory);
+        createRepository(directory);
+        writeText(join(directory, 'src/lib.ts'), source);
+      }
+      const service = new CodeIntelligenceService(root);
+      const prepared = await service.prepare({
+        root,
+        repositoryId: 'app',
+        apply: true,
+        rebuild: false,
+      });
+      assert.equal(
+        prepared.status,
+        'ready',
+        JSON.stringify(prepared.diagnostics),
+      );
+      assert.equal(existsSync(join(root, '.pappra/local/code/app.json')), true);
+      assert.equal(existsSync(join(root, 'app/.pappra')), false);
+      const ready = await service.status({ repositoryId: 'app' });
+      assert.equal(ready.ok, true);
+      assert.equal(ready.health.state, 'ready');
+    } finally {
+      cleanup(root);
+    }
+  },
+);
