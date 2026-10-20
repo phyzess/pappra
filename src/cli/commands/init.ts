@@ -402,6 +402,8 @@ export interface InitCommandOptions {
   readonly printChoices?: boolean;
   /** Leaves the runtime action pending instead of installing a durable copy. */
   readonly noRuntime?: boolean;
+  /** Rebuilds workspace.json from the selections even when a valid config exists. */
+  readonly reconfigure?: boolean;
 }
 
 export interface RuntimeFlowResult {
@@ -830,12 +832,33 @@ function printApply(
   }
 }
 
+function advisoryNextActions(bundle: InitPlanBundle): readonly string[] {
+  const actions: string[] = [];
+  const repositoryId = bundle.scope.repositories[0]?.id;
+  if (
+    bundle.scope.code.graph !== 'none' &&
+    bundle.scope.repositories.length > 0 &&
+    repositoryId !== undefined
+  ) {
+    actions.push(
+      `pappra code prepare --repo ${repositoryId} --apply   # register the ${bundle.scope.code.graph} index for this checkout`,
+    );
+  }
+  if (bundle.scope.knowledge.sources.length > 0) {
+    actions.push(
+      'pappra docs scan --apply   # register discovered knowledge documents in the catalog',
+    );
+  }
+  return actions;
+}
+
 function planJson(bundle: InitPlanBundle): Record<string, unknown> {
   return {
     command: 'init',
     mode: 'plan',
     plan: bundle.plan,
     scope: bundle.scope,
+    nextActions: advisoryNextActions(bundle),
     diagnostics: bundle.diagnostics,
   };
 }
@@ -1005,6 +1028,7 @@ export async function runInitCommand(
     root: context.root,
     choices,
     context,
+    ...(options.reconfigure === true ? { reconfigure: true } : {}),
   });
   if (!prepared.ok) return writeFailure(output, options, prepared);
   const bundle = prepared.bundle;
@@ -1049,6 +1073,7 @@ export async function runInitCommand(
         apply: applied,
         runtime: runtimeFlow?.runtime ?? null,
         initComplete,
+        nextActions: advisoryNextActions(bundle),
         diagnostics: [
           ...bundle.diagnostics,
           ...(runtimeFlow?.diagnostics ?? []),
@@ -1152,6 +1177,9 @@ export async function runInitCommand(
     output.stdout(
       'Durable runtime copy installed and bound. Initialization complete.\n',
     );
+    for (const action of advisoryNextActions(bundle)) {
+      output.stdout(`  next: ${action}\n`);
+    }
     return 0;
   }
   return applied.status === 'external-actions-pending' ? 1 : 0;

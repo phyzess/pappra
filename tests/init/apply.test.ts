@@ -431,3 +431,68 @@ test('rejects an old plan when the same path is replaced by a new directory', as
     cleanup(old);
   }
 });
+
+test('managed replacement refuses a workspace config that changed after planning', async () => {
+  const root = makeTempDir('init-apply-reconfigure');
+  try {
+    createRepository(root);
+    writeText(join(root, 'AGENTS.md'), '# agents\n');
+    const first = await planWorkspaceInit({
+      root,
+      choices: baseInitChoices({
+        knowledge: {
+          sources: [],
+          newDocuments: '.pappra/knowledge',
+          taskVisibility: 'private',
+        },
+      }),
+      runtimeVersion: '0.1.0-dev.0',
+    });
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+    const applied = await applyInitPlan(first.bundle);
+    assert.equal(applied.ok, true);
+
+    const reconfigure = await planWorkspaceInit({
+      root,
+      choices: baseInitChoices({
+        knowledge: {
+          sources: ['AGENTS.md'],
+          newDocuments: '.pappra/knowledge',
+          taskVisibility: 'private',
+        },
+      }),
+      runtimeVersion: '0.1.0-dev.0',
+      reconfigure: true,
+    });
+    assert.equal(reconfigure.ok, true);
+    if (!reconfigure.ok) return;
+    assert.equal(
+      reconfigure.bundle.plan.files[0]?.operation,
+      'replace-managed',
+    );
+    const workspacePath = join(root, '.pappra', 'workspace.json');
+    const current = JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    writeFileSync(
+      workspacePath,
+      `${JSON.stringify({ ...current, name: 'edited-after-plan' }, null, 2)}\n`,
+    );
+    const conflicted = await applyInitPlan(reconfigure.bundle);
+    assert.equal(conflicted.ok, false);
+    assert.equal(conflicted.status, 'stale');
+    assert.equal(
+      (
+        JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
+          string,
+          unknown
+        >
+      ).name,
+      'edited-after-plan',
+    );
+  } finally {
+    cleanup(root);
+  }
+});

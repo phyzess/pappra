@@ -30,9 +30,11 @@ function parseOptions(args: readonly string[]) {
       apply: { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' },
       'no-runtime': { type: 'boolean' },
+      reconfigure: { type: 'boolean' },
       from: { type: 'string' },
       tarball: { type: 'string' },
       out: { type: 'string' },
+      mode: { type: 'string' },
       bind: { type: 'boolean' },
       force: { type: 'boolean' },
       'no-interactive': { type: 'boolean' },
@@ -204,7 +206,12 @@ function failure(
   code: string,
   error: unknown,
 ): void {
-  const message = error instanceof Error ? error.message : 'Operation failed.';
+  const message =
+    typeof error === 'string'
+      ? error
+      : error instanceof Error
+        ? error.message
+        : 'Operation failed.';
   if (json) {
     output.stdout(`${JSON.stringify({ ok: false, code, message })}\n`);
   } else {
@@ -272,24 +279,52 @@ export async function runCli(
     runtimeAction,
   } = parsed;
   const json = values.json === true;
+  const applyRequested = values.apply === true;
 
   if (
     command !== 'init' &&
     (values.yes === true ||
       values['no-interactive'] === true ||
       values['print-choices'] === true ||
-      values['no-runtime'] === true)
+      values['no-runtime'] === true ||
+      values.reconfigure === true)
   ) {
     failure(
       output,
       json,
       'invalid_arguments',
-      '--yes, --no-interactive, --print-choices and --no-runtime are only valid for init.',
+      '--yes, --no-interactive, --print-choices, --no-runtime and --reconfigure are only valid for init.',
     );
     return 2;
   }
   if (command !== 'host' && values.out !== undefined) {
     failure(output, json, 'invalid_arguments', '--out is only valid for host.');
+    return 2;
+  }
+  if (
+    command !== 'host' &&
+    values.mode !== undefined &&
+    command !== 'runtime'
+  ) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--mode is only valid for host.',
+    );
+    return 2;
+  }
+  if (
+    values.mode !== undefined &&
+    values.mode !== 'project-settings' &&
+    values.mode !== 'plugin'
+  ) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--mode accepts project-settings or plugin.',
+    );
     return 2;
   }
   if (
@@ -351,7 +386,6 @@ export async function runCli(
       action === null ||
       values.version ||
       values.config !== undefined ||
-      values.apply === true ||
       values['install-runtime'] === true ||
       values['runtime-tarball'] !== undefined ||
       values['runtime-version'] !== undefined ||
@@ -387,7 +421,6 @@ export async function runCli(
     if (
       values.version ||
       values.config !== undefined ||
-      values.apply === true ||
       values['install-runtime'] === true ||
       values['runtime-tarball'] !== undefined ||
       values['runtime-version'] !== undefined ||
@@ -398,7 +431,7 @@ export async function runCli(
         output,
         json,
         'invalid_arguments',
-        'docs only accepts list/check/archive, --include-private, --include-archived, --help, and --json.',
+        'docs only accepts list/check/archive/scan, --include-private, --include-archived, --apply (scan only), --help, and --json.',
       );
       return 2;
     }
@@ -420,6 +453,7 @@ export async function runCli(
         json,
         includePrivate: values['include-private'] === true,
         includeArchived: values['include-archived'] === true,
+        apply: applyRequested,
       },
       output,
     );
@@ -510,6 +544,7 @@ export async function runCli(
         yes: values.yes === true || values['no-interactive'] === true,
         printChoices: values['print-choices'] === true,
         noRuntime: values['no-runtime'] === true,
+        reconfigure: values.reconfigure === true,
       },
       output,
     );
@@ -836,6 +871,7 @@ export async function runCli(
       values.rebuild === true ||
       hasContinuityOptions(values) ||
       (values.apply === true && action !== 'install') ||
+      (values.mode !== undefined && action !== 'install') ||
       (values['host-root'] !== undefined && action === null) ||
       (values['host-version'] !== undefined && action === null);
     if (values.help) {
@@ -867,6 +903,10 @@ export async function runCli(
         hostVersion: values['host-version'] ?? null,
         apply: values.apply === true,
         out: values.out ?? null,
+        mode:
+          values.mode === 'project-settings' || values.mode === 'plugin'
+            ? values.mode
+            : null,
       },
       output,
     );

@@ -494,3 +494,83 @@ test('init rejects conflicting non-interactive selections', () => {
     rmSync(temporary, { recursive: true, force: true });
   }
 });
+
+test('init --reconfigure replaces a stale workspace config with a backup', () => {
+  const temporary = isolatedRepository();
+  const isolated = deterministicPath();
+  const environment = { PATH: isolated.path, ...runtimeEnv(temporary) };
+  try {
+    const first = invoke(
+      ['init', '--yes', '--apply', '--json'],
+      temporary,
+      environment,
+    );
+    assert.equal(first.status, 0, first.stderr);
+    const workspacePath = join(temporary, '.pappra', 'workspace.json');
+    const before = JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const workspaceId = before.workspaceId;
+    const edited = {
+      ...before,
+      runtimeVersion: '0.0.0-old',
+      knowledge: {
+        ...(before.knowledge as Record<string, unknown>),
+        sources: [],
+      },
+    };
+    writeFileSync(workspacePath, `${JSON.stringify(edited, null, 2)}\n`);
+
+    const reconfigured = invoke(
+      ['init', '--yes', '--reconfigure', '--apply', '--json'],
+      temporary,
+      environment,
+    );
+    assert.equal(reconfigured.status, 0, reconfigured.stderr);
+    const value = parseJson(reconfigured.stdout);
+    assert.equal(value.ok, true);
+    assert.deepEqual((value.apply as Record<string, unknown>).appliedFiles, [
+      '.pappra/workspace.json',
+    ]);
+    const after = JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    assert.equal(after.workspaceId, workspaceId);
+    assert.equal(after.runtimeVersion, getPackageInfo().version);
+    assert.deepEqual((after.knowledge as Record<string, unknown>).sources, [
+      'AGENTS.md',
+      'docs',
+    ]);
+    assert.equal(
+      existsSync(
+        join(
+          temporary,
+          '.pappra',
+          'local',
+          'backups',
+          String(value.plan !== undefined ? 'x' : 'x'),
+        ),
+      ),
+      false,
+    );
+    const backups = readdirSync(join(temporary, '.pappra/local/backups'));
+    assert.equal(backups.length >= 1, true);
+
+    const repeated = invoke(
+      ['init', '--yes', '--reconfigure', '--apply', '--json'],
+      temporary,
+      environment,
+    );
+    assert.equal(repeated.status, 0, repeated.stderr);
+    const repeatedValue = parseJson(repeated.stdout);
+    assert.equal(
+      (repeatedValue.apply as Record<string, unknown>).status,
+      'no-changes',
+    );
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+    rmSync(isolated.directory, { recursive: true, force: true });
+  }
+});
