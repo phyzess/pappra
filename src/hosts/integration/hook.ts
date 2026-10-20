@@ -30,6 +30,7 @@ import {
 } from '../../workspace/config.js';
 import { CheckpointService } from '../../continuity/service.js';
 import { ensureStatePathBoundary } from '../../install/ownership.js';
+import { readAutoResume, readTaskPin } from '../../app/task-pin.js';
 import { nativeEventFor } from './support.js';
 
 const DEFAULT_MAX_INPUT_BYTES = 1024 * 1024;
@@ -721,10 +722,12 @@ export async function runHostHook(
     dev: directoryAfter.stats.dev,
     ino: directoryAfter.stats.ino,
   };
+  const pinnedTask = await readTaskPin(root);
+  const autoResume = pinnedTask !== null && (await readAutoResume(root));
   const context = await boundedAdvisory(
     root,
     value.event,
-    value.taskId,
+    value.taskId ?? (autoResume ? pinnedTask!.taskId : null),
     workspaceRead.value.name,
   );
   if (clock() - started > deadline) {

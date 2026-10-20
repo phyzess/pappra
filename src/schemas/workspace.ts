@@ -60,6 +60,10 @@ export const workspaceValidationSchema = z.strictObject({
   args: z.array(argumentSchema).max(256),
 });
 
+export const workspaceContinuitySchema = z.strictObject({
+  autoResume: z.boolean(),
+});
+
 export const workspaceConfigSchema = z.strictObject({
   schema: z.literal(WORKSPACE_SCHEMA),
   workspaceId: z.uuid(),
@@ -71,6 +75,7 @@ export const workspaceConfigSchema = z.strictObject({
   validation: z.array(workspaceValidationSchema).max(128),
   excludes: z.array(portablePathSchema).max(128),
   extensions: z.record(z.string().min(1).max(128), z.unknown()),
+  continuity: workspaceContinuitySchema.optional(),
 });
 
 export type WorkspaceConfig = z.infer<typeof workspaceConfigSchema>;

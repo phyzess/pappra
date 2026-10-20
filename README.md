@@ -71,6 +71,7 @@ They are not needed for the core workflow above.
 - **Continuity:** private task checkpoints and bounded advisory resume packets. Resume never grants execution by itself.
 - **Code intelligence:** status, explicit preparation and bounded query for selected repositories. Text/structure fallback is available when the optional graph engine is absent. Registrations are stored under the workspace `.pappra/local/code`, never inside a repository checkout, so a multi-repository workspace does not turn its checkouts into nested workspaces.
 - **Host integrations:** optional Pi, Codex and Claude Code adapters that merge Pappra-owned entries without taking over user configuration. Hooks are copied as a dependency-free bundle; Claude Code uses `${CLAUDE_PROJECT_DIR}` and Pi imports its runtime relatively, while Codex 0.163.0 loads hooks only from `$CODEX_HOME/hooks.json` (`host install --host codex --scope user`). `host bundle --marketplace` exports a marketplace that Claude Code and Codex accept without registering it. Plugin hooks are verified for Pi 1.3.0 and Claude Code 2.1.292 (startup) and unsupported for Codex, so `host install --mode plugin` fails closed with the per-host registration commands. See [host plugin validation](docs/host-plugin-validation.md).
+- **Agent-native tools:** `pappra mcp` exposes read-only and gated write tools over stdio MCP; `pappra host mcp install` registers it for Claude Code or Pi, and Codex uses `codex mcp add`. `pappra task pin <id> --auto-resume` lets hooks inject a bounded resume packet. See [agent-native usage](docs/agent-native.md).
 - **Bounded collaboration:** an optional, explicitly controlled one-request workflow. It is not a scheduler or daemon.
 
 ## Optional integrations and support
@@ -94,7 +95,7 @@ The check runs the source policy, type checks, formatting, deterministic tests a
 
 ## Status and limits
 
-Pappra is development software (`0.1.0-beta.12`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.12`, because pre-release versions are never republished.
+Pappra is development software (`0.1.0-beta.13`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.13`, because pre-release versions are never republished.
 
 The deterministic suite covers synthetic workspaces, fixtures and local process boundaries. It does not establish real-model behavior, native host callability on every platform, CodeGraph completeness, Windows/Linux parity or production performance. A host adapter version pin is an observed support claim, not proof that a particular native installation will load or run correctly.
 

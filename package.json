@@ -1,6 +1,6 @@
 {
   "name": "@phyzess/pappra",
-  "version": "0.1.0-beta.12",
+  "version": "0.1.0-beta.13",
   "description": "Portable workspace knowledge and continuity for coding agents.",
   "publishConfig": {
     "access": "public"
@@ -98,6 +98,7 @@
   },
   "dependencies": {
     "@clack/prompts": "1.8.1",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "zod": "4.6.6"
   },
   "repository": {

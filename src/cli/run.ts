@@ -2,6 +2,8 @@ import { parseArgs } from 'node:util';
 import { getPackageInfo } from '../package-info.js';
 import { initUsage, runInitCommand } from './commands/init.js';
 import { onboardUsage, runOnboardCommand } from './commands/onboard.js';
+import { mcpUsage, runMcpCommand } from './commands/mcp.js';
+import { taskUsage, runTaskCommand } from './commands/task.js';
 import { doctorUsage, runDoctorCommand } from './commands/doctor.js';
 import { docsUsage, runDocsCommand } from './commands/docs.js';
 import {
@@ -36,6 +38,7 @@ function parseOptions(args: readonly string[]) {
       'apply-host': { type: 'boolean' },
       'dry-run': { type: 'boolean' },
       'print-handoff': { type: 'boolean' },
+      'auto-resume': { type: 'boolean' },
       from: { type: 'string' },
       tarball: { type: 'string' },
       out: { type: 'string' },
@@ -89,6 +92,25 @@ function parseOptions(args: readonly string[]) {
     throw new Error('Use either --help or --version, not both.');
   }
   const command = positionals[0] ?? null;
+  if (command === 'task') {
+    if (positionals.length > 3) {
+      throw new Error('task accepts one action and an optional task id.');
+    }
+    return {
+      values,
+      command,
+      docsAction: null,
+      docsArgument: null,
+      codeAction: null,
+      hostAction: null,
+      hostSubAction: null,
+      collaborationAction: null,
+      resumeTaskId: null,
+      runtimeAction: null,
+      taskAction: positionals[1] ?? null,
+      taskArgument: positionals[2] ?? null,
+    };
+  }
   if (command === 'docs') {
     if (positionals.length > 3) {
       throw new Error(
@@ -102,9 +124,12 @@ function parseOptions(args: readonly string[]) {
       docsAction: positionals[1] ?? null,
       docsArgument: positionals[2] ?? null,
       hostAction: null,
+      hostSubAction: null,
       collaborationAction: null,
       resumeTaskId: null,
       runtimeAction: null,
+      taskAction: null,
+      taskArgument: null,
     };
   }
   if (command === 'resume') {
@@ -118,9 +143,12 @@ function parseOptions(args: readonly string[]) {
       docsArgument: null,
       codeAction: null,
       hostAction: null,
+      hostSubAction: null,
       collaborationAction: null,
       resumeTaskId: positionals[1] ?? null,
       runtimeAction: null,
+      taskAction: null,
+      taskArgument: null,
     };
   }
   if (command === 'code') {
@@ -134,15 +162,18 @@ function parseOptions(args: readonly string[]) {
       docsArgument: null,
       codeAction: positionals[1] ?? null,
       hostAction: null,
+      hostSubAction: null,
       collaborationAction: null,
       resumeTaskId: null,
       runtimeAction: null,
+      taskAction: null,
+      taskArgument: null,
     };
   }
   if (command === 'host') {
-    if (positionals.length > 2) {
+    if (positionals.length > 3) {
       throw new Error(
-        'host accepts one action: detect, describe, plan, install, or verify.',
+        'host accepts one action and an optional mcp sub-action.',
       );
     }
     return {
@@ -152,9 +183,12 @@ function parseOptions(args: readonly string[]) {
       docsArgument: null,
       codeAction: null,
       hostAction: positionals[1] ?? null,
+      hostSubAction: positionals[2] ?? null,
       collaborationAction: null,
       resumeTaskId: null,
       runtimeAction: null,
+      taskAction: null,
+      taskArgument: null,
     };
   }
   if (command === 'runtime') {
@@ -170,9 +204,12 @@ function parseOptions(args: readonly string[]) {
       docsArgument: null,
       codeAction: null,
       hostAction: null,
+      hostSubAction: null,
       collaborationAction: null,
       resumeTaskId: null,
       runtimeAction: positionals[1] ?? null,
+      taskAction: null,
+      taskArgument: null,
     };
   }
   if (command === 'collab') {
@@ -186,9 +223,12 @@ function parseOptions(args: readonly string[]) {
       docsArgument: null,
       codeAction: null,
       hostAction: null,
+      hostSubAction: null,
       collaborationAction: positionals[1] ?? null,
       resumeTaskId: null,
       runtimeAction: null,
+      taskAction: null,
+      taskArgument: null,
     };
   }
   if (positionals.length > 1) {
@@ -251,6 +291,8 @@ function hasContinuityOptions(
 
 const globalUsage =
   'pappra [--help | --version] [--json]\n' +
+  'pappra task <pin|unpin|show> [taskId] [--auto-resume] [--json]\n' +
+  'pappra mcp [--root <dir>] [--help]\n' +
   'pappra onboard [--root <dir>] [--config <file>] [--hosts <list>] [--yes]\n' +
   '               [--apply-host] [--dry-run] [--print-handoff] [--json]\n' +
   'pappra init [--config <file> | --yes] [--apply] [--json] [--print-choices]\n' +
@@ -286,6 +328,9 @@ export async function runCli(
     collaborationAction,
     resumeTaskId,
     runtimeAction,
+    hostSubAction,
+    taskAction,
+    taskArgument,
   } = parsed;
   const json = values.json === true;
   const applyRequested = values.apply === true;
@@ -311,6 +356,15 @@ export async function runCli(
       json,
       'invalid_arguments',
       '--yes is only valid for init and onboard.',
+    );
+    return 2;
+  }
+  if (command !== 'task' && values['auto-resume'] === true) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--auto-resume is only valid for task pin.',
     );
     return 2;
   }
@@ -392,6 +446,7 @@ export async function runCli(
   }
   if (
     command !== 'runtime' &&
+    command !== 'host' &&
     (values.from !== undefined ||
       values.tarball !== undefined ||
       values.bind === true ||
@@ -557,6 +612,120 @@ export async function runCli(
         root: values.root ?? process.cwd(),
         json,
       },
+      output,
+    );
+  }
+
+  if (command === 'task') {
+    const action =
+      taskAction === 'pin' || taskAction === 'unpin' || taskAction === 'show'
+        ? taskAction
+        : null;
+    if (
+      values.config !== undefined ||
+      values.apply === true ||
+      values.yes === true ||
+      values['install-runtime'] === true ||
+      values['runtime-tarball'] !== undefined ||
+      values['runtime-version'] !== undefined ||
+      values.host !== undefined ||
+      values.repo !== undefined ||
+      values.kind !== undefined ||
+      values.query !== undefined ||
+      values.root !== undefined ||
+      hasContinuityOptions(values)
+    ) {
+      failure(
+        output,
+        json,
+        'invalid_arguments',
+        'task accepts pin|unpin|show, an optional task id, --auto-resume, --help, and --json.',
+      );
+      return 2;
+    }
+    if (values.help) {
+      if (json) {
+        output.stdout(
+          `${JSON.stringify({ ...info, commands: ['task'], usage: taskUsage })}\n`,
+        );
+      } else {
+        output.stdout(taskUsage);
+      }
+      return 0;
+    }
+    if (values.version) {
+      failure(
+        output,
+        json,
+        'invalid_arguments',
+        '--version cannot be combined with task.',
+      );
+      return 2;
+    }
+    return runTaskCommand(
+      {
+        cwd: process.cwd(),
+        action,
+        taskId: taskArgument ?? null,
+        autoResume: values['auto-resume'] === true,
+        json,
+      },
+      output,
+    );
+  }
+
+  if (command === 'mcp') {
+    if (
+      values.config !== undefined ||
+      values.apply === true ||
+      values.yes === true ||
+      values['install-runtime'] === true ||
+      values['runtime-tarball'] !== undefined ||
+      values['runtime-version'] !== undefined ||
+      values['include-private'] === true ||
+      values['include-archived'] === true ||
+      values['apply-host'] === true ||
+      values['dry-run'] === true ||
+      values['print-handoff'] === true ||
+      values.hosts !== undefined ||
+      values.repo !== undefined ||
+      values.kind !== undefined ||
+      values.query !== undefined ||
+      values.limit !== undefined ||
+      values['max-bytes'] !== undefined ||
+      values.rebuild === true ||
+      values.host !== undefined ||
+      hasContinuityOptions(values)
+    ) {
+      failure(
+        output,
+        json,
+        'invalid_arguments',
+        'mcp accepts only --root, --help, and --json.',
+      );
+      return 2;
+    }
+    if (values.help) {
+      if (json) {
+        output.stdout(
+          `${JSON.stringify({ ...info, commands: ['mcp'], usage: mcpUsage })}\n`,
+        );
+      } else {
+        output.stdout(mcpUsage);
+      }
+      return 0;
+    }
+    if (values.version) {
+      failure(
+        output,
+        json,
+        'invalid_arguments',
+        '--version cannot be combined with mcp.',
+      );
+      return 2;
+    }
+    return runMcpCommand(
+      { cwd: process.cwd(), root: values.root ?? null, json },
       output,
     );
   }
@@ -981,6 +1150,8 @@ export async function runCli(
       'install',
       'verify',
       'bundle',
+      'mcp',
+      'probe',
     ] as const;
     const action = allowedActions.find((item) => item === hostAction) ?? null;
     const parsedHost = hostNameSchema.safeParse(values.host);
@@ -1001,7 +1172,7 @@ export async function runCli(
       values['max-bytes'] !== undefined ||
       values.rebuild === true ||
       hasContinuityOptions(values) ||
-      (values.apply === true && action !== 'install') ||
+      (values.apply === true && action !== 'install' && action !== 'mcp') ||
       (values.mode !== undefined && action !== 'install') ||
       (values.marketplace === true && action !== 'bundle') ||
       (values.scope !== undefined &&
@@ -1038,6 +1209,8 @@ export async function runCli(
         hostRoot: values['host-root'] ?? null,
         hostVersion: values['host-version'] ?? null,
         apply: values.apply === true,
+        force: values.force === true,
+        subAction: hostSubAction ?? null,
         out: values.out ?? null,
         mode:
           values.mode === 'project-settings' || values.mode === 'plugin'

@@ -21,6 +21,8 @@
   host. Codex 0.163.0 loads hooks only from `$CODEX_HOME/hooks.json`, so use
   `install --host codex --scope user`; `bundle --marketplace` exports a plugin
   directory without registering it, and `install --mode plugin` fails closed.
+- `pappra mcp` starts the stdio MCP server; `pappra host mcp install --host <name> --apply`
+  registers it. `pappra task pin <id> --auto-resume` controls hook resume injection.
 - `pappra collab <prepare|run|query>` runs one bounded collaboration request.
   `run` requires `--controller fixture|pi-rpc`; `pi-rpc` launches a real Pi RPC
   session.

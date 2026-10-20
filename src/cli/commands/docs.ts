@@ -1,12 +1,11 @@
 import type { Diagnostic } from '../../schemas/diagnostics.js';
-import { discoverWorkspace } from '../../workspace/discover.js';
 import { resolveWorkspaceRoot } from '../../workspace/resolve.js';
+import { scanDiscoveredDocuments } from '../../knowledge/scan.js';
 import { formatDiagnostic } from '../../schemas/diagnostics.js';
 import {
   docsArchiveReportSchema,
   docsCheckReportSchema,
   docsListReportSchema,
-  type DocumentKind,
   type DocumentRecord,
 } from '../../schemas/document.js';
 import {
@@ -35,108 +34,34 @@ export interface DocsCommandOptions {
   readonly apply: boolean;
 }
 
-function classifyScanKind(path: string): DocumentKind {
-  const lower = path.toLowerCase();
-  if (lower.endsWith('agents.md') || lower.endsWith('claude.md')) return 'rule';
-  if (lower.includes('/research/')) return 'research';
-  if (lower.includes('/adr/') || lower.includes('decision')) return 'decision';
-  if (lower.includes('review') || lower.includes('retro')) return 'review';
-  if (lower.includes('plan')) return 'plan';
-  return 'architecture';
-}
-
 async function runDocsScan(
   options: DocsCommandOptions,
   output: CliOutput,
   root: string,
 ): Promise<number> {
-  const discovery = await discoverWorkspace(root);
-  const config = discovery.config;
-  if (config === null) {
-    return invalidArguments(
-      output,
-      options.json,
-      'docs scan requires a valid .pappra/workspace.json; run pappra init first.',
-    );
+  const result = await scanDiscoveredDocuments(root, { apply: options.apply });
+  if ('message' in result) {
+    return invalidArguments(output, options.json, result.message);
   }
-  const service = new KnowledgeService(root);
-  const listed = await service.list({ includePrivate: true });
-  const registered = new Set(
-    listed.records.flatMap((record) =>
-      record.location.kind === 'workspace' ? [record.location.path] : [],
-    ),
-  );
-  const sources = config.knowledge.sources;
-  const visibility: 'private' | 'shareable' =
-    config.knowledge.taskVisibility === 'shared' ? 'shareable' : 'private';
-  const candidates = (discovery.documents ?? []).flatMap((document) => {
-    const path = document.workspaceRelativePath;
-    if (path === null) return [];
-    if (
-      !sources.some(
-        (source) => path === source || path.startsWith(`${source}/`),
-      )
-    ) {
-      return [];
-    }
-    if (registered.has(path)) return [];
-    return [{ path, kind: classifyScanKind(path), visibility }];
-  });
   if (!options.apply) {
     if (options.json) {
-      output.stdout(
-        `${JSON.stringify({
-          ok: true,
-          schema: 'pappra/docs-scan/1',
-          mode: 'plan',
-          workspaceRoot: root,
-          candidates,
-          registered: registered.size,
-          nextActions: [
-            'Rerun with --apply to register these documents in the knowledge catalog.',
-          ],
-        })}\n`,
-      );
+      output.stdout(`${JSON.stringify(result)}\n`);
     } else {
-      output.stdout(`Scan candidates: ${candidates.length}\n`);
-      for (const candidate of candidates) {
+      output.stdout(`Scan candidates: ${result.candidates.length}\n`);
+      for (const candidate of result.candidates) {
         output.stdout(`  ${candidate.kind}  ${candidate.path}\n`);
       }
       output.stdout('Plan only; rerun with --apply to register them.\n');
     }
     return 0;
   }
-  const registeredNow: unknown[] = [];
-  const diagnostics: Diagnostic[] = [];
-  for (const candidate of candidates) {
-    const result = await service.register({
-      location: { kind: 'workspace', path: candidate.path },
-      kind: candidate.kind,
-      maturity: 'draft',
-      owner: 'human',
-      visibility: candidate.visibility,
-    });
-    diagnostics.push(...result.diagnostics);
-    if (result.ok) registeredNow.push(result.record);
-  }
-  const ok = diagnostics.every((entry) => entry.severity !== 'error');
   if (options.json) {
-    output.stdout(
-      `${JSON.stringify({
-        ok,
-        schema: 'pappra/docs-scan/1',
-        mode: 'apply',
-        workspaceRoot: root,
-        registered: registeredNow,
-        skipped: candidates.length - registeredNow.length,
-        diagnostics,
-      })}\n`,
-    );
+    output.stdout(`${JSON.stringify(result)}\n`);
   } else {
-    output.stdout(`Registered ${registeredNow.length} document(s).\n`);
-    printDiagnostics(output, diagnostics);
+    output.stdout(`Registered ${result.registered.length} document(s).\n`);
+    printDiagnostics(output, result.diagnostics);
   }
-  return ok ? 0 : 1;
+  return result.ok ? 0 : 1;
 }
 
 function printDiagnostics(

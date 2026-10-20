@@ -222,6 +222,12 @@ M6 status (2026-10-20): `pappra onboard` landed with `--dry-run`, `--apply-host`
 `--print-handoff`, host version drift states, idempotent apply and tests; portability docs
 added. Remaining decisions (MCP transport/server split, auto-resume scope) apply to M7+.
 
+M7–M10 status (2026-10-20): `pappra mcp` (7 read-only + 5 gated write tools, including
+`collab_prepare`/`collab_start` and MCP registration for Claude/Pi plus the Codex command),
+`pappra task pin --auto-resume` with the workspace `continuity.autoResume` switch and hook
+injection, `pappra host probe` for the Pi RPC identity contract, and the agent-native
+documentation landed. Server-split and auto-resume-scope decisions are recorded above.
+
 ## 8. Risks
 
 - **MCP surface security**: a write tool that trusts the model would turn prose into

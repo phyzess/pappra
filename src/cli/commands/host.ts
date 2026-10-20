@@ -4,6 +4,12 @@ import type { HostName } from '../../schemas/host.js';
 import { HostIntegrationService } from '../../hosts/integration/service.js';
 import { exportHostPluginBundle } from '../../hosts/integration/bundle-export.js';
 import {
+  applyHostMcp,
+  planHostMcp,
+  verifyHostMcp,
+} from '../../app/host-mcp.js';
+import { probeHost } from '../../app/host-probe.js';
+import {
   HOST_SUPPORT,
   isSupportedVersion,
 } from '../../hosts/integration/support.js';
@@ -11,7 +17,7 @@ import { getPackageInfo } from '../../package-info.js';
 import type { CliOutput } from '../output.js';
 
 export const hostUsage =
-  'pappra host <detect|describe|plan|install|verify|bundle> --host <pi|codex|claude>\n' +
+  'pappra host <detect|describe|plan|install|verify|bundle|mcp> --host <pi|codex|claude>\n' +
   '  [--host-root <dir>] [--host-version <version>] [--out <dir>]\n' +
   '  [--mode project-settings|plugin] [--apply] [--json]\n' +
   '\n' +
@@ -22,11 +28,21 @@ export interface HostCommandOptions {
   readonly cwd: string;
   readonly json: boolean;
   readonly action:
-    'detect' | 'describe' | 'plan' | 'install' | 'verify' | 'bundle' | null;
+    | 'detect'
+    | 'describe'
+    | 'plan'
+    | 'install'
+    | 'verify'
+    | 'bundle'
+    | 'mcp'
+    | 'probe'
+    | null;
   readonly host: HostName | null;
   readonly hostRoot: string | null;
   readonly hostVersion: string | null;
   readonly apply: boolean;
+  readonly force: boolean;
+  readonly subAction: string | null;
   readonly out: string | null;
   readonly mode: 'project-settings' | 'plugin' | null;
   readonly marketplace: boolean;
@@ -122,6 +138,67 @@ export async function runHostCommand(
       ? {}
       : { hostVersion: options.hostVersion }),
   };
+
+  if (options.action === 'mcp') {
+    if (
+      options.subAction !== 'plan' &&
+      options.subAction !== 'install' &&
+      options.subAction !== 'verify'
+    ) {
+      output.stderr('pappra host mcp requires plan, install, or verify.\n');
+      return 2;
+    }
+    const mcpPlan = await planHostMcp(options.host, options.cwd);
+    const result =
+      options.subAction === 'verify'
+        ? await verifyHostMcp(mcpPlan)
+        : options.subAction === 'install' && options.apply
+          ? await applyHostMcp(mcpPlan, { force: options.force })
+          : {
+              ...mcpPlan,
+              applied: false,
+              verified: false,
+              detail: null,
+            };
+    if (options.json) {
+      output.stdout(
+        `${JSON.stringify({ schema: 'pappra/host-mcp/1', ...result })}\n`,
+      );
+    } else {
+      output.stdout(`Host ${result.host} MCP: ${result.state}\n`);
+      if (result.target !== null) output.stdout(`  target: ${result.target}\n`);
+      if (result.command !== null) {
+        output.stdout(`  command: ${result.command.join(' ')}\n`);
+      }
+      output.stdout(`  ${result.message}\n`);
+      if (result.detail !== null) output.stdout(`  detail: ${result.detail}\n`);
+      if (options.subAction === 'install' && !options.apply) {
+        output.stdout('  plan only; rerun with --apply to write it.\n');
+      }
+    }
+    return result.verified || (!options.apply && options.subAction !== 'verify')
+      ? 0
+      : 1;
+  }
+
+  if (options.action === 'probe') {
+    const result = probeHost(options.host);
+    if (options.json) {
+      output.stdout(
+        `${JSON.stringify({ schema: 'pappra/host-probe/1', ...result })}\n`,
+      );
+    } else {
+      output.stdout(
+        `Host ${result.host} probe: ${result.ok ? 'ok' : 'failed'}\n`,
+      );
+      output.stdout(
+        `  version: ${result.version ?? '(missing)'} / pinned ${result.pinnedVersion}\n`,
+      );
+      output.stdout(`  protocol: ${result.protocol}\n`);
+      output.stdout(`  ${result.message}\n`);
+    }
+    return result.ok ? 0 : 1;
+  }
 
   if (options.action === 'detect' || options.action === 'describe') {
     const capabilities = service.describe(options.host);

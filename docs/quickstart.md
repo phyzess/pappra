@@ -51,6 +51,16 @@ configured knowledge sources.
 Exit codes: `0` converged, `1` applied with a pending manual step (for example with
 `--no-runtime`), `2` invalid input, `3` unavailable environment.
 
+## Agent-native tools
+
+`pappra mcp` starts a stdio MCP server for the current workspace. Read-only tools cover
+workspace status, resume, documents, code queries and runtime state; write tools require
+`apply`/`confirm`. `pappra host mcp install --host claude|pi --apply` registers it in
+`.mcp.json` / `.pi/mcp.json`; Codex uses `codex mcp add pappra -- pappra mcp`.
+
+`pappra task pin <id> --auto-resume` makes the lifecycle hook inject a bounded resume packet
+for that task. See [agent-native usage](agent-native.md) for the full tool and consent model.
+
 ## New workspace or new machine
 
 `pappra onboard` plans or applies the whole setup: workspace config, durable runtime, and
