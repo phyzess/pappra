@@ -21,8 +21,8 @@ The following are optional and must be selected explicitly:
 - A collaboration controller. `pappra collab run` requires
   `--controller <fixture|pi-rpc>`; no controller is implicit. The `pi-rpc` path is verified
   against Pi 1.3.0 (see `docs/pi-rpc.md`).
-- Local runtime tarballs for `pappra install --runtime-tarball`; installation is
-  local and explicit.
+- A local runtime source for `pappra runtime install --from tarball` (or an exact
+  version); installation is local and explicit.
 
 Pappra core does not require a private repository, external host, model provider
 or global agent configuration.

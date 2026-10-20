@@ -278,6 +278,11 @@ session was available to prove that a plugin hook fires, and the plan forbids cl
 callability without evidence, so plugin mode ships as an exported artifact plus documented
 registration instead of a silent default. Flipping the default is the remaining M4 item.
 
+Update (same day, superseded by §9): real sessions were run afterwards. Pi and Claude Code
+plugin hooks are verified (startup); Codex plugin hooks are proven unsupported, and Codex
+hooks work only from user scope. Plugin delivery therefore stays an explicit export with
+host-specific registration, not a silent default.
+
 M3 status (2026-10-20): landed — `pappra runtime install|status|verify|remove` exists,
 `--from self` packs the executing package and installs it under the Pappra data directory
 through the existing journal/manifest machinery, and `init --apply` installs and binds that
@@ -307,9 +312,10 @@ distribution; M2 unblocks `npx`; M3+M4 remove the structural fragility.
 
 ## 7. Risks and non-goals
 
-- **Codex plugin hook support** is version-sensitive (upstream issue about ignored
-  `extensions.com.openai.hooks`). Keep the project-settings mode; only advertise plugin
-  mode for versions actually verified. The current pin table (`HOST_SUPPORT`) must be
+- **Codex hook support** is version-sensitive: 0.163.0 loads hooks only from its user
+  configuration directory and does not load plugin hooks (upstream issue about ignored
+  `extensions.com.openai.hooks`). Codex uses `host install --scope user`; project
+  `.codex/hooks.json` is not a supported surface. The pin table (`HOST_SUPPORT`) must be
   re-checked per release.
 - **Claude Code plugin trust/reload**: new plugins require reload and trust; `doctor`
   must keep reporting that as a state, not assume success.
@@ -329,10 +335,41 @@ Resolved on 2026-10-20:
 1. Registry: **public npm only** (A5), verified from CI via OIDC.
 2. Package name: **`@phyzess/pappra`**; `bin` remains `pappra` (A1/A4).
 3. `engines.node`: **stay `>=24`** (A1).
-4. Host integration: **plugin mode becomes the default; `--mode project-settings`
-   remains supported and verified** (B2).
+4. Host integration: the original decision was plugin-by-default. After the real-session
+   evidence (§9) the shipped decision is: `--mode project-settings` remains the install
+   mode; verified hosts (Pi, Claude Code) receive exact plugin registration commands from
+   `host bundle`/`host install --mode plugin`, and Codex uses `--scope user`.
 
 Still open (implementation detail, decide during M4): whether Codex plugin mode is
 advertised at all in the first beta, given the upstream Agent Plugins 1.0 hook-manifest
 issue. Default position: ship the bundle but keep `host verify` reporting
 `verification: unsupported` until a real 0.163.0 session proves the hook fires.
+
+## 9. Current state (2026-10-20, 0.1.0-beta.9)
+
+Shipped and verified:
+
+- `npx @phyzess/pappra@beta init --yes --apply` converges (exit 0), installs and binds a
+  durable runtime copy; `--no-runtime`, `--print-choices`, `--reconfigure` cover the other
+  paths. Managed replacement is journalled with backups.
+- `pappra runtime install|status|verify|remove`; `verify` is the active check, `doctor`
+  stays passive.
+- `pappra docs scan [--apply]` registers discovered knowledge documents; `init` reports
+  advisory `nextActions` for `code prepare` and `docs scan`.
+- Host hooks: dependency-free bundle; Claude Code project wiring uses
+  `${CLAUDE_PROJECT_DIR}`, Pi imports its runtime relatively, Codex uses
+  `$CODEX_HOME/hooks.json` via `--scope user`. Plugin hook evidence: Pi verified, Claude
+  Code verified (startup), Codex unsupported. `host bundle --marketplace` exports a
+  marketplace both Claude Code and Codex accept; `host install --mode plugin` fails closed
+  with per-host commands.
+- Collaboration: `collab prepare` + `collab run --controller pi-rpc` verified end to end
+  against Pi 1.3.0 (real `COLLAB_OK` answer, `completed`/`applied` report,
+  `identity_confirmed`). Two Pi 1.3.0 lifecycle mismatches were fixed: lazy session-file
+  creation and the current-result baseline sampled before the prompt. See `docs/pi-rpc.md`
+  and `docs/host-plugin-validation.md`.
+
+Known limits that remain, and are documented rather than claimed away: Claude
+`PostCompact` and Pi compact/checkpoint events are not exercised from non-interactive
+sessions; Codex plugin hooks are unsupported at 0.163.0; host plugin registration is always
+a host-side action. This plan is historical; the shipped behaviour is what the README,
+quickstart, support and validation documents describe.

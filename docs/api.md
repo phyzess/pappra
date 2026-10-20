@@ -11,7 +11,8 @@ capabilities from command success alone.
 - `pappra/doctor`: passive diagnostics and integration observations.
 - `pappra/continuity`: checkpoint creation and advisory resume packets.
 - `pappra/knowledge`: document catalogs and preview/apply lifecycle operations.
-- `pappra/install`: local runtime installation and ownership-safe cleanup.
+- `pappra/install`: local runtime installation (self, tarball, or exact version),
+  journaled managed replacement and ownership-safe cleanup.
 
 Core workspace operations use Pappra-owned `.pappra/` files. A checkout-local
 machine file binds the workspace to a canonical path; missing or mismatched
@@ -25,7 +26,8 @@ local identity fails closed.
   Host integration is not required to import or use core Pappra.
 - `pappra/collab` and `pappra/collaboration`: bounded collaboration primitives
   and a generic controller interface. A caller must provide an explicit
-  controller; no native host is launched by default.
+  controller; no native host is launched by default. The `pi-rpc` controller path
+  and its observed Pi 1.3.0 behaviour are documented in `docs/pi-rpc.md`.
 - `pappra/schemas`: exported validation schemas and types.
 
 ## Safety contract

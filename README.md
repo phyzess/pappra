@@ -19,8 +19,8 @@ curl -fsSL https://raw.githubusercontent.com/phyzess/pappra/main/examples/minima
 # Preview first. JSON/config mode is non-interactive and does not prompt.
 npx @phyzess/pappra@beta init --config ./minimal-choices.json --json
 
-# Apply the same choices. With no runtime installed, apply intentionally
-# reports external-actions-pending and exits nonzero after writing config.
+# Apply the same choices. Apply also installs and binds a durable runtime copy,
+# so this converges with exit code 0; add --no-runtime to leave it pending.
 npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
 npx @phyzess/pappra@beta doctor --json
 ```
@@ -65,7 +65,7 @@ They are not needed for the core workflow above.
 - **Knowledge:** workspace and private document catalogs with explicit preview/apply operations.
 - **Continuity:** private task checkpoints and bounded advisory resume packets. Resume never grants execution by itself.
 - **Code intelligence:** status, explicit preparation and bounded query for selected repositories. Text/structure fallback is available when the optional graph engine is absent.
-- **Host integrations:** optional Pi, Codex and Claude Code adapters that merge Pappra-owned entries without taking over user configuration. Hooks are copied as a dependency-free bundle into the host root; `host bundle --marketplace` exports a local marketplace that Claude Code and Codex accept, without registering it. Plugin hooks are verified for Pi 1.3.0 and Claude Code 2.1.292 (startup); Codex 0.163.0 loads hooks only from user scope, so use `host install --host codex --scope user` (merges `$CODEX_HOME/hooks.json`). `host bundle` exports a plugin bundle for the other hosts and `host install --mode plugin` fails closed with the per-host commands. See [host plugin validation](docs/host-plugin-validation.md).
+- **Host integrations:** optional Pi, Codex and Claude Code adapters that merge Pappra-owned entries without taking over user configuration. Hooks are copied as a dependency-free bundle; Claude Code uses `${CLAUDE_PROJECT_DIR}` and Pi imports its runtime relatively, while Codex 0.163.0 loads hooks only from `$CODEX_HOME/hooks.json` (`host install --host codex --scope user`). `host bundle --marketplace` exports a marketplace that Claude Code and Codex accept without registering it. Plugin hooks are verified for Pi 1.3.0 and Claude Code 2.1.292 (startup) and unsupported for Codex, so `host install --mode plugin` fails closed with the per-host registration commands. See [host plugin validation](docs/host-plugin-validation.md).
 - **Bounded collaboration:** an optional, explicitly controlled one-request workflow. It is not a scheduler or daemon.
 
 ## Optional integrations and support

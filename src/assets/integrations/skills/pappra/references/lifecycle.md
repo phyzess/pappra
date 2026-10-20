@@ -14,6 +14,10 @@ Pappra distinguishes four local lifecycle intents:
 The matrix is version-specific. A host version outside the observed support
 range is `unsupported`/`unknown`, not a fallback to name similarity.
 
+Codex 0.163.0 loads these hook keys only from its user configuration directory
+(`$CODEX_HOME/hooks.json`); project `.codex/hooks.json` and plugin bundles are
+not loaded by that version. Claude Code and Pi wire hooks in project scope.
+
 ## What a hook does
 
 A hook validates the host payload, resolves the current workspace from the
