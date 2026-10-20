@@ -27,6 +27,9 @@ function parseOptions(args: readonly string[]) {
       json: { type: 'boolean' },
       config: { type: 'string' },
       apply: { type: 'boolean' },
+      yes: { type: 'boolean', short: 'y' },
+      'no-interactive': { type: 'boolean' },
+      'print-choices': { type: 'boolean' },
       'install-runtime': { type: 'boolean' },
       'runtime-tarball': { type: 'string' },
       'runtime-version': { type: 'string' },
@@ -203,7 +206,7 @@ function hasContinuityOptions(
 
 const globalUsage =
   'pappra [--help | --version] [--json]\n' +
-  'pappra init [--config <file>] [--apply] [--json]\n' +
+  'pappra init [--config <file> | --yes] [--apply] [--json] [--print-choices]\n' +
   '              [--install-runtime (--runtime-tarball <file> | --runtime-version <version>)]\n' +
   'pappra doctor [--root <path>] [--json]\n' +
   'pappra docs <list|check|archive> [options]\n' +
@@ -236,6 +239,21 @@ export async function runCli(
     resumeTaskId,
   } = parsed;
   const json = values.json === true;
+
+  if (
+    command !== 'init' &&
+    (values.yes === true ||
+      values['no-interactive'] === true ||
+      values['print-choices'] === true)
+  ) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--yes, --no-interactive and --print-choices are only valid for init.',
+    );
+    return 2;
+  }
 
   let info: ReturnType<typeof getPackageInfo>;
   try {
@@ -436,6 +454,8 @@ export async function runCli(
         installRuntime: values['install-runtime'] === true,
         runtimeTarball: values['runtime-tarball'] ?? null,
         runtimeVersion: values['runtime-version'] ?? null,
+        yes: values.yes === true || values['no-interactive'] === true,
+        printChoices: values['print-choices'] === true,
       },
       output,
     );

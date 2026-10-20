@@ -18,6 +18,7 @@ import {
   applyInitPlan,
   inspectInitContext,
   listKnowledgeCandidates,
+  deriveInitChoices,
   listRepositoryCandidates,
   planWorkspaceInit,
   type InitApplyResult,
@@ -394,6 +395,10 @@ export interface InitCommandOptions {
   readonly installRuntime?: boolean;
   readonly runtimeTarball?: string | null;
   readonly runtimeVersion?: string | null;
+  /** Derives deterministic selections from discovery instead of prompting. */
+  readonly yes?: boolean;
+  /** Prints the derived selections and writes nothing. */
+  readonly printChoices?: boolean;
 }
 
 export interface RuntimeFlowResult {
@@ -574,6 +579,7 @@ function writeFailure(
         message: failure.message,
         nextAction: failure.nextAction,
         diagnostics: failure.diagnostics,
+        ...(failure.details ?? {}),
       })}\n`,
     );
   } else {
@@ -751,8 +757,12 @@ export async function runInitCommand(
   output: CliOutput,
   deps: InitCommandDeps = {},
 ): Promise<number> {
+  const yes = options.yes === true;
+  const printChoices = options.printChoices === true;
   const interactive =
     !options.json &&
+    !yes &&
+    !printChoices &&
     options.configPath === null &&
     (deps.interactive ??
       (process.stdin.isTTY === true && process.stdout.isTTY === true));
@@ -805,6 +815,35 @@ export async function runInitCommand(
       ),
     );
   }
+  if (
+    printChoices &&
+    (options.configPath !== null ||
+      options.apply ||
+      wantsRuntime ||
+      hasRuntimeSource)
+  ) {
+    return writeFailure(output, options, {
+      ok: false,
+      status: 'invalid',
+      code: diagnosticCodes.initInvalidInput,
+      message:
+        '--print-choices cannot be combined with --config, --apply, or runtime flags.',
+      diagnostics: [],
+      nextAction:
+        'Run pappra init --print-choices on its own to print the derived selections.',
+    });
+  }
+  if (yes && options.configPath !== null) {
+    return writeFailure(output, options, {
+      ok: false,
+      status: 'invalid',
+      code: diagnosticCodes.initInvalidInput,
+      message: 'Use either --config or --yes, not both.',
+      diagnostics: [],
+      nextAction:
+        'Pass explicit selections with --config, or derive them with --yes.',
+    });
+  }
   const contextResult = await inspectInitContext(options.cwd);
   if (!contextResult.ok) {
     return writeFailure(output, options, contextResult);
@@ -812,15 +851,40 @@ export async function runInitCommand(
   const context = contextResult.context;
   let choices: InitChoices | null = null;
 
+  if (printChoices) {
+    const derived = await deriveInitChoices(context.discovery);
+    if (options.json) {
+      output.stdout(
+        `${JSON.stringify({
+          ok: true,
+          command: 'init',
+          mode: 'choices',
+          choices: derived.choices,
+          rules: derived.rules,
+          candidates: derived.candidates,
+        })}\n`,
+      );
+    } else {
+      output.stdout(`${JSON.stringify(derived.choices, null, 2)}\n`);
+      for (const rule of derived.rules) {
+        output.stderr(`  ${rule.field} = ${rule.value} (${rule.reason})\n`);
+      }
+    }
+    return 0;
+  }
+
   if (options.configPath !== null) {
     const loaded = await loadChoices(options.configPath);
     if (!loaded.ok) return writeFailure(output, options, loaded.failure);
     choices = loaded.choices;
+  } else if (yes) {
+    choices = (await deriveInitChoices(context.discovery)).choices;
   } else {
     const needsChoices =
       context.discovery.configState !== 'valid' ||
       context.discovery.machineState !== 'valid';
     if (needsChoices && !interactive) {
+      const derived = await deriveInitChoices(context.discovery);
       return writeFailure(output, options, {
         ok: false,
         status: 'needs_input',
@@ -828,7 +892,12 @@ export async function runInitCommand(
         message: 'Missing init selections in a non-interactive session.',
         diagnostics: context.diagnostics,
         nextAction:
-          'Provide --config with pappra/init-choices/1, or run in a TTY for the interactive wizard.',
+          'Rerun with --yes to apply the derived selections, provide --config with pappra/init-choices/1, or run in a TTY for the interactive wizard.',
+        details: {
+          candidates: derived.candidates,
+          suggestedChoices: derived.choices,
+          rules: derived.rules,
+        },
       });
     }
     if (needsChoices && interactive) {

@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -15,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { getPackageInfo } from '../../src/index.js';
 import { baseInitChoices } from './fixtures.js';
 import { createRuntimeTarball } from '../install/fixtures.js';
+import { createRepository } from '../workspace/fixtures.js';
 
 const root = dirname(
   fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
@@ -270,6 +273,211 @@ test('runtime flags require an explicit install request and source', () => {
       existsSync(join(temporary, '.pappra', 'workspace.json')),
       false,
     );
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+interface DeterministicPath {
+  readonly path: string;
+  readonly directory: string;
+}
+
+/**
+ * Prepends stubs that fail or report a fixed version so derived host and graph
+ * selections do not depend on the machine running the suite. The rest of PATH is
+ * preserved because discovery shells out to git.
+ */
+function deterministicPath(
+  versions: { readonly claude?: string } = {},
+): DeterministicPath {
+  const directory = mkdtempSync(join(tmpdir(), 'pappra-init-bin-'));
+  const stub = (name: string, body: string): void => {
+    const file = join(directory, name);
+    writeFileSync(file, `#!/bin/sh\n${body}\n`);
+    chmodSync(file, 0o755);
+  };
+  stub('codegraph', 'exit 1');
+  stub('codex', 'exit 1');
+  stub('pi', 'exit 1');
+  stub(
+    'claude',
+    versions.claude === undefined
+      ? 'exit 1'
+      : `echo "${versions.claude} (Claude Code)"`,
+  );
+  return {
+    path: `${directory}:${process.env.PATH ?? ''}`,
+    directory,
+  };
+}
+
+function isolatedRepository(): string {
+  const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-derived-'));
+  createRepository(temporary);
+  writeFileSync(join(temporary, 'AGENTS.md'), '# agents\n');
+  mkdirSync(join(temporary, 'docs'), { recursive: true });
+  writeFileSync(join(temporary, 'docs', 'README.md'), '# docs\n');
+  writeFileSync(
+    join(temporary, 'package.json'),
+    `${JSON.stringify({
+      name: 'derived-fixture',
+      scripts: { lint: 'true', typecheck: 'true', test: 'true', build: 'true' },
+    })}\n`,
+  );
+  return temporary;
+}
+
+test('init --json without selections reports candidates and derived choices', () => {
+  const temporary = isolatedRepository();
+  const isolated = deterministicPath();
+  try {
+    const result = invoke(['init', '--json'], temporary, {
+      PATH: isolated.path,
+    });
+    assert.equal(result.status, 1, result.stderr);
+    const value = parseJson(result.stdout);
+    assert.equal(value.ok, false);
+    assert.equal(value.status, 'needs_input');
+    const candidates = value.candidates as Record<string, unknown>;
+    assert.deepEqual(candidates.repositories, ['.']);
+    assert.equal(
+      (candidates.knowledge as readonly string[]).includes('docs'),
+      true,
+    );
+    const suggested = value.suggestedChoices as Record<string, unknown>;
+    assert.equal(suggested.schema, 'pappra/init-choices/1');
+    assert.deepEqual((suggested.knowledge as Record<string, unknown>).sources, [
+      'AGENTS.md',
+      'docs',
+    ]);
+    assert.deepEqual(suggested.validation, [
+      'package-script:.:lint',
+      'package-script:.:typecheck',
+      'package-script:.:test',
+    ]);
+    assert.deepEqual(suggested.repositories, [{ path: '.', access: 'write' }]);
+    assert.equal(existsSync(join(temporary, '.pappra')), false);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+    rmSync(isolated.directory, { recursive: true, force: true });
+  }
+});
+
+test('init --print-choices prints a round-trippable choices document', () => {
+  const temporary = isolatedRepository();
+  const isolated = deterministicPath({ claude: '2.1.292' });
+  try {
+    const printed = invoke(['init', '--print-choices'], temporary, {
+      PATH: isolated.path,
+    });
+    assert.equal(printed.status, 0, printed.stderr);
+    const choices = parseJson(printed.stdout);
+    assert.equal(choices.schema, 'pappra/init-choices/1');
+    assert.deepEqual(choices.hosts, ['claude']);
+    assert.equal(existsSync(join(temporary, '.pappra')), false);
+    const choicesPath = join(temporary, 'choices.json');
+    writeFileSync(choicesPath, printed.stdout);
+
+    const applied = invoke(
+      ['init', '--config', choicesPath, '--apply', '--json'],
+      temporary,
+      { PATH: isolated.path },
+    );
+    assert.equal(applied.status, 1, applied.stderr);
+    const appliedValue = parseJson(applied.stdout);
+    assert.equal(
+      (appliedValue.apply as Record<string, unknown>).status,
+      'external-actions-pending',
+    );
+
+    const wrapped = invoke(['init', '--print-choices', '--json'], temporary, {
+      PATH: isolated.path,
+    });
+    assert.equal(wrapped.status, 0, wrapped.stderr);
+    const wrapper = parseJson(wrapped.stdout);
+    assert.equal(wrapper.mode, 'choices');
+    assert.equal(wrapper.ok, true);
+    assert.equal(Array.isArray(wrapper.rules), true);
+    assert.deepEqual((wrapper.candidates as Record<string, unknown>).hosts, [
+      'claude',
+    ]);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+    rmSync(isolated.directory, { recursive: true, force: true });
+  }
+});
+
+test('init --yes applies derived selections without a TTY', () => {
+  const temporary = isolatedRepository();
+  const isolated = deterministicPath();
+  try {
+    const applied = invoke(['init', '--yes', '--apply', '--json'], temporary, {
+      PATH: isolated.path,
+    });
+    assert.equal(applied.status, 1, applied.stderr);
+    const value = parseJson(applied.stdout);
+    assert.equal(value.ok, true);
+    const workspace = JSON.parse(
+      readFileSync(join(temporary, '.pappra', 'workspace.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    const repositories = workspace.repositories as readonly Record<
+      string,
+      unknown
+    >[];
+    assert.equal(repositories.length, 1);
+    assert.equal(repositories[0]?.path, '.');
+    assert.equal(repositories[0]?.access, 'write');
+    assert.deepEqual((workspace.knowledge as Record<string, unknown>).sources, [
+      'AGENTS.md',
+      'docs',
+    ]);
+    assert.deepEqual(workspace.code, {
+      graph: 'none',
+      symbols: 'auto',
+      prepare: 'on-demand',
+    });
+    assert.equal((workspace.validation as readonly unknown[]).length, 3);
+    const machine = JSON.parse(
+      readFileSync(join(temporary, '.pappra', 'local', 'machine.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.deepEqual(machine.selectedHosts, []);
+
+    const repeated = invoke(['init', '--yes', '--apply', '--json'], temporary, {
+      PATH: isolated.path,
+    });
+    assert.equal(repeated.status, 1, repeated.stderr);
+    const repeatedValue = parseJson(repeated.stdout);
+    assert.equal(repeatedValue.ok, true);
+    assert.equal(
+      (repeatedValue.apply as Record<string, unknown>).status,
+      'external-actions-pending',
+    );
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+    rmSync(isolated.directory, { recursive: true, force: true });
+  }
+});
+
+test('init rejects conflicting non-interactive selections', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-conflict-'));
+  try {
+    const both = invoke(
+      ['init', '--yes', '--config', 'choices.json', '--json'],
+      temporary,
+    );
+    assert.equal(both.status, 2, both.stderr);
+    assert.equal(parseJson(both.stdout).status, 'invalid');
+
+    const printApply = invoke(
+      ['init', '--print-choices', '--apply', '--json'],
+      temporary,
+    );
+    assert.equal(printApply.status, 2, printApply.stderr);
+    assert.equal(parseJson(printApply.stdout).status, 'invalid');
+
+    const otherCommand = invoke(['doctor', '--yes', '--json'], temporary);
+    assert.equal(otherCommand.status, 2, otherCommand.stderr);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }

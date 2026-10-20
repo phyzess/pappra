@@ -14,7 +14,19 @@ npx @phyzess/pappra@beta doctor --json
 ```
 
 `examples/minimal-choices.json` in this repository is the selection file used above.
-`init --json` without `--config` still fails closed; the interactive wizard requires a TTY.
+For derived selections without a file:
+
+```sh
+npx @phyzess/pappra@beta init --print-choices        # print the derived document, write nothing
+npx @phyzess/pappra@beta init --yes --apply --json   # derive and apply without prompting
+```
+
+`--yes` and `--print-choices` never prompt, so they work in CI. `init --json` without
+selections still exits nonzero, but it returns the discovery candidates and the suggested
+`pappra/init-choices/1` document; only a TTY without selections opens the wizard.
+
+Exit codes: `0` converged, `1` applied with a pending manual step (for example the runtime
+action), `2` invalid input, `3` unavailable environment.
 
 ## Development checkout
 

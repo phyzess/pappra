@@ -40,7 +40,10 @@ function evidence(path: string, observedAt: string): EvidenceRef {
   };
 }
 
-function executableOnPath(command: string, pathEnv: string): string | null {
+export function executableOnPath(
+  command: string,
+  pathEnv: string,
+): string | null {
   for (const directory of pathEnv.split(delimiter)) {
     if (directory === '') continue;
     const candidate = join(directory, command);

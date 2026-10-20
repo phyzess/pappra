@@ -27,7 +27,7 @@ npx @phyzess/pappra@beta doctor --json
 
 `examples/minimal-choices.json` is complete for a host-free, no-graph, single-directory workspace. The example intentionally has no repositories or optional hosts.
 
-`init --json` without `--config` fails closed because JSON mode does not open the interactive wizard; run `npx @phyzess/pappra@beta init` without `--json` in a TTY if you want to enter selections interactively. `--config` and `--json` never prompt.
+For a non-interactive derived setup, `npx @phyzess/pappra@beta init --yes --apply --json` derives repositories, knowledge sources, code engine, validation commands, excludes and hosts from discovery. `--print-choices` prints that `pappra/init-choices/1` document and writes nothing, and `init --json` without selections returns the discovery candidates plus the suggested document. JSON mode never prompts; only a TTY without selections opens the wizard.
 
 Development from a checkout works the same way: `pnpm install --frozen-lockfile`, `pnpm build`, then invoke `dist/cli/main.js` by absolute path from the target workspace.
 

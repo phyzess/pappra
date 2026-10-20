@@ -10,6 +10,7 @@ import {
 import type { DiagnosticCode } from '../schemas/errors.js';
 import { diagnosticCodes } from '../schemas/errors.js';
 import {
+  INIT_CHOICES_SCHEMA,
   initPlanSchema,
   parseInitChoices,
   type InitChoices,
@@ -33,6 +34,9 @@ import {
   type WorkspaceValidation,
 } from '../schemas/workspace.js';
 import { getPackageInfo } from '../package-info.js';
+import { spawnSync } from 'node:child_process';
+import { executableOnPath } from '../hosts/detect.js';
+import { HOST_SUPPORT } from '../hosts/integration/support.js';
 import { observePath, resolveRealpath, sha256Digest } from '../infra/fs.js';
 import type {
   MachineConfigInspection,
@@ -73,6 +77,8 @@ export interface InitFailure {
   readonly message: string;
   readonly diagnostics: readonly Diagnostic[];
   readonly nextAction: string | null;
+  /** Machine-readable payload for callers that cannot prompt. */
+  readonly details?: Readonly<Record<string, unknown>>;
 }
 
 export interface InitRootResolution {
@@ -524,6 +530,215 @@ export function listKnowledgeCandidates(
   return [...candidates.values()].sort((left, right) =>
     left.path.localeCompare(right.path),
   );
+}
+
+export interface InitChoiceRule {
+  readonly field: string;
+  readonly value: string;
+  readonly reason: string;
+}
+
+export interface InitChoiceCandidates {
+  readonly repositories: readonly string[];
+  readonly knowledge: readonly string[];
+  readonly validation: readonly string[];
+  readonly hosts: readonly string[];
+}
+
+export interface DerivedInitChoices {
+  readonly choices: InitChoices;
+  readonly rules: readonly InitChoiceRule[];
+  readonly candidates: InitChoiceCandidates;
+}
+
+const derivedExcludes = [
+  'node_modules',
+  'dist',
+  'coverage',
+  'tmp',
+  'test-results',
+] as const;
+const derivedValidationScripts = ['lint', 'typecheck', 'test'] as const;
+
+function detectedHostVersion(command: string, pathEnv: string): string | null {
+  const executable = executableOnPath(command, pathEnv);
+  if (executable === null) return null;
+  const probe = spawnSync(executable, ['--version'], {
+    encoding: 'utf8',
+    shell: false,
+    timeout: 3_000,
+    maxBuffer: 256 * 1024,
+  });
+  if (probe.error !== undefined || probe.status !== 0) return null;
+  const output = `${probe.stdout ?? ''}\n${probe.stderr ?? ''}`;
+  const match = /(\d+\.\d+\.\d+)/.exec(output);
+  return match?.[1] ?? null;
+}
+
+/**
+ * Derives deterministic init selections from discovery alone. Every value is
+ * reported with the rule that produced it so a caller can audit the choice
+ * before applying it; nothing here writes, installs or prompts.
+ */
+export async function deriveInitChoices(
+  discovery: WorkspaceDiscovery,
+  options: {
+    readonly pathEnv?: string;
+  } = {},
+): Promise<DerivedInitChoices> {
+  const pathEnv = options.pathEnv ?? process.env['PATH'] ?? '';
+  const rules: InitChoiceRule[] = [];
+
+  const repositories = discovery.repositories.map((repository) => {
+    const path = repositoryKey(repository);
+    const access = samePath(repository.root, discovery.root)
+      ? ('write' as const)
+      : ('read' as const);
+    rules.push({
+      field: 'repositories',
+      value: path,
+      reason:
+        access === 'write'
+          ? 'workspace-root checkout is selected for write access'
+          : 'discovered checkout outside the workspace root is read-only',
+    });
+    return { path, access };
+  });
+
+  const knowledgeCandidates = listKnowledgeCandidates(discovery);
+  const rootRuleFiles = ['AGENTS.md', 'CLAUDE.md'];
+  const knowledgeSources: string[] = [];
+  for (const name of rootRuleFiles) {
+    const candidate = knowledgeCandidates.find(
+      (entry) => entry.path.toLowerCase() === name.toLowerCase(),
+    );
+    if (candidate === undefined) continue;
+    knowledgeSources.push(candidate.path);
+    rules.push({
+      field: 'knowledge.sources',
+      value: candidate.path,
+      reason: 'workspace-root rule file reported by discovery',
+    });
+  }
+  const docs = knowledgeCandidates.find((entry) => entry.path === 'docs');
+  if (docs !== undefined) {
+    knowledgeSources.push(docs.path);
+    rules.push({
+      field: 'knowledge.sources',
+      value: docs.path,
+      reason: 'documentation directory reported by discovery',
+    });
+  }
+
+  const codegraphDetected =
+    executableOnPath('codegraph', pathEnv) !== null &&
+    (
+      await Promise.all(
+        discovery.repositories.map(async (repository) =>
+          observePath(join(repository.root, '.codegraph')),
+        ),
+      )
+    ).some((observation) => observation.kind !== 'missing');
+  const graph = codegraphDetected ? ('codegraph' as const) : ('none' as const);
+  rules.push({
+    field: 'code.graph',
+    value: graph,
+    reason: codegraphDetected
+      ? 'codegraph executable and .codegraph index were both observed'
+      : 'no codegraph executable plus .codegraph index pair was observed',
+  });
+  rules.push({
+    field: 'code.symbols',
+    value: 'auto',
+    reason: 'symbol providers are detected passively at use time',
+  });
+  rules.push({
+    field: 'code.prepare',
+    value: 'on-demand',
+    reason: 'index preparation stays an explicit, bounded action',
+  });
+
+  const validation: string[] = [];
+  for (const script of derivedValidationScripts) {
+    const candidate = discovery.validationCandidates.find(
+      (entry) =>
+        entry.id.endsWith(`:${script}`) && !validation.includes(entry.id),
+    );
+    if (candidate === undefined) continue;
+    validation.push(candidate.id);
+    rules.push({
+      field: 'validation',
+      value: candidate.id,
+      reason: `package script "${script}" reported by discovery`,
+    });
+  }
+
+  rules.push({
+    field: 'excludes',
+    value: derivedExcludes.join(', '),
+    reason:
+      'built-in defaults keep generated and dependency trees out of scope',
+  });
+
+  const hosts: InitChoices['hosts'] = [];
+  for (const host of ['claude', 'codex', 'pi'] as const) {
+    const command = host;
+    const version = detectedHostVersion(command, pathEnv);
+    if (version === null || version !== HOST_SUPPORT[host].version) {
+      rules.push({
+        field: 'hosts',
+        value: host,
+        reason:
+          version === null
+            ? 'host executable was not observed on PATH'
+            : `observed version ${version} is outside the pinned support matrix`,
+      });
+      continue;
+    }
+    hosts.push(host);
+    rules.push({
+      field: 'hosts',
+      value: host,
+      reason: `host executable reports the pinned version ${version}`,
+    });
+  }
+
+  const name = basename(discovery.root);
+  rules.push({
+    field: 'name',
+    value: name,
+    reason: 'workspace name derived from the workspace root directory',
+  });
+
+  const choices: InitChoices = {
+    schema: INIT_CHOICES_SCHEMA,
+    name,
+    repositories,
+    knowledge: {
+      sources: knowledgeSources,
+      newDocuments: '.pappra/knowledge',
+      taskVisibility: 'private',
+    },
+    code: { graph, symbols: 'auto', prepare: 'on-demand' },
+    validation,
+    excludes: [...derivedExcludes],
+    hosts,
+  };
+
+  return {
+    choices,
+    rules,
+    candidates: {
+      repositories: listRepositoryCandidates(discovery).map(
+        (candidate) => candidate.key,
+      ),
+      knowledge: knowledgeCandidates.map((candidate) => candidate.path),
+      validation: discovery.validationCandidates.map(
+        (candidate) => candidate.id,
+      ),
+      hosts,
+    },
+  };
 }
 
 interface SelectedRepository {
