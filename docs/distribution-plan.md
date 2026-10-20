@@ -239,8 +239,12 @@ npx @phyzess/pappra@<beta> init --yes --apply --json             # one command, 
 M2 code status (2026-10-20): landed in the tree — package renamed to `@phyzess/pappra`
 with `publishConfig.access=public`, `prepare`/`prepack` are pnpm-free builds, the
 repo-root `skills/pappra/` mirror has a drift test, and `publish.yml` /
-`bootstrap-publish.yml` exist. Remaining M2 work is account-side: granular-token
-bootstrap publish, then the Trusted Publisher record.
+`bootstrap-publish.yml`.
+
+M2 outcome (2026-10-20): `@phyzess/pappra@0.1.0-beta.1` was published once with a
+granular token to create the package; the Trusted Publisher record was then attached and
+`v0.1.0-beta.2` published through OIDC with a signed provenance statement. The bootstrap
+workflow and the `NPM_TOKEN` secret are retired; `publish.yml` is the only release path.
 Suggested order: **M1 → M2 → M3 → M4 → M5.** M1 gives immediate relief without touching
 distribution; M2 unblocks `npx`; M3+M4 remove the structural fragility.
 
