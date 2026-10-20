@@ -14,7 +14,8 @@
 
 The following are optional and must be selected explicitly:
 
-- Pi, Codex and Claude Code host integrations and their native CLIs.
+- Pi, Codex and Claude Code host integrations and their native CLIs. Observed plugin-hook
+  behavior per host and version is recorded in `docs/host-plugin-validation.md`.
 - A code-graph engine for graph preparation/query. Without it, use bounded text
   or structure queries and expect partial/fallback coverage.
 - A collaboration controller. `pappra collab run` requires

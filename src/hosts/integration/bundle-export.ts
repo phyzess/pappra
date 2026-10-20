@@ -102,16 +102,19 @@ export async function exportHostPluginBundle(options: {
   for (const [path, bytes] of payload.contents) {
     // Plugin manifests point at hooks/hooks.json directly; the rendered
     // templates are only an intermediate artifact.
-    if (options.host !== 'pi' && path.startsWith('templates/')) continue;
+    if (path.startsWith('templates/')) continue;
     await writeEntry(`${pluginPrefix}${path}`, bytes);
   }
   const expression = pluginHookExpression(options.host);
   if (options.host === 'pi') {
     const entry = payload.contents.get('templates/pi/entry.ts');
-    if (entry === undefined) {
+    const runtime = payload.contents.get('templates/pi/runtime.mjs');
+    if (entry === undefined || runtime === undefined) {
       throw new Error('Pi plugin bundle is missing its extension entry.');
     }
+    // The generated entry imports ./runtime.mjs, so both files share one directory.
     await writeEntry(`${pluginPrefix}extensions/pappra/index.ts`, entry);
+    await writeEntry(`${pluginPrefix}extensions/pappra/runtime.mjs`, runtime);
   } else {
     const patch = renderHookConfigPatch(options.host, expression);
     await writeEntry(

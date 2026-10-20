@@ -248,14 +248,14 @@ Dogfood gaps and their follow-up (2026-10-20):
 `pappra code prepare --repo <id> --apply` when a code engine is selected.
 (b) resolved — `pappra docs scan [--apply]` previews and registers documents discovered
 under the configured knowledge sources, so `docs list` reflects the workspace.
-(c) explicit, not silently missing, and now testable — `host install --mode plugin` fails
-closed with a diagnostic that points at `pappra host bundle`, while
-`host bundle --marketplace` exports a local marketplace layout that Claude Code's validator
-accepts and Codex installs (`codex plugin add pappra@pappra-local`, checked in an isolated
-CODEHOME with the real bundle). Pi still receives a plain package directory. Flipping the
-default now needs one thing only: a real session per host that leaves a
-`.pappra/local/host-events/<host>/*.json` record, which is the evidence `host verify` and the
-support matrix will cite.
+(c) explicit, evidence-based, not silently missing — `host bundle --marketplace` exports a
+marketplace that Claude Code's validator accepts and Codex installs. Real sessions were then
+run per host (see `docs/host-plugin-validation.md`): Pi fires the packaged extension and
+wrote a `session_start` record; Codex 0.163.0 does not load plugin hooks (a control hook in
+an isolated CODEX_HOME fired while the bundled hook never did), so it stays on
+project-settings; Claude Code could not run because the local OAuth session had expired, so
+its plugin callability remains unverified. `host install --mode plugin` fails closed with
+the per-host state and evidence, and `HOST_PLUGIN_HOOKS` records it in code.
 (d) resolved — init apply supports journalled `replace-managed` writes (expected
 before-digest guard, backup under `.pappra/local/backups`, manifest digest update, restore on
 failure) and `init --yes --reconfigure --apply` rebuilds an existing valid `workspace.json`

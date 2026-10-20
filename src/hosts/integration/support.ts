@@ -52,3 +52,27 @@ export function surfaceFor(
 ): (typeof HOST_SUPPORT)[HostName]['surface'] {
   return HOST_SUPPORT[host].surface;
 }
+
+/**
+ * Observed plugin-hook support. `verified` means a real host session produced a
+ * `.pappra/local/host-events/<host>` record; `unsupported` means a control hook
+ * fired while the bundled plugin hook did not; `unverified` means no
+ * authenticated session was available. See docs/host-plugin-validation.md.
+ */
+export const HOST_PLUGIN_HOOKS = {
+  pi: {
+    state: 'verified',
+    evidence:
+      'Pi 1.3.0 fires the packaged extension: `pi install <dir> -l -a` plus `pi -p -a` wrote a session_start event.',
+  },
+  codex: {
+    state: 'unsupported',
+    evidence:
+      'Codex 0.163.0 does not load plugin hooks: a control hook in CODEX_HOME fired during `codex exec --dangerously-bypass-hook-trust` while the bundled plugin hook never ran, including with a .codex-plugin/plugin.json copy.',
+  },
+  claude: {
+    state: 'unverified',
+    evidence:
+      'Claude Code 2.1.292 validation passes, but no authenticated session was available to run a lifecycle event.',
+  },
+} as const;

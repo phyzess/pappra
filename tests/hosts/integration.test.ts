@@ -354,7 +354,14 @@ test('exports host-native plugin bundles without registering them', async () => 
       packageVersion: '9.9.9',
     });
     assert(pi.files.includes('extensions/pappra/index.ts'));
-    assert(pi.files.includes('templates/pi/runtime.mjs'));
+    assert(pi.files.includes('extensions/pappra/runtime.mjs'));
+    assert.equal(
+      readFileSync(
+        join(out, 'pi', 'extensions', 'pappra', 'index.ts'),
+        'utf8',
+      ).includes('./runtime.mjs'),
+      true,
+    );
     const manifest = JSON.parse(
       readFileSync(join(out, 'pi', 'package.json'), 'utf8'),
     ) as Record<string, unknown>;
@@ -573,32 +580,39 @@ test('generated hook entry and Pi adapter deliver bounded advisory context', asy
   }
 });
 
-test('plugin install mode fails closed and points at the bundle export', async () => {
+test('plugin install mode fails closed with per-host evidence', async () => {
   const root = workspace();
   const hostRoot = makeTempDir('host-plugin-mode');
   try {
-    const service = new HostIntegrationService({
-      root,
-      homeDir: hostRoot,
-      pathEnv: '',
-      runtimeEntry: runtimeEntry(),
-      hostVersion: '2.1.292',
-      observedAt: '2026-10-19T00:00:00.000Z',
-    });
-    const result = await service.install('claude', {
-      hostRoot,
-      apply: true,
-      mode: 'plugin',
-    });
-    assert.equal(result.status, 'unsupported');
-    assert.equal(result.appliedFiles.length, 0);
-    assert.equal(existsSync(join(hostRoot, 'settings.json')), false);
-    assert.equal(
-      result.diagnostics.some((entry) =>
-        JSON.stringify(entry).includes('host bundle'),
-      ),
-      true,
-    );
+    for (const [host, version, state] of [
+      ['pi', '1.3.0', 'verified'],
+      ['codex', '0.163.0', 'unsupported'],
+      ['claude', '2.1.292', 'unverified'],
+    ] as const) {
+      const service = new HostIntegrationService({
+        root,
+        homeDir: hostRoot,
+        pathEnv: '',
+        runtimeEntry: runtimeEntry(),
+        hostVersion: version,
+        observedAt: '2026-10-19T00:00:00.000Z',
+      });
+      const result = await service.install(host, {
+        hostRoot,
+        apply: true,
+        mode: 'plugin',
+      });
+      assert.equal(result.status, 'unsupported', `${host} plugin mode`);
+      assert.equal(result.appliedFiles.length, 0);
+      assert.equal(existsSync(join(hostRoot, 'settings.json')), false);
+      assert.equal(
+        result.diagnostics.some((entry) =>
+          JSON.stringify(entry).includes(state),
+        ),
+        true,
+        `${host} reports ${state}`,
+      );
+    }
   } finally {
     cleanup(root);
     cleanup(hostRoot);
