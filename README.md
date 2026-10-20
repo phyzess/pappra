@@ -66,7 +66,7 @@ Host names and external protocol identifiers describe supported integration surf
 pnpm check
 ```
 
-The check runs the source policy, type checks, formatting, deterministic tests and a local package smoke test. The package smoke test uses an offline local tarball and an isolated fixture home/state; it does not install a model or contact a provider.
+The check runs the source policy, type checks, formatting, deterministic tests and a local package smoke test. The package smoke test prefers an offline local tarball (falling back to registry resolution when the runner has no offline metadata) and an isolated fixture home/state; it does not install a model or contact a model provider.
 
 ## Status and limits
 

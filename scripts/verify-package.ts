@@ -92,25 +92,39 @@ try {
     }),
   );
   const pnpm = pnpmCommand();
-  const installedResult = spawnSync(
-    pnpm.executable,
-    [
-      ...pnpm.args,
-      'add',
-      '--offline',
-      '--ignore-scripts',
-      '--config.package-manager-strict=false',
-      join(temporary, entry.filename),
-    ],
-    {
-      cwd: consumer,
-      encoding: 'utf8',
-      shell: false,
-      timeout: 120_000,
-      maxBuffer: 4 * 1024 * 1024,
-    },
-  );
+  const tarballPath = join(temporary, entry.filename);
+  const installTarball = (offline: boolean) =>
+    spawnSync(
+      pnpm.executable,
+      [
+        ...pnpm.args,
+        'add',
+        ...(offline ? ['--offline'] : []),
+        '--ignore-scripts',
+        '--config.package-manager-strict=false',
+        tarballPath,
+      ],
+      {
+        cwd: consumer,
+        encoding: 'utf8',
+        shell: false,
+        timeout: 120_000,
+        maxBuffer: 4 * 1024 * 1024,
+      },
+    );
+  let installedResult = installTarball(true);
   if (installedResult.error) throw installedResult.error;
+  if (installedResult.status !== 0) {
+    // The offline metadata mirror is warmed per runner and per operating system,
+    // so a cold CI runner can fail resolution even though the tarball itself is
+    // complete. Retry once against the registry instead of reporting a false
+    // packaging failure.
+    console.log(
+      'Offline tarball install lacked registry metadata; retrying with resolution.',
+    );
+    installedResult = installTarball(false);
+    if (installedResult.error) throw installedResult.error;
+  }
   assert.equal(
     installedResult.status,
     0,
