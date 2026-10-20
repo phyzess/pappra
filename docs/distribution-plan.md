@@ -372,4 +372,5 @@ Known limits that remain, and are documented rather than claimed away: Claude
 `PostCompact` and Pi compact/checkpoint events are not exercised from non-interactive
 sessions; Codex plugin hooks are unsupported at 0.163.0; host plugin registration is always
 a host-side action. This plan is historical; the shipped behaviour is what the README,
-quickstart, support and validation documents describe.
+quickstart, support and validation documents describe. Next phase:
+`docs/plan-agent-native-onboarding.md` (agent-native tools, onboarding, version drift).
