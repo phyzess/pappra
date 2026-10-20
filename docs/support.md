@@ -19,7 +19,8 @@ The following are optional and must be selected explicitly:
 - A code-graph engine for graph preparation/query. Without it, use bounded text
   or structure queries and expect partial/fallback coverage.
 - A collaboration controller. `pappra collab run` requires
-  `--controller <fixture|pi-rpc>`; no controller is implicit.
+  `--controller <fixture|pi-rpc>`; no controller is implicit. The `pi-rpc` path is verified
+  against Pi 1.3.0 (see `docs/pi-rpc.md`).
 - Local runtime tarballs for `pappra install --runtime-tarball`; installation is
   local and explicit.
 

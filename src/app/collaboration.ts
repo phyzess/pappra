@@ -759,16 +759,6 @@ function currentNativeResult(
   }
 }
 
-function regularFileSize(file: string | null): number | null {
-  if (file === null || !path.isAbsolute(file)) return null;
-  try {
-    const observed = fs.lstatSync(file);
-    return observed.isFile() ? observed.size : null;
-  } catch {
-    return null;
-  }
-}
-
 function writeNewFile(file: string, bytes: string): void {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   fs.writeFileSync(file, bytes, { flag: 'wx', mode: 0o600 });
@@ -2004,10 +1994,14 @@ export class PiRpcController implements CollaborationController {
         possible_start: stage === 'identity',
       };
     }
-    const nativeSessionFile = started.session.sessionFile();
-    const nativeSessionBaseline = regularFileSize(nativeSessionFile);
+    let nativeSessionFile: string | null = null;
+    let nativeSessionBaseline = 0;
     try {
       await started.session.prompt();
+      // The handle sampled the baseline before it sent the prompt; read it afterwards so
+      // both values describe the launch that just completed.
+      nativeSessionFile = started.session.sessionFile();
+      nativeSessionBaseline = started.session.promptBaseline();
     } catch (error) {
       await started.session.finish().catch(() => undefined);
       return {

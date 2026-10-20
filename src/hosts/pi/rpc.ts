@@ -861,6 +861,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
   let reportedSessionFile: string | null = null;
   let boundSessionFile: string | null = null;
   let promptSent = false;
+  let promptBaseline = 0;
   let lastPromptOrdinal = 0;
   let operationError: unknown = null;
   let finishPromise: Promise<PiFinish> | null = null;
@@ -1057,6 +1058,8 @@ export async function startOwnedPiRpc(options: PiOptions) {
     pid: child.pid ?? null,
     expectedSessionId: admission.expected_identity,
     sessionFile: () => boundSessionFile,
+    /** Byte offset sampled immediately before the prompt was sent. */
+    promptBaseline: () => promptBaseline,
 
     /** Read-only native query. Repeatable; always recorded through the protocol. */
     async query() {
@@ -1145,7 +1148,22 @@ export async function startOwnedPiRpc(options: PiOptions) {
           );
         assertNamespaceGuard(opts);
         assertCurrentAuthority({ requireResources: true });
-        await assertIdentity({ requireBinding: true });
+        // Pi creates the session file lazily, on the first persisted message. The
+        // pre-prompt check therefore verifies the reported session id without requiring
+        // the header; the post-prompt check requires the bound header before the run is
+        // accepted.
+        await assertIdentity({ requireBinding: false });
+        // The controller publishes only records written after this baseline, so it must
+        // be sampled before the prompt creates the first message.
+        const baselineFile = reportedSessionFile;
+        promptBaseline = (() => {
+          if (baselineFile === null) return 0;
+          try {
+            return fs.statSync(baselineFile).size;
+          } catch {
+            return 0;
+          }
+        })();
         const ordinalBefore = rpc.recordCount();
         const response = await request('prompt', { message: opts.promptText });
         const disposition = response.data?.disposition;
@@ -1158,6 +1176,23 @@ export async function startOwnedPiRpc(options: PiOptions) {
             'needs_input',
             `disposition ${disposition}`,
           );
+        }
+        // The header row is flushed just after the prompt is accepted, so bind with a
+        // short bounded retry instead of racing the writer.
+        const bindDeadline = Date.now() + 2_000;
+        for (;;) {
+          try {
+            await assertIdentity({ requireBinding: true });
+            break;
+          } catch (error) {
+            const retryable =
+              error instanceof PiRpcRefusal &&
+              (error.code === 'native_session_file_unavailable' ||
+                error.code === 'native_session_header_invalid') &&
+              Date.now() < bindDeadline;
+            if (!retryable) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
         }
         promptSent = true;
         lastPromptOrdinal = ordinalBefore;
