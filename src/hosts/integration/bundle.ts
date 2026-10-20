@@ -18,7 +18,9 @@ export interface HostBundlePayload {
 }
 
 function packageRoot(): string {
-  return dirname(fileURLToPath(import.meta.resolve('pappra/package.json')));
+  return dirname(
+    fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
+  );
 }
 
 async function listFiles(directory: string): Promise<string[]> {

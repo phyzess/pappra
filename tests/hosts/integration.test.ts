@@ -20,7 +20,7 @@ import {
 
 function runtimeEntry(): string {
   return join(
-    dirname(fileURLToPath(import.meta.resolve('pappra/package.json'))),
+    dirname(fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json'))),
     'dist',
     'hosts',
     'integration',

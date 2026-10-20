@@ -8,7 +8,9 @@ import test from 'node:test';
 import { fingerprintSkill } from '../../src/collab/fingerprint.js';
 import { cleanup, makeTempDir } from '../workspace/fixtures.js';
 
-const ROOT = dirname(fileURLToPath(import.meta.resolve('pappra/package.json')));
+const ROOT = dirname(
+  fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
+);
 const CLI = join(ROOT, 'dist/cli/main.js');
 const SKILL_PATH = join(ROOT, 'src/assets/integrations/skills/pappra');
 const SKILL_BUNDLE = fingerprintSkill(SKILL_PATH).bundle_digest;

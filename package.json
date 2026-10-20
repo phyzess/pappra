@@ -1,8 +1,10 @@
 {
-  "name": "pappra",
-  "version": "0.1.0-dev.0",
+  "name": "@phyzess/pappra",
+  "version": "0.1.0-beta.1",
   "description": "Portable workspace knowledge and continuity for coding agents.",
-  "private": true,
+  "publishConfig": {
+    "access": "public"
+  },
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -70,12 +72,13 @@
   "files": [
     "dist",
     "assets",
+    "skills",
     "README.md",
     "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "build:scripts": "tsc -p tsconfig.scripts.json",
-    "build": "pnpm build:scripts && node .build/scripts/scripts/clean-build.js && tsc -p tsconfig.build.json && node .build/scripts/scripts/build-assets.js",
+    "build": "tsc -p tsconfig.scripts.json && node .build/scripts/scripts/clean-build.js && tsc -p tsconfig.build.json && node .build/scripts/scripts/build-assets.js",
     "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
     "pretest": "pnpm build && tsc -p tsconfig.test.json",
     "test": "node .build/test/scripts/run-tests.js",
@@ -84,7 +87,8 @@
     "source:check": "pnpm build:scripts && node .build/scripts/scripts/check-source-policy.js",
     "package:check": "pnpm build && node .build/scripts/scripts/verify-package.js",
     "check": "pnpm source:check && pnpm typecheck && pnpm format:check && pnpm test && pnpm package:check",
-    "prepack": "pnpm build"
+    "prepare": "npm run build",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@types/node": "24.19.1",

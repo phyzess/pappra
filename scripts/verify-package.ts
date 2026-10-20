@@ -56,9 +56,11 @@ try {
   assert(
     files.includes('assets/integrations/skills/pappra/references/lifecycle.md'),
   );
+  assert(files.includes('skills/pappra/SKILL.md'));
+  assert(files.includes('skills/pappra/references/operations.md'));
   assert(
     files.every((file) =>
-      /^(?:dist\/|assets\/|package\.json$|README\.md$|LICENSE$|THIRD_PARTY_NOTICES\.md$)/.test(
+      /^(?:dist\/|assets\/|skills\/|package\.json$|README\.md$|LICENSE$|THIRD_PARTY_NOTICES\.md$)/.test(
         file,
       ),
     ),
@@ -114,7 +116,7 @@ try {
     0,
     `pnpm add failed:\n${installedResult.stdout}\n${installedResult.stderr}`,
   );
-  const installed = join(consumer, 'node_modules/pappra');
+  const installed = join(consumer, 'node_modules/@phyzess/pappra');
   const metadata: unknown = JSON.parse(
     readFileSync(join(installed, 'package.json'), 'utf8'),
   );
@@ -265,7 +267,7 @@ try {
     cleanupScript,
     [
       "import {readFileSync, writeFileSync} from 'node:fs';",
-      "const install = await import('pappra/install');",
+      "const install = await import('@phyzess/pappra/install');",
       'const root = process.argv[2];',
       'const mode = process.argv[3];',
       "if (mode === 'edited') {",

@@ -8,7 +8,10 @@ export interface PackageInfo {
 
 export function getPackageInfo(): PackageInfo {
   const value: unknown = JSON.parse(
-    readFileSync(new URL(import.meta.resolve('pappra/package.json')), 'utf8'),
+    readFileSync(
+      new URL(import.meta.resolve('@phyzess/pappra/package.json')),
+      'utf8',
+    ),
   );
   if (
     typeof value !== 'object' ||

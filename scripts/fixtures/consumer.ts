@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-const packageName: string = 'pappra';
+const packageName: string = '@phyzess/pappra';
 const api: unknown = await import(packageName);
 assert(typeof api === 'object' && api !== null);
 assert('getPackageInfo' in api && typeof api.getPackageInfo === 'function');
@@ -12,7 +12,7 @@ assert('version' in info && info.version === process.argv[2]);
 
 const manifestUrl = new URL(
   './assets/manifest.json',
-  import.meta.resolve('pappra/package.json'),
+  import.meta.resolve('@phyzess/pappra/package.json'),
 );
 const manifest: unknown = JSON.parse(readFileSync(manifestUrl, 'utf8'));
 assert(typeof manifest === 'object' && manifest !== null);

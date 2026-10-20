@@ -78,7 +78,9 @@ function now(): string {
 }
 
 function packageRuntimeEntry(): string {
-  const packageJson = fileURLToPath(import.meta.resolve('pappra/package.json'));
+  const packageJson = fileURLToPath(
+    import.meta.resolve('@phyzess/pappra/package.json'),
+  );
   return join(
     dirname(packageJson),
     'dist',

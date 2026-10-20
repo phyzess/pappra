@@ -18,7 +18,7 @@ import {
 } from '../workspace/fixtures.js';
 
 const packageRoot = dirname(
-  fileURLToPath(import.meta.resolve('pappra/package.json')),
+  fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
 );
 const cli = join(packageRoot, 'dist/cli/main.js');
 

@@ -16,7 +16,9 @@ import { getPackageInfo } from '../../src/index.js';
 import { baseInitChoices } from './fixtures.js';
 import { createRuntimeTarball } from '../install/fixtures.js';
 
-const root = dirname(fileURLToPath(import.meta.resolve('pappra/package.json')));
+const root = dirname(
+  fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
+);
 const cli = join(root, 'dist/cli/main.js');
 
 function invoke(
@@ -100,7 +102,7 @@ test('init --config plans without writes and --apply applies only config files',
     const machinePath = join(temporary, '.pappra', 'local', 'machine.json');
     const machine = JSON.parse(readFileSync(machinePath, 'utf8'));
     machine.runtime = {
-      version: '0.1.0-dev.0',
+      version: getPackageInfo().version,
       executable: process.execPath,
       verifiedAt: '2026-10-17T00:00:00.000Z',
     };
@@ -165,7 +167,10 @@ test('installs a verified local runtime and records it in machine.json', () => {
       `${JSON.stringify({ name: 'business-project', private: true }, null, 2)}\n`,
     );
     const businessBefore = readFileSync(businessPackage, 'utf8');
-    const tarball = createRuntimeTarball(temporary, { version });
+    const tarball = createRuntimeTarball(temporary, {
+      version,
+      packageName: getPackageInfo().name,
+    });
     const choices = join(temporary, 'choices.json');
     writeChoices(choices);
     const result = invoke(

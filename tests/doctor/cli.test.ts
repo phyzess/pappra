@@ -22,7 +22,9 @@ import {
   writeWorkspaceConfig,
 } from '../workspace/fixtures.js';
 
-const root = dirname(fileURLToPath(import.meta.resolve('pappra/package.json')));
+const root = dirname(
+  fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
+);
 const cli = join(root, 'dist/cli/main.js');
 
 function invoke(

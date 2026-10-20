@@ -14,6 +14,7 @@ export function cleanup(path: string): void {
 
 export interface RuntimeTarballOptions {
   readonly version: string;
+  readonly packageName?: string;
   readonly markerPath?: string;
   readonly executionMarkerPath?: string;
 }
@@ -23,6 +24,7 @@ export function createRuntimeTarball(
   options: RuntimeTarballOptions,
 ): string {
   const packageDir = join(root, 'runtime-package');
+  const packageName = options.packageName ?? 'pappra';
   mkdirSync(join(packageDir, 'dist', 'cli'), { recursive: true });
   const installScript =
     options.markerPath === undefined
@@ -32,7 +34,7 @@ export function createRuntimeTarball(
     join(packageDir, 'package.json'),
     `${JSON.stringify(
       {
-        name: 'pappra',
+        name: packageName,
         version: options.version,
         type: 'module',
         bin: { pappra: 'dist/cli/main.js' },
@@ -56,7 +58,7 @@ ${
     : `writeFileSync(${JSON.stringify(options.executionMarkerPath)}, 'executed');`
 }
 if (process.argv.includes('--version')) {
-  process.stdout.write(JSON.stringify({ name: 'pappra', version }) + '\\n');
+  process.stdout.write(JSON.stringify({ name: ${JSON.stringify(packageName)}, version }) + '\\n');
 } else {
   process.stdout.write(version + '\\n');
 }
