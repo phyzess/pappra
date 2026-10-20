@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
+  cp,
   mkdir,
   mkdtemp,
   readFile,
@@ -329,6 +330,27 @@ async function packSelfPackage(
     );
   }
   const directory = await mkdtemp(join(tmpdir(), 'pappra-self-'));
+  // Pack a staging copy: npm refuses to pack reliably from inside a dependency
+  // tree (a known "Exit handler never called!" failure on Linux CI).
+  const staging = join(directory, 'package');
+  await mkdir(staging, { recursive: true });
+  for (const entry of [
+    'package.json',
+    'README.md',
+    'LICENSE',
+    'THIRD_PARTY_NOTICES.md',
+    'dist',
+    'assets',
+    'skills',
+  ]) {
+    const source = join(packageRoot, entry);
+    if ((await observePath(source)).kind === 'missing') continue;
+    await cp(source, join(staging, entry), {
+      recursive: true,
+      dereference: true,
+      force: true,
+    });
+  }
   const npm = npmCommand();
   const packed = await runCommand(
     npm.executable,
@@ -339,8 +361,9 @@ async function packSelfPackage(
       '--json',
       '--pack-destination',
       directory,
+      staging,
     ],
-    { cwd: packageRoot, timeoutMs: 120_000 },
+    { cwd: directory, timeoutMs: 120_000 },
   );
   if (packed.timedOut || packed.code !== 0) {
     throw new Error(
