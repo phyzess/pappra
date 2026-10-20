@@ -59,7 +59,10 @@ export async function loadHostBundle(
   packageVersion: string,
   options: {
     readonly assetsRoot?: string;
-    readonly runtimeEntry?: string;
+    /** Absolute path of the bundled, dependency-free hook file. */
+    readonly hookSource?: string;
+    /** Command-line path expression used inside the host hook configuration. */
+    readonly hookExpression?: string;
     readonly observedAt?: string;
   } = {},
 ): Promise<HostBundlePayload> {
@@ -85,10 +88,32 @@ export async function loadHostBundle(
       kind: source.endsWith('/SKILL.md') ? 'skill' : 'reference',
     });
   }
+  const hookSource =
+    options.hookSource ??
+    join(packageRoot(), 'dist/hosts/integration/pappra-hook.mjs');
+  const hookBytes = await readFile(hookSource);
+  contents.set('hooks/pappra-hook.mjs', hookBytes);
+  files.push({
+    path: 'hooks/pappra-hook.mjs',
+    digest: sha256Digest(hookBytes),
+    kind: 'hook',
+  });
+  if (host === 'pi') {
+    const runtimePath = join(
+      dirname(hookSource),
+      'pappra-extension-runtime.mjs',
+    );
+    const runtimeBytes = await readFile(runtimePath);
+    contents.set('templates/pi/runtime.mjs', runtimeBytes);
+    files.push({
+      path: 'templates/pi/runtime.mjs',
+      digest: sha256Digest(runtimeBytes),
+      kind: 'extension',
+    });
+  }
   const template = renderHostTemplate(
     host,
-    options.runtimeEntry ??
-      join(packageRoot(), 'dist/hosts/integration/hook-entry.js'),
+    options.hookExpression ?? hookSource,
   );
   contents.set(template.path, template.bytes);
   files.push({

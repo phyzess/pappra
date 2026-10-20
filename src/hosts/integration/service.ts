@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { link, mkdir, open, realpath, rename, rm } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Diagnostic } from '../../schemas/diagnostics.js';
 import { createDiagnostic } from '../../schemas/diagnostics.js';
@@ -66,6 +66,8 @@ export interface HostTargetOptions {
   readonly hostRoot?: string;
   readonly runtimeEntry?: string;
   readonly hostVersion?: string | null;
+  /** Rewrites a manifest previously pinned to a package checkout path. */
+  readonly migrate?: boolean;
 }
 
 export interface HostPlanBundle {
@@ -86,8 +88,38 @@ function packageRuntimeEntry(): string {
     'dist',
     'hosts',
     'integration',
-    'hook-entry.js',
+    'pappra-hook.mjs',
   );
+}
+
+interface HookTarget {
+  /** Absolute path of the hook file copied into the host root. */
+  readonly installedPath: string;
+  /** Path expression written into the host hook configuration. */
+  readonly expression: string;
+  /** Packaged hook file this target is copied from. */
+  readonly source: string;
+}
+
+/**
+ * Uses the host's project placeholder when the hook copy lives inside the
+ * workspace, so a moved checkout or an evicted npx cache cannot break the hook.
+ */
+function hookTarget(
+  host: HostName,
+  workspaceRoot: string,
+  hostRoot: string,
+  hookSource: string,
+): HookTarget {
+  const installedPath = join(hostRoot, 'hooks', 'pappra-hook.mjs');
+  const relativePath = relative(workspaceRoot, installedPath);
+  const insideWorkspace =
+    !relativePath.startsWith('..') && !isAbsolute(relativePath);
+  const expression =
+    host === 'claude' && insideWorkspace
+      ? `\${CLAUDE_PROJECT_DIR}/${relativePath.split(sep).join('/')}`
+      : installedPath;
+  return { installedPath, expression, source: hookSource };
 }
 
 function diagnostic(
@@ -353,7 +385,7 @@ function isExactManagedHook(
 function managedConfig(
   host: 'codex' | 'claude',
   existing: Buffer | null,
-  runtimeEntry: string,
+  hookExpression: string,
   path: string,
 ):
   | { readonly ok: true; readonly bytes: Buffer }
@@ -367,7 +399,7 @@ function managedConfig(
     if (!parsed.ok) return parsed;
     base = parsed.value;
   }
-  const patch = renderHookConfigPatch(host, runtimeEntry);
+  const patch = renderHookConfigPatch(host, hookExpression);
   const rawHooks = base['hooks'];
   if (
     rawHooks !== undefined &&
@@ -447,13 +479,14 @@ function validateManifestIdentity(
   host: HostName,
   hostRoot: string,
   configPath: string | null,
-  runtimeEntry: string,
+  hookExpression: string,
+  migrate: boolean,
 ): Diagnostic | null {
   if (
     manifest.host !== host ||
     resolve(manifest.hostRoot) !== hostRoot ||
     manifest.configPath !== configPath ||
-    resolve(manifest.runtimeEntry) !== runtimeEntry
+    (!migrate && manifest.runtimeEntry !== hookExpression)
   ) {
     return diagnostic(
       diagnosticCodes.host_install_conflict,
@@ -488,12 +521,12 @@ function validateManifestIdentity(
 function configHasExpectedHooks(
   host: 'codex' | 'claude',
   bytes: Buffer,
-  runtimeEntry: string,
+  hookExpression: string,
   path: string,
 ): boolean {
   const parsed = parseJsonObject(bytes, path);
   if (!parsed.ok) return false;
-  const patch = renderHookConfigPatch(host, runtimeEntry);
+  const patch = renderHookConfigPatch(host, hookExpression);
   const hooks = parsed.value['hooks'];
   if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks)) {
     return false;
@@ -533,7 +566,7 @@ function configHasExpectedHooks(
 function bundleManifestContent(
   bundle: HostBundle,
   hostRoot: string,
-  runtimeEntry: string,
+  hookExpression: string,
   configPath: string | null,
   files: readonly HostPlanFile[],
   observedAt: string,
@@ -547,7 +580,7 @@ function bundleManifestContent(
         bundleDigest: bundle.bundleDigest,
         installedAt: observedAt,
         hostRoot,
-        runtimeEntry,
+        runtimeEntry: hookExpression,
         configPath,
         files: files.map((file) => ({
           path: file.path,
@@ -570,9 +603,11 @@ function bundleManifestContent(
 
 async function hostPlanFiles(
   host: HostName,
+  workspaceRoot: string,
   hostRoot: string,
-  runtimeEntry: string,
+  hookSource: string,
   observedAt: string,
+  migrate = false,
 ): Promise<
   | {
       readonly ok: true;
@@ -587,10 +622,12 @@ async function hostPlanFiles(
       readonly conflict?: boolean;
     }
 > {
+  const target = hookTarget(host, workspaceRoot, hostRoot, hookSource);
   let payload;
   try {
     payload = await loadHostBundle(host, getPackageInfo().version, {
-      runtimeEntry,
+      hookSource,
+      hookExpression: target.expression,
       observedAt,
     });
   } catch (error) {
@@ -660,7 +697,8 @@ async function hostPlanFiles(
       host,
       hostRoot,
       hostConfigRelativePath(host),
-      runtimeEntry,
+      target.expression,
+      migrate,
     );
     if (identityError !== null) {
       return { ok: false, conflict: true, diagnostic: identityError };
@@ -768,7 +806,7 @@ async function hostPlanFiles(
     const merged = managedConfig(
       host === 'codex' ? 'codex' : 'claude',
       before,
-      runtimeEntry,
+      target.expression,
       configPath,
     );
     if (!merged.ok) {
@@ -811,7 +849,7 @@ async function hostPlanFiles(
   const manifest = bundleManifestContent(
     payload.bundle,
     hostRoot,
-    runtimeEntry,
+    target.expression,
     hostConfigRelativePath(host),
     files,
     installedAt,
@@ -837,7 +875,7 @@ function planFromFiles(
   host: HostName,
   workspaceRoot: string,
   hostRoot: string,
-  runtimeEntry: string,
+  hookExpression: string,
   bundleDigest: string,
   files: readonly HostPlanFile[],
 ): HostIntegrationPlan {
@@ -847,7 +885,7 @@ function planFromFiles(
     host,
     workspaceRoot,
     hostRoot,
-    runtimeEntry,
+    runtimeEntry: hookExpression,
     bundleDigest,
     files,
     reloadRequired: true,
@@ -1284,28 +1322,31 @@ export class HostIntegrationService {
     const hostRoot = resolve(
       options.hostRoot ?? join(this.#root, '.pappra', 'local', 'hosts', host),
     );
-    const runtimeEntry = resolve(options.runtimeEntry ?? this.#runtimeEntry);
+    const hookSource = resolve(options.runtimeEntry ?? this.#runtimeEntry);
     const version = options.hostVersion ?? this.#hostVersion;
     if (!isSupportedVersion(host, version)) {
       throw new Error(
         `Host ${host} version ${version ?? '(unknown)'} is outside the pinned support matrix.`,
       );
     }
-    if (!(await runtimeEntryReady(runtimeEntry))) {
-      throw new Error(`Fixed Pappra runtime entry is missing: ${runtimeEntry}`);
+    if (!(await runtimeEntryReady(hookSource))) {
+      throw new Error(`Bundled Pappra hook is missing: ${hookSource}`);
     }
+    const target = hookTarget(host, this.#root, hostRoot, hookSource);
     const built = await hostPlanFiles(
       host,
+      this.#root,
       hostRoot,
-      runtimeEntry,
+      hookSource,
       this.#observedAt,
+      options.migrate === true,
     );
     if (!built.ok) throw new Error(built.diagnostic.message);
     return planFromFiles(
       host,
       this.#root,
       hostRoot,
-      runtimeEntry,
+      target.expression,
       built.bundle.bundleDigest,
       built.files,
     );
@@ -1321,7 +1362,7 @@ export class HostIntegrationService {
       const hostRoot = resolve(
         options.hostRoot ?? join(this.#root, '.pappra', 'local', 'hosts', host),
       );
-      const runtimeEntry = resolve(options.runtimeEntry ?? this.#runtimeEntry);
+      const hookSource = resolve(options.runtimeEntry ?? this.#runtimeEntry);
       const version = options.hostVersion ?? this.#hostVersion;
       if (!isSupportedVersion(host, version)) {
         return hostIntegrationResultSchema.parse({
@@ -1341,7 +1382,7 @@ export class HostIntegrationService {
           ],
         });
       }
-      if (!(await runtimeEntryReady(runtimeEntry))) {
+      if (!(await runtimeEntryReady(hookSource))) {
         return hostIntegrationResultSchema.parse({
           schema: 'pappra/host-integration/1',
           ok: false,
@@ -1352,18 +1393,21 @@ export class HostIntegrationService {
           diagnostics: [
             diagnostic(
               diagnosticCodes.host_unavailable,
-              `Fixed Pappra runtime entry is missing: ${runtimeEntry}`,
-              runtimeEntry,
+              `Bundled Pappra hook is missing: ${hookSource}`,
+              hookSource,
               'Install or select a complete Pappra runtime before wiring a host.',
             ),
           ],
         });
       }
+      const target = hookTarget(host, this.#root, hostRoot, hookSource);
       const built = await hostPlanFiles(
         host,
+        this.#root,
         hostRoot,
-        runtimeEntry,
+        hookSource,
         this.#observedAt,
+        options.migrate === true,
       );
       if (!built.ok) {
         return hostIntegrationResultSchema.parse({
@@ -1380,7 +1424,7 @@ export class HostIntegrationService {
         host,
         this.#root,
         hostRoot,
-        runtimeEntry,
+        target.expression,
         built.bundle.bundleDigest,
         built.files,
       );
@@ -1662,12 +1706,14 @@ export class HostIntegrationService {
       });
     }
     const expectedConfigPath = hostConfigRelativePath(host);
+    const target = hookTarget(host, this.#root, hostRoot, this.#runtimeEntry);
     const identityError = validateManifestIdentity(
       manifest,
       host,
       hostRoot,
       expectedConfigPath,
-      this.#runtimeEntry,
+      target.expression,
+      false,
     );
     if (identityError !== null) {
       return hostVerificationSchema.parse({
@@ -1692,7 +1738,8 @@ export class HostIntegrationService {
     let currentBundle;
     try {
       currentBundle = await loadHostBundle(host, getPackageInfo().version, {
-        runtimeEntry: this.#runtimeEntry,
+        hookSource: this.#runtimeEntry,
+        hookExpression: target.expression,
         observedAt: this.#observedAt,
       });
     } catch {
@@ -1852,7 +1899,7 @@ export class HostIntegrationService {
         !configHasExpectedHooks(
           host === 'codex' ? 'codex' : 'claude',
           config.value.bytes,
-          this.#runtimeEntry,
+          target.expression,
           configPath,
         )
       ) {

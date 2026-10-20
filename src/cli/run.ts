@@ -32,6 +32,7 @@ function parseOptions(args: readonly string[]) {
       'no-runtime': { type: 'boolean' },
       from: { type: 'string' },
       tarball: { type: 'string' },
+      out: { type: 'string' },
       bind: { type: 'boolean' },
       force: { type: 'boolean' },
       'no-interactive': { type: 'boolean' },
@@ -285,6 +286,10 @@ export async function runCli(
       'invalid_arguments',
       '--yes, --no-interactive, --print-choices and --no-runtime are only valid for init.',
     );
+    return 2;
+  }
+  if (command !== 'host' && values.out !== undefined) {
+    failure(output, json, 'invalid_arguments', '--out is only valid for host.');
     return 2;
   }
   if (
@@ -809,6 +814,7 @@ export async function runCli(
       'plan',
       'install',
       'verify',
+      'bundle',
     ] as const;
     const action = allowedActions.find((item) => item === hostAction) ?? null;
     const parsedHost = hostNameSchema.safeParse(values.host);
@@ -847,7 +853,7 @@ export async function runCli(
         output,
         json,
         'invalid_arguments',
-        'host requires detect/describe/plan/install/verify, --host, and action-compatible options.',
+        'host requires detect/describe/plan/install/verify/bundle, --host, and action-compatible options.',
       );
       return 2;
     }
@@ -860,6 +866,7 @@ export async function runCli(
         hostRoot: values['host-root'] ?? null,
         hostVersion: values['host-version'] ?? null,
         apply: values.apply === true,
+        out: values.out ?? null,
       },
       output,
     );

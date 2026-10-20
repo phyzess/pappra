@@ -34,7 +34,7 @@ function runtimeEntry(): string {
     'dist',
     'hosts',
     'integration',
-    'hook-entry.js',
+    'pappra-hook.mjs',
   );
 }
 

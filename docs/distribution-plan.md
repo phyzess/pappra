@@ -236,6 +236,20 @@ npx @phyzess/pappra@<beta> init --yes --apply --json             # one command, 
 | M4 | B2: plugin bundles for 3 hosts, `--mode`, `host verify` drift, migration from absolute-path manifest | 3–4 d | M3 |
 | M5 | Docs rewrite (quickstart/README/support), oodon dogfood, `skills` interop check | 1 d | M4 |
 
+M4 status (2026-10-20): partially landed, with an explicit deviation. The host hook is now
+a single dependency-free esbuild bundle (`dist/hosts/integration/pappra-hook.mjs`), copied
+into the host root; Claude Code hook commands use `${CLAUDE_PROJECT_DIR}` and Pi imports its
+runtime relatively, so neither depends on a package checkout or the npx cache. Manifests
+compare the recorded hook expression and `--migrate` rewrites a manifest previously pinned
+to a checkout path. `pappra host bundle` exports native plugin/package directories
+(`.claude-plugin/plugin.json`, `plugin.json`, or a Pi `package.json` manifest) but does not
+register them and reports `verification: "unsupported"`.
+
+Deviation: `project-settings` remains the default install mode. No real Claude/Codex/Pi
+session was available to prove that a plugin hook fires, and the plan forbids claiming host
+callability without evidence, so plugin mode ships as an exported artifact plus documented
+registration instead of a silent default. Flipping the default is the remaining M4 item.
+
 M3 status (2026-10-20): landed — `pappra runtime install|status|verify|remove` exists,
 `--from self` packs the executing package and installs it under the Pappra data directory
 through the existing journal/manifest machinery, and `init --apply` installs and binds that

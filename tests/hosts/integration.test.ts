@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { HostIntegrationService } from '../../src/hosts/integration/service.js';
+import { exportHostPluginBundle } from '../../src/hosts/integration/bundle-export.js';
 import {
   mapNativeHookEvent,
   runHostHook,
@@ -24,7 +25,7 @@ function runtimeEntry(): string {
     'dist',
     'hosts',
     'integration',
-    'hook-entry.js',
+    'pappra-hook.mjs',
   );
 }
 
@@ -270,7 +271,7 @@ test('installs Codex hooks without inventing compact support', async () => {
   }
 });
 
-test('installs a Pi extension shim with a fixed runtime reference', async () => {
+test('installs a Pi extension shim with a relative runtime reference', async () => {
   const root = workspace();
   const hostRoot = makeTempDir('host-pi');
   try {
@@ -289,9 +290,11 @@ test('installs a Pi extension shim with a fixed runtime reference', async () => 
       'utf8',
     );
     assert(extension.includes('@earendil-works/pi-coding-agent'));
-    assert(extension.includes('file:///'));
+    assert(extension.includes('./runtime.mjs'));
+    assert(!extension.includes('file:///'));
     assert(!extension.includes('src/hosts'));
     assert(extension.includes('createPiExtension'));
+    assert.equal(existsSync(join(hostRoot, 'templates/pi/runtime.mjs')), true);
     assert.equal(
       readFileSync(join(hostRoot, 'skills/pappra/SKILL.md'), 'utf8').includes(
         '# Pappra',
@@ -303,6 +306,64 @@ test('installs a Pi extension shim with a fixed runtime reference', async () => 
   } finally {
     cleanup(root);
     cleanup(hostRoot);
+  }
+});
+
+test('exports host-native plugin bundles without registering them', async () => {
+  const out = makeTempDir('host-plugin-bundle');
+  try {
+    const claude = await exportHostPluginBundle({
+      host: 'claude',
+      hostVersion: '2.1.292',
+      outDir: join(out, 'claude'),
+      packageVersion: '9.9.9',
+    });
+    assert(claude.files.includes('hooks/pappra-hook.mjs'));
+    assert(claude.files.includes('.claude-plugin/plugin.json'));
+    assert(claude.files.includes('skills/pappra/SKILL.md'));
+    assert.equal(claude.verification, 'unsupported');
+    assert.equal(
+      JSON.stringify(
+        JSON.parse(
+          readFileSync(join(out, 'claude', 'hooks/hooks.json'), 'utf8'),
+        ),
+      ).includes('${CLAUDE_PLUGIN_ROOT}/hooks/pappra-hook.mjs'),
+      true,
+    );
+
+    const codex = await exportHostPluginBundle({
+      host: 'codex',
+      hostVersion: '0.163.0',
+      outDir: join(out, 'codex'),
+      packageVersion: '9.9.9',
+    });
+    assert(codex.files.includes('plugin.json'));
+    assert.equal(
+      JSON.stringify(
+        JSON.parse(
+          readFileSync(join(out, 'codex', 'hooks/hooks.json'), 'utf8'),
+        ),
+      ).includes('./hooks/pappra-hook.mjs'),
+      true,
+    );
+
+    const pi = await exportHostPluginBundle({
+      host: 'pi',
+      hostVersion: '1.3.0',
+      outDir: join(out, 'pi'),
+      packageVersion: '9.9.9',
+    });
+    assert(pi.files.includes('extensions/pappra/index.ts'));
+    assert(pi.files.includes('templates/pi/runtime.mjs'));
+    const manifest = JSON.parse(
+      readFileSync(join(out, 'pi', 'package.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.deepEqual((manifest.pi as Record<string, unknown>).extensions, [
+      './extensions/pappra/index.ts',
+    ]);
+    assert.equal(pi.verification, 'unsupported');
+  } finally {
+    cleanup(out);
   }
 });
 

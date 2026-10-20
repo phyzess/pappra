@@ -92,6 +92,7 @@
   },
   "devDependencies": {
     "@types/node": "24.19.1",
+    "esbuild": "^0.28.2",
     "prettier": "3.9.9",
     "typescript": "7.0.2"
   },
@@ -103,5 +104,10 @@
     "type": "git",
     "url": "https://github.com/phyzess/pappra.git"
   },
-  "homepage": "https://github.com/phyzess/pappra"
+  "homepage": "https://github.com/phyzess/pappra",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
 }

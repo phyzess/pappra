@@ -9,6 +9,9 @@ export const HOST_HOOK_RESULT_SCHEMA = 'pappra/host-hook-result/1';
 
 const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
 const digestOrNull = digestSchema.nullable();
+/** A host hook path may be absolute or a host placeholder expression. */
+const hookPathSchema = z.string().min(1).max(4096);
+
 const absolutePathSchema = z
   .string()
   .min(1)
@@ -97,7 +100,7 @@ export const hostIntegrationPlanSchema = z.strictObject({
   host: hostNameSchema,
   workspaceRoot: absolutePathSchema,
   hostRoot: absolutePathSchema,
-  runtimeEntry: absolutePathSchema,
+  runtimeEntry: hookPathSchema,
   bundleDigest: digestSchema,
   files: z.array(hostPlanFileSchema).max(64),
   reloadRequired: z.boolean(),
@@ -227,7 +230,7 @@ export const hostInstallManifestSchema = z.strictObject({
   bundleDigest: digestSchema,
   installedAt: z.iso.datetime({ offset: true }),
   hostRoot: absolutePathSchema,
-  runtimeEntry: absolutePathSchema,
+  runtimeEntry: hookPathSchema,
   configPath: z.string().min(1).max(2048).nullable(),
   files: z.array(
     z.strictObject({

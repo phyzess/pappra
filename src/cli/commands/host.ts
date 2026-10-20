@@ -2,20 +2,31 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { HostName } from '../../schemas/host.js';
 import { HostIntegrationService } from '../../hosts/integration/service.js';
+import { exportHostPluginBundle } from '../../hosts/integration/bundle-export.js';
+import {
+  HOST_SUPPORT,
+  isSupportedVersion,
+} from '../../hosts/integration/support.js';
+import { getPackageInfo } from '../../package-info.js';
 import type { CliOutput } from '../output.js';
 
 export const hostUsage =
-  'pappra host <detect|describe|plan|install|verify> --host <pi|codex|claude>\n' +
-  '  [--host-root <dir>] [--host-version <version>] [--apply] [--json]';
+  'pappra host <detect|describe|plan|install|verify|bundle> --host <pi|codex|claude>\n' +
+  '  [--host-root <dir>] [--host-version <version>] [--out <dir>] [--apply] [--json]\n' +
+  '\n' +
+  'bundle exports a host-native plugin/package directory and never registers it or\n' +
+  'claims host callability.';
 
 export interface HostCommandOptions {
   readonly cwd: string;
   readonly json: boolean;
-  readonly action: 'detect' | 'describe' | 'plan' | 'install' | 'verify' | null;
+  readonly action:
+    'detect' | 'describe' | 'plan' | 'install' | 'verify' | 'bundle' | null;
   readonly host: HostName | null;
   readonly hostRoot: string | null;
   readonly hostVersion: string | null;
   readonly apply: boolean;
+  readonly out: string | null;
 }
 
 function printDiagnostics(
@@ -144,6 +155,51 @@ export async function runHostCommand(
       printDiagnostics(output, result.diagnostics);
     }
     return diagnosticStatus(result.status);
+  }
+
+  if (options.action === 'bundle') {
+    if (options.out === null) {
+      output.stderr('pappra host bundle requires --out <dir>.\n');
+      return 2;
+    }
+    if (!isSupportedVersion(options.host, options.hostVersion)) {
+      output.stderr(
+        `Host ${options.host} version ${options.hostVersion ?? '(unknown)'} is outside the pinned ${HOST_SUPPORT[options.host].version} support matrix.\n`,
+      );
+      return 1;
+    }
+    try {
+      const exported = await exportHostPluginBundle({
+        host: options.host,
+        hostVersion: options.hostVersion ?? HOST_SUPPORT[options.host].version,
+        outDir: options.out,
+        packageVersion: getPackageInfo().version,
+      });
+      if (options.json) {
+        output.stdout(
+          `${JSON.stringify({ ok: true, command: 'host', action: 'bundle', ...exported })}\n`,
+        );
+      } else {
+        output.stdout(
+          `Exported ${exported.host} bundle to ${exported.outDir}\n`,
+        );
+        for (const file of exported.files) output.stdout(`  ${file}\n`);
+        for (const hint of exported.registration)
+          output.stdout(`  note: ${hint}\n`);
+        output.stdout('Registration and host callability remain unverified.\n');
+      }
+      return 0;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (options.json) {
+        output.stdout(
+          `${JSON.stringify({ ok: false, command: 'host', action: 'bundle', message })}\n`,
+        );
+      } else {
+        output.stderr(`pappra host bundle: ${message}\n`);
+      }
+      return 1;
+    }
   }
 
   const result = await service.verify(options.host, target);
