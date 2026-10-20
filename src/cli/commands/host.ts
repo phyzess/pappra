@@ -12,7 +12,8 @@ import type { CliOutput } from '../output.js';
 
 export const hostUsage =
   'pappra host <detect|describe|plan|install|verify|bundle> --host <pi|codex|claude>\n' +
-  '  [--host-root <dir>] [--host-version <version>] [--out <dir>] [--apply] [--json]\n' +
+  '  [--host-root <dir>] [--host-version <version>] [--out <dir>]\n' +
+  '  [--mode project-settings|plugin] [--apply] [--json]\n' +
   '\n' +
   'bundle exports a host-native plugin/package directory and never registers it or\n' +
   'claims host callability.';
@@ -27,6 +28,7 @@ export interface HostCommandOptions {
   readonly hostVersion: string | null;
   readonly apply: boolean;
   readonly out: string | null;
+  readonly mode: 'project-settings' | 'plugin' | null;
 }
 
 function printDiagnostics(
@@ -143,6 +145,7 @@ export async function runHostCommand(
     const result = await service.install(options.host, {
       ...target,
       apply: options.apply,
+      ...(options.mode === null ? {} : { mode: options.mode }),
     });
     if (options.json) {
       output.stdout(`${JSON.stringify(result)}\n`);

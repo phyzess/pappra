@@ -548,3 +548,35 @@ test('generated hook entry and Pi adapter deliver bounded advisory context', asy
     cleanup(root);
   }
 });
+
+test('plugin install mode fails closed and points at the bundle export', async () => {
+  const root = workspace();
+  const hostRoot = makeTempDir('host-plugin-mode');
+  try {
+    const service = new HostIntegrationService({
+      root,
+      homeDir: hostRoot,
+      pathEnv: '',
+      runtimeEntry: runtimeEntry(),
+      hostVersion: '2.1.292',
+      observedAt: '2026-10-19T00:00:00.000Z',
+    });
+    const result = await service.install('claude', {
+      hostRoot,
+      apply: true,
+      mode: 'plugin',
+    });
+    assert.equal(result.status, 'unsupported');
+    assert.equal(result.appliedFiles.length, 0);
+    assert.equal(existsSync(join(hostRoot, 'settings.json')), false);
+    assert.equal(
+      result.diagnostics.some((entry) =>
+        JSON.stringify(entry).includes('host bundle'),
+      ),
+      true,
+    );
+  } finally {
+    cleanup(root);
+    cleanup(hostRoot);
+  }
+});

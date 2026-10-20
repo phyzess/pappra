@@ -68,6 +68,12 @@ export interface HostTargetOptions {
   readonly hostVersion?: string | null;
   /** Rewrites a manifest previously pinned to a package checkout path. */
   readonly migrate?: boolean;
+  /**
+   * Plugin wiring is exported with `host bundle` but not installed here: host
+   * registration, trust and callability are unverified, so this mode fails
+   * closed instead of writing a bundle a host may never load.
+   */
+  readonly mode?: 'project-settings' | 'plugin';
 }
 
 export interface HostPlanBundle {
@@ -1356,6 +1362,24 @@ export class HostIntegrationService {
     host: HostName,
     options: HostTargetOptions & { readonly apply: boolean },
   ): Promise<HostIntegrationResult> {
+    if (options.mode === 'plugin') {
+      return hostIntegrationResultSchema.parse({
+        schema: 'pappra/host-integration/1',
+        ok: false,
+        status: 'unsupported',
+        plan: null,
+        appliedFiles: [],
+        residualPaths: [],
+        diagnostics: [
+          diagnostic(
+            diagnosticCodes.host_unavailable,
+            'Plugin install mode is not wired: host registration, trust and callability are unverified.',
+            this.#root,
+            'Use `pappra host bundle --host <name> --out <dir>` to export the plugin directory and register it yourself; project-settings install remains the verified mode.',
+          ),
+        ],
+      });
+    }
     let plan: HostIntegrationPlan;
     let contents: ReadonlyMap<string, Buffer>;
     try {
