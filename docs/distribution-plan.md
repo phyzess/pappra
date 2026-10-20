@@ -247,7 +247,12 @@ Known gaps found during dogfood: (a) `code status` reports `partial` with reason
 `registration_missing` until an explicit `pappra code prepare --repo <id> --apply`, which is
 by design but not yet surfaced by `init`; (b) `pappra docs list` returns an empty catalog
 even though discovery reports the configured sources, so the knowledge catalog still needs a
-seeding/scan operation; (c) plugin install mode stays opt-in as described above.
+seeding/scan operation; (c) plugin install mode stays opt-in as described above; (d) a valid
+existing `workspace.json` is intentionally never overwritten, so the recorded
+`runtimeVersion` stays at the version that created it. Upgrading a workspace to a newer
+runtime therefore needs a reconfigure/upgrade flow; `init` apply currently supports create
+operations only, so a managed replacement path has to land before that flow can exist. The
+oodon dogfood workspace stays bound to `0.1.0-beta.2` for this reason.
 
 M4 status (2026-10-20): partially landed, with an explicit deviation. The host hook is now
 a single dependency-free esbuild bundle (`dist/hosts/integration/pappra-hook.mjs`), copied
