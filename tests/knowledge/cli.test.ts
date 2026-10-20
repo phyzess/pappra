@@ -183,3 +183,58 @@ test('docs rejects unknown actions and extra positionals with exit code 2', () =
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('docs scan previews and registers documents from configured sources', () => {
+  const root = makeTempDir('knowledge-scan');
+  const home = mkdtempSync(join(tmpdir(), 'knowledge-scan-home-'));
+  try {
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        knowledge: {
+          sources: ['AGENTS.md', 'docs'],
+          newDocuments: 'knowledge',
+          taskVisibility: 'shared',
+        },
+      }),
+    );
+    writeMachineConfig(root, baseMachineConfig(root));
+    writeText(join(root, 'AGENTS.md'), '# Agents\n');
+    writeText(join(root, 'docs/architecture/a.md'), '# Arch\n');
+    writeText(join(root, 'docs/research/r.md'), '# Research\n');
+
+    const planned = invoke(['docs', 'scan', '--json'], root, home);
+    assert.equal(planned.status, 0, planned.stderr);
+    const plan = parse(planned.stdout);
+    assert.equal(plan.mode, 'plan');
+    const candidates = plan.candidates as readonly Record<string, unknown>[];
+    assert.deepEqual(
+      candidates.map((candidate) => [candidate.kind, candidate.path]),
+      [
+        ['rule', 'AGENTS.md'],
+        ['architecture', 'docs/architecture/a.md'],
+        ['research', 'docs/research/r.md'],
+      ],
+    );
+
+    const applied = invoke(['docs', 'scan', '--apply', '--json'], root, home);
+    assert.equal(applied.status, 0, applied.stderr);
+    const appliedValue = parse(applied.stdout);
+    assert.equal(appliedValue.ok, true);
+    assert.equal((appliedValue.registered as unknown[]).length, 3);
+
+    const listed = invoke(
+      ['docs', 'list', '--include-private', '--json'],
+      root,
+      home,
+    );
+    assert.equal(listed.status, 0, listed.stderr);
+    assert.equal((parse(listed.stdout).documents as unknown[]).length, 3);
+
+    const rescan = invoke(['docs', 'scan', '--json'], root, home);
+    assert.equal((parse(rescan.stdout).candidates as unknown[]).length, 0);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
