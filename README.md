@@ -46,6 +46,13 @@ npx @phyzess/pappra@beta runtime status --json
 npx @phyzess/pappra@beta runtime verify --json
 ```
 
+A workspace that already has a valid `.pappra/workspace.json` is never rewritten silently.
+`init --yes --reconfigure --apply` rebuilds it from discovery (for example to move the
+recorded runtime version to the running package), backing the previous file up under
+`.pappra/local/backups`. Apply also reports advisory `nextActions`: `pappra code prepare`
+for a selected code engine and `pappra docs scan --apply` to register documents from the
+configured knowledge sources.
+
 Optional examples have prerequisites rather than generated files: code-graph and
 host commands require the selected external CLI/support, and collaboration
 requires an explicit controller. They are not needed for the core workflow above.
@@ -56,7 +63,7 @@ requires an explicit controller. They are not needed for the core workflow above
 - **Knowledge:** workspace and private document catalogs with explicit preview/apply operations.
 - **Continuity:** private task checkpoints and bounded advisory resume packets. Resume never grants execution by itself.
 - **Code intelligence:** status, explicit preparation and bounded query for selected repositories. Text/structure fallback is available when the optional graph engine is absent.
-- **Host integrations:** optional Pi, Codex and Claude Code adapters that merge Pappra-owned entries without taking over user configuration. Hooks are copied as a dependency-free bundle into the host root; `host bundle` exports a native plugin/package directory without registering it.
+- **Host integrations:** optional Pi, Codex and Claude Code adapters that merge Pappra-owned entries without taking over user configuration. Hooks are copied as a dependency-free bundle into the host root; `host bundle` exports a native plugin/package directory without registering it. `host install --mode plugin` fails closed until plugin registration and callability are verified.
 - **Bounded collaboration:** an optional, explicitly controlled one-request workflow. It is not a scheduler or daemon.
 
 ## Optional integrations and support
@@ -80,7 +87,7 @@ The check runs the source policy, type checks, formatting, deterministic tests a
 
 ## Status and limits
 
-Pappra is development software (`0.1.0-beta.3`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.3`, because pre-release versions are never republished.
+Pappra is development software (`0.1.0-beta.4`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.4`, because pre-release versions are never republished.
 
 The deterministic suite covers synthetic workspaces, fixtures and local process boundaries. It does not establish real-model behavior, native host callability on every platform, CodeGraph completeness, Windows/Linux parity or production performance. A host adapter version pin is an observed support claim, not proof that a particular native installation will load or run correctly.
 

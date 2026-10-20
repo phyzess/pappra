@@ -37,6 +37,15 @@ npx @phyzess/pappra@beta runtime verify --json            # content and smoke ve
 npx @phyzess/pappra@beta runtime remove --apply --json    # refuses a bound runtime without --force
 ```
 
+An existing valid `.pappra/workspace.json` is never rewritten silently.
+`init --yes --reconfigure --apply` rebuilds it from discovery (runtime version, knowledge
+sources, code engine) and backs up the previous file under `.pappra/local/backups`.
+
+A successful apply also reports advisory `nextActions`:
+`pappra code prepare --repo <id> --apply` when a code engine is selected, and
+`pappra docs scan --apply` to register documents that discovery already reports under the
+configured knowledge sources.
+
 Exit codes: `0` converged, `1` applied with a pending manual step (for example with
 `--no-runtime`), `2` invalid input, `3` unavailable environment.
 

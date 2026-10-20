@@ -243,16 +243,20 @@ the durable runtime and the hook bundle. Dogfood on the `oodon` repository: `ini
 all three pinned hosts; `runtime verify` reported `complete` with `source: self`; the Claude
 host plan produced `${CLAUDE_PROJECT_DIR}/.claude/hooks/pappra-hook.mjs`.
 
-Known gaps found during dogfood: (a) `code status` reports `partial` with reason
-`registration_missing` until an explicit `pappra code prepare --repo <id> --apply`, which is
-by design but not yet surfaced by `init`; (b) `pappra docs list` returns an empty catalog
-even though discovery reports the configured sources, so the knowledge catalog still needs a
-seeding/scan operation; (c) plugin install mode stays opt-in as described above; (d) a valid
-existing `workspace.json` is intentionally never overwritten, so the recorded
-`runtimeVersion` stays at the version that created it. Upgrading a workspace to a newer
-runtime therefore needs a reconfigure/upgrade flow; `init` apply currently supports create
-operations only, so a managed replacement path has to land before that flow can exist. The
-oodon dogfood workspace stays bound to `0.1.0-beta.2` for this reason.
+Dogfood gaps and their follow-up (2026-10-20):
+(a) resolved — `init` apply now reports advisory `nextActions`, including
+`pappra code prepare --repo <id> --apply` when a code engine is selected.
+(b) resolved — `pappra docs scan [--apply]` previews and registers documents discovered
+under the configured knowledge sources, so `docs list` reflects the workspace.
+(c) explicit, not silently missing — `host install --mode plugin` fails closed with a
+diagnostic that points at `pappra host bundle`; plugin registration, trust and callability
+stay unverified and `project-settings` remains the install mode. Flipping the default still
+requires a real host session.
+(d) resolved — init apply supports journalled `replace-managed` writes (expected
+before-digest guard, backup under `.pappra/local/backups`, manifest digest update, restore on
+failure) and `init --yes --reconfigure --apply` rebuilds an existing valid `workspace.json`
+from discovery, which is also the runtime-upgrade path. A no-op reconfigure reports
+`no-changes`; an edited-between-plan-and-apply file is refused as stale.
 
 M4 status (2026-10-20): partially landed, with an explicit deviation. The host hook is now
 a single dependency-free esbuild bundle (`dist/hosts/integration/pappra-hook.mjs`), copied
