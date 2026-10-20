@@ -3,6 +3,7 @@
 Pappra is a workspace-local manager. It does not require a private repository,
 a running host, a model provider, a code-graph service or a global `pappra`
 binary.
+
 ## Published package
 
 The package is published as `@phyzess/pappra`. From an empty target workspace:
@@ -25,8 +26,19 @@ npx @phyzess/pappra@beta init --yes --apply --json   # derive and apply without 
 selections still exits nonzero, but it returns the discovery candidates and the suggested
 `pappra/init-choices/1` document; only a TTY without selections opens the wizard.
 
-Exit codes: `0` converged, `1` applied with a pending manual step (for example the runtime
-action), `2` invalid input, `3` unavailable environment.
+`init --apply` installs a durable runtime copy of the executing package and binds it in
+`machine.json`, which is what makes an npx/dlx bootstrap survive cache eviction. Pass
+`--no-runtime` to leave that action pending. The copy can be managed directly:
+
+```sh
+npx @phyzess/pappra@beta runtime install --apply --json   # default --from self
+npx @phyzess/pappra@beta runtime status --json            # read-only passive state
+npx @phyzess/pappra@beta runtime verify --json            # content and smoke verification
+npx @phyzess/pappra@beta runtime remove --apply --json    # refuses a bound runtime without --force
+```
+
+Exit codes: `0` converged, `1` applied with a pending manual step (for example with
+`--no-runtime`), `2` invalid input, `3` unavailable environment.
 
 ## Development checkout
 

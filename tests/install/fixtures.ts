@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { npmCli } from '../../scripts/project.js';
+import { getPackageInfo } from '../../src/package-info.js';
 
 export function makeTempDir(label: string): string {
   return mkdtempSync(join(tmpdir(), `pappra-${label}-`));
@@ -24,7 +25,7 @@ export function createRuntimeTarball(
   options: RuntimeTarballOptions,
 ): string {
   const packageDir = join(root, 'runtime-package');
-  const packageName = options.packageName ?? 'pappra';
+  const packageName = options.packageName ?? getPackageInfo().name;
   mkdirSync(join(packageDir, 'dist', 'cli'), { recursive: true });
   const installScript =
     options.markerPath === undefined

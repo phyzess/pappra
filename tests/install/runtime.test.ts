@@ -435,9 +435,13 @@ test('passive runtime inspection rejects a package symlink outside the runtime r
       offline: true,
       timeoutMs: 60_000,
     });
-    assert.equal(installed.ok, true);
+    assert(installed.ok && installed.manifest !== null);
     const paths = runtimePaths(version, dataDir);
-    const packageRoot = join(paths.runtimeRoot, 'node_modules', 'pappra');
+    const packageRoot = join(
+      paths.runtimeRoot,
+      'node_modules',
+      ...installed.manifest.packageName.split('/'),
+    );
     const outsidePackage = join(root, 'outside-package');
     renameSync(packageRoot, outsidePackage);
     symlinkSync(outsidePackage, packageRoot, 'dir');

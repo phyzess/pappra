@@ -15,6 +15,7 @@ import {
   runCollaborationCommand,
 } from './commands/collaboration.js';
 import { hostUsage, runHostCommand } from './commands/host.js';
+import { runtimeUsage, runRuntimeCommand } from './commands/runtime.js';
 import { hostNameSchema } from '../schemas/host.js';
 import type { CliOutput } from './output.js';
 
@@ -28,6 +29,11 @@ function parseOptions(args: readonly string[]) {
       config: { type: 'string' },
       apply: { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' },
+      'no-runtime': { type: 'boolean' },
+      from: { type: 'string' },
+      tarball: { type: 'string' },
+      bind: { type: 'boolean' },
+      force: { type: 'boolean' },
       'no-interactive': { type: 'boolean' },
       'print-choices': { type: 'boolean' },
       'install-runtime': { type: 'boolean' },
@@ -88,6 +94,7 @@ function parseOptions(args: readonly string[]) {
       hostAction: null,
       collaborationAction: null,
       resumeTaskId: null,
+      runtimeAction: null,
     };
   }
   if (command === 'resume') {
@@ -103,6 +110,7 @@ function parseOptions(args: readonly string[]) {
       hostAction: null,
       collaborationAction: null,
       resumeTaskId: positionals[1] ?? null,
+      runtimeAction: null,
     };
   }
   if (command === 'code') {
@@ -118,6 +126,7 @@ function parseOptions(args: readonly string[]) {
       hostAction: null,
       collaborationAction: null,
       resumeTaskId: null,
+      runtimeAction: null,
     };
   }
   if (command === 'host') {
@@ -135,6 +144,25 @@ function parseOptions(args: readonly string[]) {
       hostAction: positionals[1] ?? null,
       collaborationAction: null,
       resumeTaskId: null,
+      runtimeAction: null,
+    };
+  }
+  if (command === 'runtime') {
+    if (positionals.length > 2) {
+      throw new Error(
+        'runtime accepts one action: install, status, verify, or remove.',
+      );
+    }
+    return {
+      values,
+      command,
+      docsAction: null,
+      docsArgument: null,
+      codeAction: null,
+      hostAction: null,
+      collaborationAction: null,
+      resumeTaskId: null,
+      runtimeAction: positionals[1] ?? null,
     };
   }
   if (command === 'collab') {
@@ -150,6 +178,7 @@ function parseOptions(args: readonly string[]) {
       hostAction: null,
       collaborationAction: positionals[1] ?? null,
       resumeTaskId: null,
+      runtimeAction: null,
     };
   }
   if (positionals.length > 1) {
@@ -164,6 +193,7 @@ function parseOptions(args: readonly string[]) {
     hostAction: null,
     collaborationAction: null,
     resumeTaskId: null,
+    runtimeAction: null,
   };
 }
 
@@ -214,6 +244,7 @@ const globalUsage =
   'pappra resume <taskId> [--session <id>] [--json]\n' +
   'pappra code <status|prepare|query> --repo <id> [options] [--json]\n' +
   'pappra host <detect|describe|plan|install|verify> --host <name> [options] [--json]\n' +
+  'pappra runtime <install|status|verify|remove> [options] [--json]\n' +
   'pappra collab <prepare|run|query> [options]';
 
 export async function runCli(
@@ -237,6 +268,7 @@ export async function runCli(
     hostAction,
     collaborationAction,
     resumeTaskId,
+    runtimeAction,
   } = parsed;
   const json = values.json === true;
 
@@ -244,13 +276,29 @@ export async function runCli(
     command !== 'init' &&
     (values.yes === true ||
       values['no-interactive'] === true ||
-      values['print-choices'] === true)
+      values['print-choices'] === true ||
+      values['no-runtime'] === true)
   ) {
     failure(
       output,
       json,
       'invalid_arguments',
-      '--yes, --no-interactive and --print-choices are only valid for init.',
+      '--yes, --no-interactive, --print-choices and --no-runtime are only valid for init.',
+    );
+    return 2;
+  }
+  if (
+    command !== 'runtime' &&
+    (values.from !== undefined ||
+      values.tarball !== undefined ||
+      values.bind === true ||
+      values.force === true)
+  ) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--from, --tarball, --bind and --force are only valid for runtime.',
     );
     return 2;
   }
@@ -456,6 +504,66 @@ export async function runCli(
         runtimeVersion: values['runtime-version'] ?? null,
         yes: values.yes === true || values['no-interactive'] === true,
         printChoices: values['print-choices'] === true,
+        noRuntime: values['no-runtime'] === true,
+      },
+      output,
+    );
+  }
+
+  if (command === 'runtime') {
+    if (values.help) {
+      if (json) {
+        output.stdout(
+          `${JSON.stringify({ ...info, commands: ['runtime'], usage: runtimeUsage })}\n`,
+        );
+      } else {
+        output.stdout(runtimeUsage);
+      }
+      return 0;
+    }
+    if (
+      values.version ||
+      values.config !== undefined ||
+      values['install-runtime'] === true ||
+      values['runtime-tarball'] !== undefined ||
+      values.root !== undefined ||
+      values.host !== undefined ||
+      values.repo !== undefined ||
+      values.query !== undefined ||
+      values.kind !== undefined ||
+      hasContinuityOptions(values)
+    ) {
+      failure(
+        output,
+        json,
+        'invalid_arguments',
+        'runtime accepts only --from, --tarball, --version, --apply, --bind, --force, --help, and --json.',
+      );
+      return 2;
+    }
+    const action =
+      runtimeAction === 'install' ||
+      runtimeAction === 'status' ||
+      runtimeAction === 'verify' ||
+      runtimeAction === 'remove'
+        ? runtimeAction
+        : null;
+    return runRuntimeCommand(
+      {
+        cwd: process.cwd(),
+        action,
+        json,
+        from:
+          values.from === 'self' ||
+          values.from === 'tarball' ||
+          values.from === 'registry'
+            ? values.from
+            : null,
+        tarball: values.tarball ?? null,
+        version: values['runtime-version'] ?? null,
+        apply: values.apply === true,
+        bind: values.bind === true,
+        force: values.force === true,
       },
       output,
     );

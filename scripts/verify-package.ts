@@ -211,12 +211,14 @@ try {
     '--config',
     choicesPath,
     '--apply',
+    '--no-runtime',
     '--json',
   ]);
   if (init.error) throw init.error;
-  assert([0, 1].includes(init.status ?? -1), init.stderr);
+  assert.equal(init.status, 1, init.stderr);
   const initValue = parseInstalled(init.stdout);
   assert.equal(initValue.ok, true);
+  assert.equal(initValue.initComplete, false);
   const installedApply = initValue.apply;
   assert(typeof installedApply === 'object' && installedApply !== null);
   assert.equal(
@@ -276,6 +278,46 @@ try {
   const resumeValue = parseInstalled(resume.stdout);
   assert.equal(resumeValue.schema, 'pappra/resume-packet/1');
   assert.equal(resumeValue.executionAllowed, false);
+
+  const runtimeDataDir = join(temporary, 'runtime data');
+  const runtimeEnvironment: NodeJS.ProcessEnv = {
+    ...process.env,
+    PAPPRA_DATA_HOME: runtimeDataDir,
+  };
+  const runRuntime = (args: readonly string[]) =>
+    spawnSync(process.execPath, [installedCli, ...args], {
+      cwd: lifecycleRoot,
+      encoding: 'utf8',
+      shell: false,
+      timeout: 240_000,
+      env: runtimeEnvironment,
+    });
+  const runtimeInstall = runRuntime([
+    'runtime',
+    'install',
+    '--apply',
+    '--json',
+  ]);
+  if (runtimeInstall.error) throw runtimeInstall.error;
+  assert.equal(runtimeInstall.status, 0, runtimeInstall.stderr);
+  const runtimeValue = parseInstalled(runtimeInstall.stdout);
+  assert.equal(runtimeValue.ok, true);
+  assert.equal(
+    (runtimeValue.runtime as Record<string, unknown>).status,
+    'installed',
+  );
+  const runtimeStatus = runRuntime(['runtime', 'status', '--json']);
+  if (runtimeStatus.error) throw runtimeStatus.error;
+  assert.equal(runtimeStatus.status, 0, runtimeStatus.stderr);
+  const runtimeState = parseInstalled(runtimeStatus.stdout).runtime as Record<
+    string,
+    unknown
+  >;
+  assert.equal(runtimeState.status, 'content-match');
+  assert.equal(runtimeState.source, 'self');
+  console.log(
+    'Installed runtime self-install passed (durable copy, no checkout).',
+  );
   const cleanupScript = join(consumer, 'cleanup-managed.mjs');
   writeFileSync(
     cleanupScript,
@@ -326,7 +368,15 @@ try {
   writeFileSync(editedSentinelPath, userSentinel);
   const editedInit = spawnSync(
     process.execPath,
-    [installedCli, 'init', '--config', choicesPath, '--apply', '--json'],
+    [
+      installedCli,
+      'init',
+      '--config',
+      choicesPath,
+      '--apply',
+      '--no-runtime',
+      '--json',
+    ],
     {
       cwd: editedRoot,
       encoding: 'utf8',

@@ -1,4 +1,4 @@
-export { getPackageInfo } from './package-info.js';
+export { getPackageInfo, getPackageRoot } from './package-info.js';
 export type { PackageInfo } from './package-info.js';
 export {
   HostAdapter,

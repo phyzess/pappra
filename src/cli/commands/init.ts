@@ -7,13 +7,14 @@ import {
   parseInitChoices,
   type InitChoices,
 } from '../../schemas/init.js';
-import { readTextFileBounded } from '../../infra/fs.js';
-import { getPackageInfo } from '../../package-info.js';
+import { observePath, readTextFileBounded } from '../../infra/fs.js';
+import { getPackageInfo, getPackageRoot } from '../../package-info.js';
 import {
   installRuntime,
   type RuntimeInstallResult,
 } from '../../install/runtime.js';
 import { updateMachineRuntime } from '../../install/apply.js';
+import { inspectMachineConfig } from '../../workspace/config.js';
 import {
   applyInitPlan,
   inspectInitContext,
@@ -399,6 +400,8 @@ export interface InitCommandOptions {
   readonly yes?: boolean;
   /** Prints the derived selections and writes nothing. */
   readonly printChoices?: boolean;
+  /** Leaves the runtime action pending instead of installing a durable copy. */
+  readonly noRuntime?: boolean;
 }
 
 export interface RuntimeFlowResult {
@@ -420,6 +423,95 @@ function runtimeOptionsFailure(
     diagnostics: [],
     nextAction,
   };
+}
+
+async function bindAndRecordRuntime(
+  root: string,
+  installed: RuntimeInstallResult,
+): Promise<RuntimeFlowResult> {
+  if (!installed.ok || installed.manifest === null) {
+    return {
+      ok: false,
+      completion: false,
+      runtime: installed,
+      diagnostics: installed.diagnostics,
+    };
+  }
+  const updated = await updateMachineRuntime(root, installed.manifest);
+  if (!updated.ok) {
+    return {
+      ok: false,
+      completion: false,
+      runtime: installed,
+      diagnostics: updated.diagnostics,
+    };
+  }
+  const followUp = await planWorkspaceInit({ root });
+  if (!followUp.ok) {
+    return {
+      ok: false,
+      completion: false,
+      runtime: installed,
+      diagnostics: followUp.diagnostics,
+    };
+  }
+  if (
+    followUp.bundle.plan.files.length > 0 ||
+    followUp.bundle.plan.externalActions.length > 0
+  ) {
+    return {
+      ok: false,
+      completion: false,
+      runtime: installed,
+      diagnostics: [
+        {
+          code: diagnosticCodes.initRuntimeSourceRequired,
+          severity: 'error',
+          message:
+            'Runtime installation succeeded but init still has pending file or external actions.',
+          source: 'init runtime',
+          pointer: null,
+          hint: 'Run pappra init again to review the remaining plan; initialization is not complete.',
+        },
+      ],
+    };
+  }
+  return {
+    ok: true,
+    completion: true,
+    runtime: installed,
+    diagnostics: [],
+  };
+}
+
+/**
+ * Converges the runtime binding by installing a durable copy of the package that
+ * is currently executing. Reusing an already verified copy is cheap: the install
+ * machinery short-circuits before packing.
+ */
+async function ensureDefaultRuntime(
+  root: string,
+  targetVersion: string,
+): Promise<RuntimeFlowResult> {
+  const machine = await inspectMachineConfig(root);
+  const binding = machine.value?.runtime ?? null;
+  if (binding !== null && binding.version === targetVersion) {
+    const executable = await observePath(binding.executable);
+    if (executable.kind === 'file') {
+      return {
+        ok: true,
+        completion: true,
+        runtime: null,
+        diagnostics: [],
+      };
+    }
+  }
+  const installed = await installRuntime({
+    version: targetVersion,
+    source: { kind: 'self', path: getPackageRoot() },
+    packageName: getPackageInfo().name,
+  });
+  return bindAndRecordRuntime(root, installed);
 }
 
 async function installAndRecordRuntime(
@@ -928,19 +1020,25 @@ export async function runInitCommand(
       return 0;
     }
     const applied = await applyInitPlan(bundle);
+    const runtimeRequested = wantsRuntime || options.noRuntime !== true;
     const runtimeFlow =
-      wantsRuntime && applied.ok && applied.residualPaths.length === 0
-        ? await installAndRecordRuntime(
-            bundle.scope.workspaceRoot,
-            bundle.scope.runtimeVersion,
-            options,
-          )
+      runtimeRequested && applied.ok && applied.residualPaths.length === 0
+        ? wantsRuntime
+          ? await installAndRecordRuntime(
+              bundle.scope.workspaceRoot,
+              bundle.scope.runtimeVersion,
+              options,
+            )
+          : await ensureDefaultRuntime(
+              bundle.scope.workspaceRoot,
+              bundle.scope.runtimeVersion,
+            )
         : null;
     const initComplete = runtimeFlow?.completion === true;
     const ok =
       applied.ok &&
       applied.residualPaths.length === 0 &&
-      (!wantsRuntime || (runtimeFlow?.ok === true && initComplete));
+      (!runtimeRequested || (runtimeFlow?.ok === true && initComplete));
     output.stdout(
       `${JSON.stringify({
         ok,
@@ -958,7 +1056,7 @@ export async function runInitCommand(
       })}\n`,
     );
     if (!applied.ok || applied.residualPaths.length > 0) return 1;
-    if (wantsRuntime) return ok ? 0 : 1;
+    if (runtimeRequested) return ok ? 0 : 1;
     return applied.status === 'external-actions-pending' ? 1 : 0;
   }
 
@@ -983,7 +1081,7 @@ export async function runInitCommand(
     }
   }
   const applied = await applyInitPlan(bundle);
-  printApply(output, applied, wantsRuntime);
+  printApply(output, applied, wantsRuntime || options.noRuntime !== true);
   if (!applied.ok) {
     return applied.status === 'failed' ? 3 : 1;
   }
@@ -1022,6 +1120,37 @@ export async function runInitCommand(
     }
     output.stdout(
       'Runtime installed and verified. Initialization complete for P04 scope; provider/index preferences were not executed.\n',
+    );
+    return 0;
+  }
+  if (options.noRuntime !== true) {
+    const runtimeFlow = await ensureDefaultRuntime(
+      bundle.scope.workspaceRoot,
+      bundle.scope.runtimeVersion,
+    );
+    if (runtimeFlow.runtime !== null) {
+      output.stdout(
+        `Runtime: ${runtimeFlow.runtime.status} ${runtimeFlow.runtime.version}${
+          runtimeFlow.runtime.runtimeRoot === null
+            ? ''
+            : ` at ${runtimeFlow.runtime.runtimeRoot}`
+        }\n`,
+      );
+      if (runtimeFlow.runtime.residualPaths.length > 0) {
+        output.stderr(
+          `Runtime residual paths: ${runtimeFlow.runtime.residualPaths.join(', ')}\n`,
+        );
+      }
+    }
+    if (!runtimeFlow.ok || !runtimeFlow.completion) {
+      output.stderr(`${diagnosticLines(runtimeFlow.diagnostics)}\n`);
+      output.stderr(
+        'The durable runtime copy could not be installed or bound. Initialization is not complete; --no-runtime leaves this action pending intentionally.\n',
+      );
+      return 1;
+    }
+    output.stdout(
+      'Durable runtime copy installed and bound. Initialization complete.\n',
     );
     return 0;
   }

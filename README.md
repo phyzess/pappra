@@ -31,10 +31,20 @@ For a non-interactive derived setup, `npx @phyzess/pappra@beta init --yes --appl
 
 Development from a checkout works the same way: `pnpm install --frozen-lockfile`, `pnpm build`, then invoke `dist/cli/main.js` by absolute path from the target workspace.
 
-An apply result can be `ok:true` with `status:"external-actions-pending"` and a
-nonzero process exit. That is a successful, partial configuration write, not a
-claim that a runtime or external tool was installed. Inspect `pendingExternalActions`
-and run `doctor` before adding optional integrations.
+`init --apply` also installs a durable runtime copy of the executing package under the
+Pappra data directory and binds it in `machine.json`, so an npx/dlx bootstrap survives
+cache eviction and the command converges with exit code `0`. Pass `--no-runtime` to leave
+that action pending instead; the result is then `ok:true` with
+`status:"external-actions-pending"` and a nonzero exit, which is a partial configuration
+write rather than a claim that a runtime exists.
+
+The runtime copy can be managed directly:
+
+```sh
+npx @phyzess/pappra@beta runtime install --apply [--from self|tarball|registry]
+npx @phyzess/pappra@beta runtime status --json
+npx @phyzess/pappra@beta runtime verify --json
+```
 
 Optional examples have prerequisites rather than generated files: code-graph and
 host commands require the selected external CLI/support, and collaboration

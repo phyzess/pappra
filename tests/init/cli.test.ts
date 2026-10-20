@@ -50,6 +50,11 @@ function writeChoices(path: string): void {
   writeFileSync(path, `${JSON.stringify(baseInitChoices(), null, 2)}\n`);
 }
 
+/** Keeps the durable runtime copy out of the developer's real data directory. */
+function runtimeEnv(temporary: string): NodeJS.ProcessEnv {
+  return { PAPPRA_DATA_HOME: join(temporary, 'pappra-data') };
+}
+
 test('init --config plans without writes and --apply applies only config files', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-cli-'));
   try {
@@ -68,17 +73,22 @@ test('init --config plans without writes and --apply applies only config files',
     const applied = invoke(
       ['init', '--config', choices, '--apply', '--json'],
       temporary,
+      runtimeEnv(temporary),
     );
-    assert.equal(applied.status, 1, applied.stderr);
+    assert.equal(applied.status, 0, applied.stderr);
     const apply = parseJson(applied.stdout);
     assert('ok' in apply && apply.ok === true);
     assert('apply' in apply);
     const applyValue = apply.apply;
     assert(typeof applyValue === 'object' && applyValue !== null);
+    assert('initComplete' in apply && apply.initComplete === true);
     assert(
       'status' in applyValue &&
         applyValue.status === 'external-actions-pending',
     );
+    const runtimeValue = apply.runtime;
+    assert(typeof runtimeValue === 'object' && runtimeValue !== null);
+    assert.equal((runtimeValue as Record<string, unknown>).status, 'installed');
     assert.equal(
       existsSync(join(temporary, '.pappra', 'workspace.json')),
       true,
@@ -91,16 +101,14 @@ test('init --config plans without writes and --apply applies only config files',
     const repeated = invoke(
       ['init', '--config', choices, '--apply', '--json'],
       temporary,
+      runtimeEnv(temporary),
     );
-    assert.equal(repeated.status, 1, repeated.stderr);
+    assert.equal(repeated.status, 0, repeated.stderr);
     const repeat = parseJson(repeated.stdout);
     assert('apply' in repeat);
     const repeatApply = repeat.apply;
     assert(typeof repeatApply === 'object' && repeatApply !== null);
-    assert.equal(
-      (repeatApply as Record<string, unknown>).status,
-      'external-actions-pending',
-    );
+    assert.equal((repeatApply as Record<string, unknown>).status, 'no-changes');
 
     const machinePath = join(temporary, '.pappra', 'local', 'machine.json');
     const machine = JSON.parse(readFileSync(machinePath, 'utf8'));
@@ -113,6 +121,7 @@ test('init --config plans without writes and --apply applies only config files',
     const settled = invoke(
       ['init', '--config', choices, '--apply', '--json'],
       temporary,
+      runtimeEnv(temporary),
     );
     assert.equal(settled.status, 0, settled.stderr);
     const settledJson = parseJson(settled.stdout);
@@ -382,9 +391,10 @@ test('init --print-choices prints a round-trippable choices document', () => {
     const applied = invoke(
       ['init', '--config', choicesPath, '--apply', '--json'],
       temporary,
-      { PATH: isolated.path },
+      { PATH: isolated.path, ...runtimeEnv(temporary) },
     );
-    assert.equal(applied.status, 1, applied.stderr);
+    assert.equal(applied.status, 0, applied.stderr);
+    assert.equal(parseJson(applied.stdout).initComplete, true);
     const appliedValue = parseJson(applied.stdout);
     assert.equal(
       (appliedValue.apply as Record<string, unknown>).status,
@@ -414,8 +424,9 @@ test('init --yes applies derived selections without a TTY', () => {
   try {
     const applied = invoke(['init', '--yes', '--apply', '--json'], temporary, {
       PATH: isolated.path,
+      ...runtimeEnv(temporary),
     });
-    assert.equal(applied.status, 1, applied.stderr);
+    assert.equal(applied.status, 0, applied.stderr);
     const value = parseJson(applied.stdout);
     assert.equal(value.ok, true);
     const workspace = JSON.parse(
@@ -445,13 +456,14 @@ test('init --yes applies derived selections without a TTY', () => {
 
     const repeated = invoke(['init', '--yes', '--apply', '--json'], temporary, {
       PATH: isolated.path,
+      ...runtimeEnv(temporary),
     });
-    assert.equal(repeated.status, 1, repeated.stderr);
+    assert.equal(repeated.status, 0, repeated.stderr);
     const repeatedValue = parseJson(repeated.stdout);
     assert.equal(repeatedValue.ok, true);
     assert.equal(
       (repeatedValue.apply as Record<string, unknown>).status,
-      'external-actions-pending',
+      'no-changes',
     );
   } finally {
     rmSync(temporary, { recursive: true, force: true });

@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export interface PackageInfo {
   readonly name: string;
@@ -30,4 +32,11 @@ export function getPackageInfo(): PackageInfo {
     version: value.version,
     description: value.description,
   };
+}
+
+/** Absolute root of the package that is currently executing. */
+export function getPackageRoot(): string {
+  return dirname(
+    fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
+  );
 }

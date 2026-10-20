@@ -390,7 +390,7 @@ function runtimeCheck(
         source: machinePath ?? dataDir,
         observedAt,
         nextActions: [
-          'Run an explicit pappra init --apply --install-runtime with a chosen local tarball or exact version when authorized.',
+          'Run pappra runtime install --apply (from self, tarball, or an exact version) or pappra init --apply when authorized.',
         ],
       });
     }
@@ -475,7 +475,7 @@ function runtimeCheck(
             ]
           : [],
       nextActions: [
-        'Run an explicit pappra init --apply --install-runtime with a chosen local tarball or exact version when authorized.',
+        'Run pappra runtime install --apply (from self, tarball, or an exact version) or pappra init --apply when authorized.',
       ],
     });
   }

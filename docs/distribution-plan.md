@@ -236,6 +236,14 @@ npx @phyzess/pappra@<beta> init --yes --apply --json             # one command, 
 | M4 | B2: plugin bundles for 3 hosts, `--mode`, `host verify` drift, migration from absolute-path manifest | 3–4 d | M3 |
 | M5 | Docs rewrite (quickstart/README/support), oodon dogfood, `skills` interop check | 1 d | M4 |
 
+M3 status (2026-10-20): landed — `pappra runtime install|status|verify|remove` exists,
+`--from self` packs the executing package and installs it under the Pappra data directory
+through the existing journal/manifest machinery, and `init --apply` installs and binds that
+copy by default (converging to exit 0) unless `--no-runtime` keeps the action pending. The
+passive runtime inspector now derives the package identity from the manifest instead of
+hardcoding the old package name, which the scoped rename had exposed. The §5.C5 "one
+command, exit 0" check now holds.
+
 M1 status (2026-10-20): landed — `init --yes`/`--no-interactive` derive deterministic
 selections, `--print-choices` prints the derived document (and with `--json` a wrapper that
 carries the rules and candidates), `init --json` without selections returns candidates plus

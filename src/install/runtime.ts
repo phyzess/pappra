@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import {
   mkdir,
+  mkdtemp,
   readFile,
   readdir,
   readlink,
@@ -11,7 +12,8 @@ import {
 } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
+import { getPackageInfo } from '../package-info.js';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
 import { diagnosticCodes } from '../schemas/errors.js';
@@ -59,7 +61,7 @@ export interface RuntimeInstallResult {
 }
 
 export interface RuntimeInstallSource {
-  readonly kind: 'version' | 'tarball';
+  readonly kind: 'version' | 'tarball' | 'self';
   /** Required for tarball sources. */
   readonly path?: string;
 }
@@ -284,6 +286,87 @@ function npmCommand(): {
     executable: process.platform === 'win32' ? 'npm.cmd' : 'npm',
     args: [],
   };
+}
+
+interface SelfPackageTarball {
+  readonly directory: string;
+  readonly tarball: string;
+  readonly digest: string;
+}
+
+/**
+ * Packs the package that is currently executing so it can be installed as a
+ * durable runtime before an ephemeral (npx/dlx) checkout is collected. The
+ * existing build output is packed as-is; scripts never run here.
+ */
+async function packSelfPackage(
+  packageRoot: string,
+  packageName: string,
+  version: string,
+): Promise<SelfPackageTarball> {
+  const manifestRead = await readFileBounded(
+    join(packageRoot, 'package.json'),
+    1024 * 1024,
+  );
+  if (!manifestRead.ok) {
+    throw new Error(
+      `Cannot read the running package manifest: ${manifestRead.code}`,
+    );
+  }
+  const decoded: unknown = JSON.parse(
+    new TextDecoder('utf-8', { fatal: true }).decode(manifestRead.value.bytes),
+  );
+  if (typeof decoded !== 'object' || decoded === null) {
+    throw new Error('The running package manifest is not an object.');
+  }
+  const manifest = decoded as {
+    readonly name?: unknown;
+    readonly version?: unknown;
+  };
+  if (manifest.name !== packageName || manifest.version !== version) {
+    throw new Error(
+      `Running package ${String(manifest.name)}@${String(manifest.version)} does not match ${packageName}@${version}.`,
+    );
+  }
+  const directory = await mkdtemp(join(tmpdir(), 'pappra-self-'));
+  const npm = npmCommand();
+  const packed = await runCommand(
+    npm.executable,
+    [
+      ...npm.args,
+      'pack',
+      '--ignore-scripts',
+      '--json',
+      '--pack-destination',
+      directory,
+    ],
+    { cwd: packageRoot, timeoutMs: 120_000 },
+  );
+  if (packed.timedOut || packed.code !== 0) {
+    throw new Error(
+      `Cannot pack the running package: ${packed.stderr.slice(0, 500)}`,
+    );
+  }
+  let report: unknown;
+  try {
+    report = JSON.parse(packed.stdout.trim());
+  } catch {
+    throw new Error('npm pack did not return a JSON report.');
+  }
+  const first: unknown = Array.isArray(report) ? report[0] : null;
+  const filename =
+    typeof first === 'object' &&
+    first !== null &&
+    'filename' in first &&
+    typeof first.filename === 'string'
+      ? first.filename
+      : null;
+  if (filename === null || filename.includes('/') || filename.includes('\\')) {
+    throw new Error('npm pack did not report a safe tarball filename.');
+  }
+  const tarball = join(directory, filename);
+  const bytes = await readFile(tarball);
+  return { directory, tarball, digest: sha256Digest(bytes) };
 }
 
 async function readPackageManifest(
@@ -562,7 +645,7 @@ export async function installRuntime(
   options: InstallRuntimeOptions,
 ): Promise<RuntimeInstallResult> {
   const version = options.version;
-  const packageName = options.packageName ?? 'pappra';
+  const packageName = options.packageName ?? getPackageInfo().name;
   if (!validVersion(version)) {
     return failureResult('failed', `Invalid runtime version: ${version}`, {
       version,
@@ -662,6 +745,7 @@ export async function installRuntime(
     return afterLock;
   }
 
+  let selfPackage: SelfPackageTarball | null = null;
   let source: RuntimeSource;
   try {
     if (options.source.kind === 'tarball') {
@@ -679,6 +763,17 @@ export async function installRuntime(
         version,
         path: tarballPath,
         digest: sha256Digest(bytes),
+      };
+    } else if (options.source.kind === 'self') {
+      const packageRoot = resolve(options.source.path ?? '');
+      selfPackage = await packSelfPackage(packageRoot, packageName, version);
+      source = {
+        kind: 'self',
+        packageName,
+        version,
+        packageRoot,
+        tarball: selfPackage.tarball,
+        digest: selfPackage.digest,
       };
     } else {
       source = {
@@ -749,6 +844,11 @@ export async function installRuntime(
     stageResidual: boolean,
   ): Promise<RuntimeInstallResult> => {
     let residual: string[] = [];
+    if (selfPackage !== null) {
+      await rm(selfPackage.directory, { recursive: true, force: true }).catch(
+        () => undefined,
+      );
+    }
     if (stageResidual) {
       try {
         await rm(stage, { recursive: true, force: true });
@@ -804,8 +904,10 @@ export async function installRuntime(
       '--no-package-lock',
       '--save-exact',
       ...(options.offline === true ? ['--offline'] : []),
-      source.kind === 'tarball'
-        ? source.path
+      source.kind === 'tarball' || source.kind === 'self'
+        ? source.kind === 'tarball'
+          ? source.path
+          : source.tarball
         : `${source.packageName}@${source.version}`,
     ];
     const installed = await runCommand(npm.executable, installArgs, {
@@ -815,6 +917,11 @@ export async function installRuntime(
     if (installed.timedOut || installed.code !== 0) {
       throw new Error(
         `Package manager install failed (${installed.timedOut ? 'timeout' : `exit ${String(installed.code)}`}): ${installed.stderr.slice(0, 1000)}`,
+      );
+    }
+    if (selfPackage !== null) {
+      await rm(selfPackage.directory, { recursive: true, force: true }).catch(
+        () => undefined,
       );
     }
     journal = updateJournal(journal, 'applying', 'package-installed', null);
@@ -964,6 +1071,14 @@ export interface RuntimeStateReport {
   readonly diagnostics: readonly Diagnostic[];
 }
 
+async function runtimePackageName(runtimeRoot: string): Promise<string> {
+  const read = await readJsonDocument(
+    join(runtimeRoot, 'install-manifest.json'),
+    runtimeManifestSchema,
+  );
+  return read.value?.packageName ?? getPackageInfo().name;
+}
+
 export async function inspectRuntimeState(
   version: string,
   dataDir = resolveUserDataDir(),
@@ -1044,10 +1159,11 @@ export async function inspectRuntimeState(
       ],
     };
   }
+  const packageName = await runtimePackageName(paths.runtimeRoot);
   const complete = await completeExistingRuntime(
     version,
     paths,
-    'pappra',
+    packageName,
     30_000,
   );
   if (complete === null) {
@@ -1423,10 +1539,17 @@ export async function inspectRuntimeStatePassive(
       ],
     };
   }
-  if (
-    manifest.packageName !== 'pappra' ||
-    manifest.runtimeRoot !== paths.runtimeRoot
-  ) {
+  const packageSegments = manifest.packageName.split('/');
+  const safePackageName =
+    packageSegments.length <= 2 &&
+    packageSegments.every(
+      (segment) =>
+        segment !== '' &&
+        segment !== '.' &&
+        segment !== '..' &&
+        /^[A-Za-z0-9@._-]+$/.test(segment),
+    );
+  if (!safePackageName || manifest.runtimeRoot !== paths.runtimeRoot) {
     return {
       version,
       status: 'corrupt',
@@ -1449,7 +1572,11 @@ export async function inspectRuntimeStatePassive(
       ],
     };
   }
-  const packageRoot = join(paths.runtimeRoot, 'node_modules', 'pappra');
+  const packageRoot = join(
+    paths.runtimeRoot,
+    'node_modules',
+    ...manifest.packageName.split('/'),
+  );
   const packageObservation = await observePath(packageRoot);
   const packageReal =
     packageObservation.kind === 'directory'
@@ -1495,7 +1622,7 @@ export async function inspectRuntimeStatePassive(
     digest === manifest.packageDigest &&
     packageObservation.kind === 'directory' &&
     packageManifest !== null &&
-    packageManifest.name === 'pappra' &&
+    packageManifest.name === manifest.packageName &&
     packageManifest.version === version;
   const executableExists =
     executableInsideRuntime && executableObservation.kind === 'file';

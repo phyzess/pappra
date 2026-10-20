@@ -50,6 +50,14 @@ export const runtimeSourceSchema = z.discriminatedUnion('kind', [
     path: pathSchema,
     digest: digestSchema,
   }),
+  z.strictObject({
+    kind: z.literal('self'),
+    packageName: z.string().min(1).max(256),
+    version: versionSchema,
+    packageRoot: pathSchema,
+    tarball: pathSchema,
+    digest: digestSchema,
+  }),
 ]);
 
 export type RuntimeSource = z.infer<typeof runtimeSourceSchema>;
