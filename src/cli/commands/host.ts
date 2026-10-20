@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { HostName } from '../../schemas/host.js';
 import { HostIntegrationService } from '../../hosts/integration/service.js';
 import { exportHostPluginBundle } from '../../hosts/integration/bundle-export.js';
@@ -30,6 +30,15 @@ export interface HostCommandOptions {
   readonly out: string | null;
   readonly mode: 'project-settings' | 'plugin' | null;
   readonly marketplace: boolean;
+  readonly scope: 'project' | 'user' | null;
+}
+
+/** Codex only loads lifecycle hooks from its user configuration directory. */
+function codexHome(): string {
+  const configured = process.env['CODEX_HOME'];
+  return configured === undefined || configured === ''
+    ? join(homedir(), '.codex')
+    : resolve(configured);
 }
 
 function printDiagnostics(
@@ -77,10 +86,36 @@ export async function runHostCommand(
     hostVersion: options.hostVersion,
     observedAt: new Date().toISOString(),
   });
+  if (options.scope === 'user') {
+    if (HOST_SUPPORT[options.host].hookScope !== 'user') {
+      output.stderr(
+        `pappra host: ${options.host} loads hooks from ${HOST_SUPPORT[options.host].hookScope} scope; --scope user is only valid for a user-scoped host (codex).\n`,
+      );
+      return 2;
+    }
+    if (options.hostRoot !== null) {
+      output.stderr(
+        'pappra host: --scope user resolves CODEX_HOME and cannot be combined with --host-root.\n',
+      );
+      return 2;
+    }
+    if (
+      options.action !== 'plan' &&
+      options.action !== 'install' &&
+      options.action !== 'verify'
+    ) {
+      output.stderr(
+        'pappra host: --scope user is only valid for plan, install, or verify.\n',
+      );
+      return 2;
+    }
+  }
   const hostRoot =
-    options.hostRoot === null
-      ? undefined
-      : resolve(options.cwd, options.hostRoot);
+    options.scope === 'user'
+      ? codexHome()
+      : options.hostRoot === null
+        ? undefined
+        : resolve(options.cwd, options.hostRoot);
   const target = {
     ...(hostRoot === undefined ? {} : { hostRoot }),
     ...(options.hostVersion === null

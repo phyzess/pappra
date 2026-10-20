@@ -45,9 +45,11 @@ Observed `.pappra/local/host-events/pi/<digest>.json`:
 the package layout and the generated extension both work. Compact and checkpoint-request
 events were not exercised; they remain unverified for this host.
 
-## Codex 0.163.0 — plugin hooks unsupported
+## Codex 0.163.0 — plugin hooks unsupported, user-scope hooks verified
 
-The marketplace bundle installs and is enabled:
+Codex is the one host whose hooks do not live in the workspace. Two separate findings:
+
+**Plugin bundle: unsupported.** The marketplace bundle installs and is enabled:
 
 ```sh
 codex plugin marketplace add .market --json        # marketplaceName pappra-local
@@ -55,18 +57,38 @@ codex plugin add pappra@pappra-local --json        # installedPath .../plugins/c
 ```
 
 A control hook written to the isolated `CODEX_HOME/hooks.json` fired during
+`codex exec --dangerously-bypass-hook-trust`, but the bundled plugin hook never ran, with or
+without a `.codex-plugin/plugin.json` copy and with absolute or relative commands.
+
+**Project `.codex/hooks.json`: also not loaded.** Installing with
+`pappra host install --host codex --host-root .codex --apply` wrote the file, and a real
+`codex exec` session produced no `SessionStart` hook line and no host event.
+
+**User scope: verified.** Codex loads lifecycle hooks from its user configuration directory:
 
 ```sh
-codex exec --dangerously-bypass-hook-trust --skip-git-repo-check "reply with ok"
+CODEX_HOME=~/.codex pappra host install --host codex --scope user --host-version 0.163.0 --apply
 ```
 
-(`hook: SessionStart Completed` plus a marker file), but the bundled plugin hook never ran:
-no `.pappra/local/host-events/codex` record was written. The same result held after adding a
-`.codex-plugin/plugin.json` copy to the installed plugin and after pointing the command at an
-absolute hook path. This matches the upstream Agent Plugins hook-loading issue.
+That merges `$CODEX_HOME/hooks.json` (pappra-managed entries only; existing user hooks are
+preserved), copies the bundled hook to `$CODEX_HOME/hooks/pappra-hook.mjs`, and writes a
+manifest that `pappra host verify --host codex --scope user` checks. A real
+`codex exec` session then wrote:
 
-Conclusion: keep `--mode project-settings` (which writes `.codex/hooks.json` in the target
-workspace) for Codex at this version. Do not advertise plugin hooks for Codex.
+```json
+{
+  "schema": "pappra/host-event/1",
+  "host": "codex",
+  "event": "startup",
+  "nativeEvent": "SessionStart",
+  "source": "startup",
+  "observedAt": "2026-10-20T06:31:36.789Z"
+}
+```
+
+Codex only supports `SessionStart` (startup/resume); compact and checkpoint-request remain
+unsupported by the pinned version. Hooks also require trust: approve them once in Codex, or
+use `--dangerously-bypass-hook-trust` for isolated automation only.
 
 ## Claude Code 2.1.292 — verified (startup)
 
@@ -109,7 +131,9 @@ require their own registration step:
 - Claude Code: `host bundle --marketplace` → `claude plugin marketplace add <dir>` →
   `claude plugin install pappra@pappra-local`
 - Pi: `host bundle` → `pi install <dir> -l -a`
-- Codex: not available; use `--mode project-settings`
+- Codex: user scope only — `host install --host codex --scope user` merges
+  `$CODEX_HOME/hooks.json` (plugin bundles and project `.codex/hooks.json` are not loaded at
+  0.163.0); approve the hook once in Codex
 
 `pappra host install --mode plugin` therefore stays fail-closed and reports the per-host
 state and the exact commands, while `--mode project-settings` remains the automatic

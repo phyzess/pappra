@@ -4,6 +4,7 @@ export const HOST_SUPPORT = {
   pi: {
     surface: 'pi-extension' as const,
     version: '1.3.0',
+    hookScope: 'project' as const,
     events: {
       startup: 'session_start',
       resume: 'session_start',
@@ -14,6 +15,9 @@ export const HOST_SUPPORT = {
   codex: {
     surface: 'codex-hooks' as const,
     version: '0.163.0',
+    // Codex 0.163.0 loads lifecycle hooks only from its user configuration
+    // directory (CODEX_HOME); project `.codex/hooks.json` is not loaded.
+    hookScope: 'user' as const,
     events: {
       startup: 'SessionStart',
       resume: 'SessionStart',
@@ -24,6 +28,7 @@ export const HOST_SUPPORT = {
   claude: {
     surface: 'claude-hooks' as const,
     version: '2.1.292',
+    hookScope: 'project' as const,
     events: {
       startup: 'SessionStart',
       resume: 'SessionStart',

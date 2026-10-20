@@ -251,9 +251,10 @@ under the configured knowledge sources, so `docs list` reflects the workspace.
 (c) explicit, evidence-based, not silently missing — `host bundle --marketplace` exports a
 marketplace that Claude Code's validator accepts and Codex installs. Real sessions were then
 run per host (see `docs/host-plugin-validation.md`): Pi fires the packaged extension and
-wrote a `session_start` record; Codex 0.163.0 does not load plugin hooks (a control hook in
-an isolated CODEX_HOME fired while the bundled hook never did), so it stays on
-project-settings; Claude Code's OAuth credentials had been cleared locally; after re-authentication its
+wrote a `session_start` record; Codex 0.163.0 does not load plugin hooks and does not load project
+`.codex/hooks.json` either (control hooks proved codex runs hooks, but only from its user
+configuration directory), so Codex is wired with the explicit
+`host install --host codex --scope user` path that merges `$CODEX_HOME/hooks.json`; Claude Code's OAuth credentials had been cleared locally; after re-authentication its
 marketplace validated, installed at project scope, and a real `claude -p` session wrote a
 SessionStart event, so its startup hook is verified too. `host install --mode plugin` fails closed with
 the per-host state and evidence, and `HOST_PLUGIN_HOOKS` records it in code.

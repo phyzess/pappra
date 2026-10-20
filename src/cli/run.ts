@@ -36,6 +36,7 @@ function parseOptions(args: readonly string[]) {
       out: { type: 'string' },
       mode: { type: 'string' },
       marketplace: { type: 'boolean' },
+      scope: { type: 'string' },
       bind: { type: 'boolean' },
       force: { type: 'boolean' },
       'no-interactive': { type: 'boolean' },
@@ -300,6 +301,28 @@ export async function runCli(
   }
   if (command !== 'host' && values.out !== undefined) {
     failure(output, json, 'invalid_arguments', '--out is only valid for host.');
+    return 2;
+  }
+  if (
+    values.scope !== undefined &&
+    values.scope !== 'project' &&
+    values.scope !== 'user'
+  ) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--scope accepts project or user.',
+    );
+    return 2;
+  }
+  if (command !== 'host' && values.scope !== undefined) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--scope is only valid for host.',
+    );
     return 2;
   }
   if (command !== 'host' && values.marketplace === true) {
@@ -883,6 +906,10 @@ export async function runCli(
       (values.apply === true && action !== 'install') ||
       (values.mode !== undefined && action !== 'install') ||
       (values.marketplace === true && action !== 'bundle') ||
+      (values.scope !== undefined &&
+        action !== 'plan' &&
+        action !== 'install' &&
+        action !== 'verify') ||
       (values['host-root'] !== undefined && action === null) ||
       (values['host-version'] !== undefined && action === null);
     if (values.help) {
@@ -919,6 +946,10 @@ export async function runCli(
             ? values.mode
             : null,
         marketplace: values.marketplace === true,
+        scope:
+          values.scope === 'project' || values.scope === 'user'
+            ? values.scope
+            : null,
       },
       output,
     );
