@@ -8,7 +8,7 @@ Pappra is the manager. External coding hosts, code-graph engines and collaborati
 
 Requirements: Node.js 24 or later. `pnpm` 12.3.4 is required only for development inside this repository; Git is required only when a command observes repository identity.
 
-The package is published as `@phyzess/pappra`. Run it with `npx` from the target workspace, or install it globally when you use it every day.
+The package is published as `@phyzess/pappra`. Install it once for daily use (`npm install -g @phyzess/pappra@beta`, the command is `pappra`), or run it with `npx` when you want a zero-install, version-pinned invocation.
 
 ```sh
 # In an empty target workspace

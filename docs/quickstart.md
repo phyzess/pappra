@@ -6,7 +6,9 @@ binary.
 
 ## Published package
 
-The package is published as `@phyzess/pappra`. From an empty target workspace:
+The package is published as `@phyzess/pappra`. Install it once if you use it every day
+(`npm install -g @phyzess/pappra@beta`), then the command is plain `pappra`; the `npx` form
+below stays valid and pins a version without installing. From an empty target workspace:
 
 ```sh
 npx @phyzess/pappra@beta init --config ./minimal-choices.json --json
