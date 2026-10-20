@@ -89,7 +89,7 @@ The check runs the source policy, type checks, formatting, deterministic tests a
 
 ## Status and limits
 
-Pappra is development software (`0.1.0-beta.9`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.9`, because pre-release versions are never republished.
+Pappra is development software (`0.1.0-beta.10`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.10`, because pre-release versions are never republished.
 
 The deterministic suite covers synthetic workspaces, fixtures and local process boundaries. It does not establish real-model behavior, native host callability on every platform, CodeGraph completeness, Windows/Linux parity or production performance. A host adapter version pin is an observed support claim, not proof that a particular native installation will load or run correctly.
 
