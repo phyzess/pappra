@@ -1,0 +1,198 @@
+import type { Diagnostic } from '../../schemas/diagnostics.js';
+import { resolveWorkspaceRoot } from '../../workspace/resolve.js';
+import { formatDiagnostic } from '../../schemas/diagnostics.js';
+import {
+  docsArchiveReportSchema,
+  docsCheckReportSchema,
+  docsListReportSchema,
+  type DocumentRecord,
+} from '../../schemas/document.js';
+import {
+  KnowledgeService,
+  type ListDocumentsResult,
+  type DocumentCheckResult,
+} from '../../knowledge/index.js';
+import type { CliOutput } from '../output.js';
+
+export const docsUsage =
+  'pappra docs <list|check|archive> [options]\n' +
+  '  list   [--include-private] [--include-archived] [--json]\n' +
+  '  check  [--include-private] [--json]\n' +
+  '  archive <documentId> [--json]';
+
+export interface DocsCommandOptions {
+  readonly cwd: string;
+  readonly action: string | null;
+  readonly argument: string | null;
+  readonly json: boolean;
+  readonly includePrivate: boolean;
+  readonly includeArchived: boolean;
+}
+
+function printDiagnostics(
+  output: CliOutput,
+  diagnostics: readonly Diagnostic[],
+): void {
+  for (const diagnostic of diagnostics) {
+    output.stderr(`${formatDiagnostic(diagnostic)}\n`);
+  }
+}
+
+function printDocument(output: CliOutput, record: DocumentRecord): void {
+  output.stdout(
+    `${record.documentId}  ${record.lifecycle}/${record.maturity}  ${record.visibility}  ${record.kind}  ${record.location.kind === 'workspace' ? record.location.path : `${record.location.sourceId}:${record.location.path}`}\n`,
+  );
+}
+
+function listReport(result: ListDocumentsResult): Record<string, unknown> {
+  return {
+    schema: 'pappra/docs-list/1',
+    ok: result.ok,
+    includePrivate: result.includePrivate,
+    includeArchived: result.includeArchived,
+    catalogDigest: result.catalogDigest,
+    documents: result.records,
+    diagnostics: result.diagnostics,
+  };
+}
+
+function checkReport(result: DocumentCheckResult): Record<string, unknown> {
+  return {
+    schema: 'pappra/docs-check/1',
+    ...result,
+  };
+}
+
+function invalidArguments(
+  output: CliOutput,
+  json: boolean,
+  message: string,
+): number {
+  if (json) {
+    output.stdout(
+      `${JSON.stringify({ ok: false, code: 'invalid_arguments', message })}\n`,
+    );
+  } else {
+    output.stderr(`pappra: ${message}\n`);
+  }
+  return 2;
+}
+
+export async function runDocsCommand(
+  options: DocsCommandOptions,
+  output: CliOutput,
+): Promise<number> {
+  if (options.action === null || options.action === 'help') {
+    if (options.json) {
+      output.stdout(
+        `${JSON.stringify({
+          commands: ['list', 'check', 'archive'],
+          usage: docsUsage,
+        })}\n`,
+      );
+    } else {
+      output.stdout(`${docsUsage}\n`);
+    }
+    return 0;
+  }
+  const resolution = await resolveWorkspaceRoot({ startPath: options.cwd });
+  const serviceRoot = resolution.root ?? options.cwd;
+  if (!['list', 'check', 'archive'].includes(options.action)) {
+    return invalidArguments(
+      output,
+      options.json,
+      `unknown docs action: ${options.action}`,
+    );
+  }
+  if (options.action === 'archive' && options.argument === null) {
+    return invalidArguments(
+      output,
+      options.json,
+      'docs archive requires a documentId',
+    );
+  }
+  if (options.action !== 'archive' && options.argument !== null) {
+    return invalidArguments(
+      output,
+      options.json,
+      `docs ${options.action} does not accept an argument`,
+    );
+  }
+  if (options.action === 'archive' && options.argument !== null) {
+    const service = new KnowledgeService(serviceRoot);
+    const result = await service.archive(options.argument);
+    if (options.json) {
+      const report = docsArchiveReportSchema.safeParse({
+        schema: 'pappra/docs-archive/1',
+        ok: result.ok,
+        status: result.status,
+        document: result.record,
+        diagnostics: result.diagnostics,
+      });
+      if (!report.success) {
+        return invalidArguments(
+          output,
+          true,
+          `docs archive report is invalid: ${report.error.issues[0]?.message ?? 'unknown issue'}`,
+        );
+      }
+      output.stdout(`${JSON.stringify(report.data)}\n`);
+    } else if (result.record !== null) {
+      printDocument(output, result.record);
+      printDiagnostics(output, result.diagnostics);
+    } else {
+      printDiagnostics(output, result.diagnostics);
+    }
+    return result.ok ? 0 : 1;
+  }
+  const service = new KnowledgeService(serviceRoot);
+  if (options.action === 'list') {
+    const result = await service.list({
+      includePrivate: options.includePrivate,
+      includeArchived: options.includeArchived,
+    });
+    if (options.json) {
+      const report = docsListReportSchema.safeParse(listReport(result));
+      if (!report.success) {
+        return invalidArguments(
+          output,
+          true,
+          `docs list report is invalid: ${report.error.issues[0]?.message ?? 'unknown issue'}`,
+        );
+      }
+      output.stdout(`${JSON.stringify(report.data)}\n`);
+    } else {
+      for (const record of result.records) printDocument(output, record);
+      printDiagnostics(output, result.diagnostics);
+    }
+    return result.ok ? 0 : 1;
+  }
+  const result = await service.check({
+    includePrivate: options.includePrivate,
+  });
+  if (options.json) {
+    const report = docsCheckReportSchema.safeParse(checkReport(result));
+    if (!report.success) {
+      return invalidArguments(
+        output,
+        true,
+        `docs check report is invalid: ${report.error.issues[0]?.message ?? 'unknown issue'}`,
+      );
+    }
+    output.stdout(`${JSON.stringify(report.data)}\n`);
+  } else {
+    for (const entry of result.entries) {
+      output.stdout(
+        `${entry.documentId}  ${entry.freshness}  ${entry.lifecycle}/${entry.maturity}  record=${entry.recordDigest}  file=${entry.fileDigest ?? 'missing'}\n`,
+      );
+      for (const reason of entry.reasons) {
+        output.stdout(`  ${reason.code}: ${reason.message}\n`);
+      }
+    }
+    output.stdout(
+      `total=${result.summary.total} current=${result.summary.current} needs-review=${result.summary.needsReview} unknown=${result.summary.unknown}\n`,
+    );
+    printDiagnostics(output, result.diagnostics);
+  }
+  return result.ok ? 0 : 1;
+}

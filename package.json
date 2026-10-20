@@ -1,0 +1,103 @@
+{
+  "name": "pappra",
+  "version": "0.1.0-dev.0",
+  "description": "Portable workspace knowledge and continuity for coding agents.",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@12.3.4",
+  "bin": {
+    "pappra": "dist/cli/main.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./collab": {
+      "types": "./dist/collab/index.d.ts",
+      "import": "./dist/collab/index.js"
+    },
+    "./collab/admission": {
+      "types": "./dist/collab/admission.d.ts",
+      "import": "./dist/collab/admission.js"
+    },
+    "./hosts": {
+      "types": "./dist/hosts/index.d.ts",
+      "import": "./dist/hosts/index.js"
+    },
+    "./doctor": {
+      "types": "./dist/app/doctor.d.ts",
+      "import": "./dist/app/doctor.js"
+    },
+    "./init": {
+      "types": "./dist/app/init.d.ts",
+      "import": "./dist/app/init.js"
+    },
+    "./collaboration": {
+      "types": "./dist/app/collaboration.d.ts",
+      "import": "./dist/app/collaboration.js"
+    },
+    "./install": {
+      "types": "./dist/install/index.d.ts",
+      "import": "./dist/install/index.js"
+    },
+    "./continuity": {
+      "types": "./dist/continuity/index.d.ts",
+      "import": "./dist/continuity/index.js"
+    },
+    "./code": {
+      "types": "./dist/code/index.d.ts",
+      "import": "./dist/code/index.js"
+    },
+    "./knowledge": {
+      "types": "./dist/knowledge/index.d.ts",
+      "import": "./dist/knowledge/index.js"
+    },
+    "./schemas": {
+      "types": "./dist/schemas/index.d.ts",
+      "import": "./dist/schemas/index.js"
+    },
+    "./workspace": {
+      "types": "./dist/workspace/index.d.ts",
+      "import": "./dist/workspace/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "assets",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build:scripts": "tsc -p tsconfig.scripts.json",
+    "build": "pnpm build:scripts && node .build/scripts/scripts/clean-build.js && tsc -p tsconfig.build.json && node .build/scripts/scripts/build-assets.js",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
+    "pretest": "pnpm build && tsc -p tsconfig.test.json",
+    "test": "node .build/test/scripts/run-tests.js",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "source:check": "pnpm build:scripts && node .build/scripts/scripts/check-source-policy.js",
+    "package:check": "pnpm build && node .build/scripts/scripts/verify-package.js",
+    "check": "pnpm source:check && pnpm typecheck && pnpm format:check && pnpm test && pnpm package:check",
+    "prepack": "pnpm build"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "prettier": "3.9.9",
+    "typescript": "7.0.2"
+  },
+  "dependencies": {
+    "@clack/prompts": "1.8.1",
+    "zod": "4.6.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/phyzess/pappra.git"
+  },
+  "homepage": "https://github.com/phyzess/pappra"
+}
