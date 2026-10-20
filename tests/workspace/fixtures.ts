@@ -27,18 +27,34 @@ export function cleanup(root: string): void {
 }
 
 export function runGit(cwd: string, args: readonly string[]): string {
-  const result = spawnSync('git', ['-C', cwd, ...args], {
-    encoding: 'utf8',
-    shell: false,
-    timeout: 15_000,
-    maxBuffer: 4 * 1024 * 1024,
-    env: {
-      ...process.env,
-      GIT_OPTIONAL_LOCKS: '0',
-      GIT_TERMINAL_PROMPT: '0',
-      LC_ALL: 'C',
+  const result = spawnSync(
+    'git',
+    [
+      '-c',
+      'maintenance.auto=false',
+      '-c',
+      'maintenance.autoDetach=false',
+      '-c',
+      'gc.auto=0',
+      '-c',
+      'gc.autoDetach=false',
+      '-C',
+      cwd,
+      ...args,
+    ],
+    {
+      encoding: 'utf8',
+      shell: false,
+      timeout: 15_000,
+      maxBuffer: 4 * 1024 * 1024,
+      env: {
+        ...process.env,
+        GIT_OPTIONAL_LOCKS: '0',
+        GIT_TERMINAL_PROMPT: '0',
+        LC_ALL: 'C',
+      },
     },
-  });
+  );
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(
