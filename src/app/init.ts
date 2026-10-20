@@ -41,7 +41,7 @@ import {
   type WorkspaceConfig,
   type WorkspaceValidation,
 } from '../schemas/workspace.js';
-import { getPackageInfo } from '../package-info.js';
+import { getPackageInfo, getPackageRoot } from '../package-info.js';
 import { spawnSync } from 'node:child_process';
 import { executableOnPath } from '../hosts/detect.js';
 import { HOST_SUPPORT } from '../hosts/integration/support.js';
@@ -77,7 +77,12 @@ import {
   failManagedApply,
   recordManagedFile,
   type ManagedApplyContext,
+  updateMachineRuntime,
 } from '../install/apply.js';
+import {
+  installRuntime,
+  type RuntimeInstallResult,
+} from '../install/runtime.js';
 
 const workspaceConfigRelativePath = '.pappra/workspace.json';
 const machineConfigRelativePath = '.pappra/local/machine.json';
@@ -577,7 +582,10 @@ const derivedExcludes = [
 ] as const;
 const derivedValidationScripts = ['lint', 'typecheck', 'test'] as const;
 
-function detectedHostVersion(command: string, pathEnv: string): string | null {
+export function detectedHostVersion(
+  command: string,
+  pathEnv: string,
+): string | null {
   const executable = executableOnPath(command, pathEnv);
   if (executable === null) return null;
   const probe = spawnSync(executable, ['--version'], {
@@ -2166,4 +2174,100 @@ export async function applyInitPlan(
       diagnostics: failed.diagnostics,
     };
   }
+}
+
+export interface RuntimeFlowResult {
+  readonly ok: boolean;
+  readonly completion: boolean;
+  readonly runtime: RuntimeInstallResult | null;
+  readonly diagnostics: readonly Diagnostic[];
+}
+
+export async function bindAndRecordRuntime(
+  root: string,
+  installed: RuntimeInstallResult,
+): Promise<RuntimeFlowResult> {
+  if (!installed.ok || installed.manifest === null) {
+    return {
+      ok: false,
+      completion: false,
+      runtime: installed,
+      diagnostics: installed.diagnostics,
+    };
+  }
+  const updated = await updateMachineRuntime(root, installed.manifest);
+  if (!updated.ok) {
+    return {
+      ok: false,
+      completion: false,
+      runtime: installed,
+      diagnostics: updated.diagnostics,
+    };
+  }
+  const followUp = await planWorkspaceInit({ root });
+  if (!followUp.ok) {
+    return {
+      ok: false,
+      completion: false,
+      runtime: installed,
+      diagnostics: followUp.diagnostics,
+    };
+  }
+  if (
+    followUp.bundle.plan.files.length > 0 ||
+    followUp.bundle.plan.externalActions.length > 0
+  ) {
+    return {
+      ok: false,
+      completion: false,
+      runtime: installed,
+      diagnostics: [
+        {
+          code: diagnosticCodes.initRuntimeSourceRequired,
+          severity: 'error',
+          message:
+            'Runtime installation succeeded but init still has pending file or external actions.',
+          source: 'init runtime',
+          pointer: null,
+          hint: 'Run pappra init again to review the remaining plan; initialization is not complete.',
+        },
+      ],
+    };
+  }
+  return {
+    ok: true,
+    completion: true,
+    runtime: installed,
+    diagnostics: [],
+  };
+}
+
+/**
+ * Converges the runtime binding by installing a durable copy of the package that
+ * is currently executing. Reusing an already verified copy is cheap: the install
+ * machinery short-circuits before packing.
+ */
+export async function ensureDefaultRuntime(
+  root: string,
+  targetVersion: string,
+): Promise<RuntimeFlowResult> {
+  const machine = await inspectMachineConfig(root);
+  const binding = machine.value?.runtime ?? null;
+  if (binding !== null && binding.version === targetVersion) {
+    const executable = await observePath(binding.executable);
+    if (executable.kind === 'file') {
+      return {
+        ok: true,
+        completion: true,
+        runtime: null,
+        diagnostics: [],
+      };
+    }
+  }
+  const installed = await installRuntime({
+    version: targetVersion,
+    source: { kind: 'self', path: getPackageRoot() },
+    packageName: getPackageInfo().name,
+  });
+  return bindAndRecordRuntime(root, installed);
 }

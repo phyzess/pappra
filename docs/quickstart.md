@@ -51,6 +51,20 @@ configured knowledge sources.
 Exit codes: `0` converged, `1` applied with a pending manual step (for example with
 `--no-runtime`), `2` invalid input, `3` unavailable environment.
 
+## New workspace or new machine
+
+`pappra onboard` plans or applies the whole setup: workspace config, durable runtime, and
+(with `--apply-host`) host wiring for hosts whose version matches the pinned matrix.
+
+```sh
+pappra onboard --dry-run --json            # read-only: scope, files, host versions
+pappra onboard --yes --json                # init + runtime, prints host steps
+pappra onboard --yes --apply-host --json   # also writes verified host integrations
+```
+
+It never approves host trust. Copying a workspace to another machine is covered in
+[portability](portability.md); `.pappra/local/` is machine-local and must not be copied.
+
 ## Adopting an existing multi-repository workspace
 
 A workspace root often contains many checkouts plus vendored dependencies and worktrees.

@@ -218,6 +218,10 @@ trust, Claude plugin trust/reload). No code path approves them. `doctor` reports
 
 Rough effort: M6 1–2 d, M7 2–3 d, M8 2 d, M9 3–4 d, M10 2 d.
 
+M6 status (2026-10-20): `pappra onboard` landed with `--dry-run`, `--apply-host`,
+`--print-handoff`, host version drift states, idempotent apply and tests; portability docs
+added. Remaining decisions (MCP transport/server split, auto-resume scope) apply to M7+.
+
 ## 8. Risks
 
 - **MCP surface security**: a write tool that trusts the model would turn prose into

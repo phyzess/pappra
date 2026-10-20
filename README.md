@@ -38,6 +38,11 @@ that action pending instead; the result is then `ok:true` with
 `status:"external-actions-pending"` and a nonzero exit, which is a partial configuration
 write rather than a claim that a runtime exists.
 
+For a new workspace or a new machine, `pappra onboard --dry-run --json` shows the plan and
+the host version matrix; `pappra onboard --yes --apply-host --json` applies config, runtime
+and verified host wiring (host trust still needs one approval). See
+[portability](docs/portability.md).
+
 The runtime copy can be managed directly:
 
 ```sh
@@ -89,7 +94,7 @@ The check runs the source policy, type checks, formatting, deterministic tests a
 
 ## Status and limits
 
-Pappra is development software (`0.1.0-beta.11`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.11`, because pre-release versions are never republished.
+Pappra is development software (`0.1.0-beta.12`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.12`, because pre-release versions are never republished.
 
 The deterministic suite covers synthetic workspaces, fixtures and local process boundaries. It does not establish real-model behavior, native host callability on every platform, CodeGraph completeness, Windows/Linux parity or production performance. A host adapter version pin is an observed support claim, not proof that a particular native installation will load or run correctly.
 

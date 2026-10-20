@@ -7,16 +7,13 @@ import {
   parseInitChoices,
   type InitChoices,
 } from '../../schemas/init.js';
-import { observePath, readTextFileBounded } from '../../infra/fs.js';
-import { getPackageInfo, getPackageRoot } from '../../package-info.js';
-import {
-  installRuntime,
-  type RuntimeInstallResult,
-} from '../../install/runtime.js';
-import { updateMachineRuntime } from '../../install/apply.js';
-import { inspectMachineConfig } from '../../workspace/config.js';
+import { readTextFileBounded } from '../../infra/fs.js';
+import { getPackageInfo } from '../../package-info.js';
+import { installRuntime } from '../../install/runtime.js';
 import {
   applyInitPlan,
+  bindAndRecordRuntime,
+  ensureDefaultRuntime,
   inspectInitContext,
   listKnowledgeCandidates,
   deriveInitChoices,
@@ -26,6 +23,7 @@ import {
   type InitContext,
   type InitFailure,
   type InitPlanBundle,
+  type RuntimeFlowResult,
 } from '../../app/init.js';
 import type { CliOutput } from '../output.js';
 
@@ -406,13 +404,6 @@ export interface InitCommandOptions {
   readonly reconfigure?: boolean;
 }
 
-export interface RuntimeFlowResult {
-  readonly ok: boolean;
-  readonly completion: boolean;
-  readonly runtime: RuntimeInstallResult | null;
-  readonly diagnostics: readonly Diagnostic[];
-}
-
 function runtimeOptionsFailure(
   message: string,
   nextAction: string,
@@ -425,95 +416,6 @@ function runtimeOptionsFailure(
     diagnostics: [],
     nextAction,
   };
-}
-
-async function bindAndRecordRuntime(
-  root: string,
-  installed: RuntimeInstallResult,
-): Promise<RuntimeFlowResult> {
-  if (!installed.ok || installed.manifest === null) {
-    return {
-      ok: false,
-      completion: false,
-      runtime: installed,
-      diagnostics: installed.diagnostics,
-    };
-  }
-  const updated = await updateMachineRuntime(root, installed.manifest);
-  if (!updated.ok) {
-    return {
-      ok: false,
-      completion: false,
-      runtime: installed,
-      diagnostics: updated.diagnostics,
-    };
-  }
-  const followUp = await planWorkspaceInit({ root });
-  if (!followUp.ok) {
-    return {
-      ok: false,
-      completion: false,
-      runtime: installed,
-      diagnostics: followUp.diagnostics,
-    };
-  }
-  if (
-    followUp.bundle.plan.files.length > 0 ||
-    followUp.bundle.plan.externalActions.length > 0
-  ) {
-    return {
-      ok: false,
-      completion: false,
-      runtime: installed,
-      diagnostics: [
-        {
-          code: diagnosticCodes.initRuntimeSourceRequired,
-          severity: 'error',
-          message:
-            'Runtime installation succeeded but init still has pending file or external actions.',
-          source: 'init runtime',
-          pointer: null,
-          hint: 'Run pappra init again to review the remaining plan; initialization is not complete.',
-        },
-      ],
-    };
-  }
-  return {
-    ok: true,
-    completion: true,
-    runtime: installed,
-    diagnostics: [],
-  };
-}
-
-/**
- * Converges the runtime binding by installing a durable copy of the package that
- * is currently executing. Reusing an already verified copy is cheap: the install
- * machinery short-circuits before packing.
- */
-async function ensureDefaultRuntime(
-  root: string,
-  targetVersion: string,
-): Promise<RuntimeFlowResult> {
-  const machine = await inspectMachineConfig(root);
-  const binding = machine.value?.runtime ?? null;
-  if (binding !== null && binding.version === targetVersion) {
-    const executable = await observePath(binding.executable);
-    if (executable.kind === 'file') {
-      return {
-        ok: true,
-        completion: true,
-        runtime: null,
-        diagnostics: [],
-      };
-    }
-  }
-  const installed = await installRuntime({
-    version: targetVersion,
-    source: { kind: 'self', path: getPackageRoot() },
-    packageName: getPackageInfo().name,
-  });
-  return bindAndRecordRuntime(root, installed);
 }
 
 async function installAndRecordRuntime(
@@ -594,51 +496,7 @@ async function installAndRecordRuntime(
       diagnostics: installed.diagnostics,
     };
   }
-  const updated = await updateMachineRuntime(root, installed.manifest);
-  if (!updated.ok) {
-    return {
-      ok: false,
-      completion: false,
-      runtime: installed,
-      diagnostics: updated.diagnostics,
-    };
-  }
-  const followUp = await planWorkspaceInit({ root });
-  if (!followUp.ok) {
-    return {
-      ok: false,
-      completion: false,
-      runtime: installed,
-      diagnostics: followUp.diagnostics,
-    };
-  }
-  if (
-    followUp.bundle.plan.files.length > 0 ||
-    followUp.bundle.plan.externalActions.length > 0
-  ) {
-    return {
-      ok: false,
-      completion: false,
-      runtime: installed,
-      diagnostics: [
-        {
-          code: diagnosticCodes.initRuntimeSourceRequired,
-          severity: 'error',
-          message:
-            'Runtime installation succeeded but init still has pending file or external actions.',
-          source: 'init runtime',
-          pointer: null,
-          hint: 'Run pappra init again to review the remaining plan; initialization is not complete.',
-        },
-      ],
-    };
-  }
-  return {
-    ok: true,
-    completion: true,
-    runtime: installed,
-    diagnostics: [],
-  };
+  return bindAndRecordRuntime(root, installed);
 }
 
 export interface InitCommandDeps {

@@ -1,6 +1,7 @@
 import { parseArgs } from 'node:util';
 import { getPackageInfo } from '../package-info.js';
 import { initUsage, runInitCommand } from './commands/init.js';
+import { onboardUsage, runOnboardCommand } from './commands/onboard.js';
 import { doctorUsage, runDoctorCommand } from './commands/doctor.js';
 import { docsUsage, runDocsCommand } from './commands/docs.js';
 import {
@@ -31,6 +32,10 @@ function parseOptions(args: readonly string[]) {
       yes: { type: 'boolean', short: 'y' },
       'no-runtime': { type: 'boolean' },
       reconfigure: { type: 'boolean' },
+      hosts: { type: 'string' },
+      'apply-host': { type: 'boolean' },
+      'dry-run': { type: 'boolean' },
+      'print-handoff': { type: 'boolean' },
       from: { type: 'string' },
       tarball: { type: 'string' },
       out: { type: 'string' },
@@ -246,6 +251,8 @@ function hasContinuityOptions(
 
 const globalUsage =
   'pappra [--help | --version] [--json]\n' +
+  'pappra onboard [--root <dir>] [--config <file>] [--hosts <list>] [--yes]\n' +
+  '               [--apply-host] [--dry-run] [--print-handoff] [--json]\n' +
   'pappra init [--config <file> | --yes] [--apply] [--json] [--print-choices]\n' +
   '              [--install-runtime (--runtime-tarball <file> | --runtime-version <version>)]\n' +
   'pappra doctor [--root <path>] [--json]\n' +
@@ -285,8 +292,7 @@ export async function runCli(
 
   if (
     command !== 'init' &&
-    (values.yes === true ||
-      values['no-interactive'] === true ||
+    (values['no-interactive'] === true ||
       values['print-choices'] === true ||
       values['no-runtime'] === true ||
       values.reconfigure === true)
@@ -295,7 +301,31 @@ export async function runCli(
       output,
       json,
       'invalid_arguments',
-      '--yes, --no-interactive, --print-choices, --no-runtime and --reconfigure are only valid for init.',
+      '--no-interactive, --print-choices, --no-runtime and --reconfigure are only valid for init.',
+    );
+    return 2;
+  }
+  if (command !== 'init' && command !== 'onboard' && values.yes === true) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--yes is only valid for init and onboard.',
+    );
+    return 2;
+  }
+  if (
+    command !== 'onboard' &&
+    (values.hosts !== undefined ||
+      values['apply-host'] === true ||
+      values['dry-run'] === true ||
+      values['print-handoff'] === true)
+  ) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--hosts, --apply-host, --dry-run and --print-handoff are only valid for onboard.',
     );
     return 2;
   }
@@ -525,6 +555,74 @@ export async function runCli(
     return runDoctorCommand(
       {
         root: values.root ?? process.cwd(),
+        json,
+      },
+      output,
+    );
+  }
+
+  if (command === 'onboard') {
+    if (
+      values.apply === true ||
+      values['install-runtime'] === true ||
+      values['runtime-tarball'] !== undefined ||
+      values['runtime-version'] !== undefined ||
+      values['host-root'] !== undefined ||
+      values['host-version'] !== undefined ||
+      values.mode !== undefined ||
+      values.from !== undefined ||
+      values.tarball !== undefined ||
+      values.bind === true ||
+      values.force === true ||
+      values.marketplace === true ||
+      values.scope !== undefined ||
+      values.repo !== undefined ||
+      values.kind !== undefined ||
+      values.query !== undefined ||
+      values.limit !== undefined ||
+      values['max-bytes'] !== undefined ||
+      values.rebuild === true ||
+      values['include-private'] === true ||
+      values['include-archived'] === true ||
+      hasContinuityOptions(values)
+    ) {
+      failure(
+        output,
+        json,
+        'invalid_arguments',
+        'onboard accepts --root, --config, --hosts, --yes, --apply-host, --dry-run, --print-handoff, --help, and --json.',
+      );
+      return 2;
+    }
+    if (values.help) {
+      if (json) {
+        output.stdout(
+          `${JSON.stringify({ ...info, commands: ['onboard'], usage: onboardUsage })}\n`,
+        );
+      } else {
+        output.stdout(onboardUsage);
+      }
+      return 0;
+    }
+    if (values.version) {
+      failure(
+        output,
+        json,
+        'invalid_arguments',
+        '--version cannot be combined with onboard.',
+      );
+      return 2;
+    }
+    return runOnboardCommand(
+      {
+        cwd: process.cwd(),
+        root: values.root ?? null,
+        configPath: values.config ?? null,
+        hosts: values.hosts ?? null,
+        apply: values.yes === true,
+        applyHosts: values['apply-host'] === true,
+        dryRun: values['dry-run'] === true,
+        printHandoff: values['print-handoff'] === true,
         json,
       },
       output,

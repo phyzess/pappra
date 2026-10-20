@@ -1,5 +1,8 @@
 # Operations reference
 
+- `pappra onboard` plans or applies a whole workspace setup (config, durable runtime,
+  verified host wiring). `--dry-run` writes nothing; `--apply-host` still leaves host trust
+  to the person.
 - `pappra init` plans or applies workspace configuration. `--yes` derives
   selections from discovery, `--print-choices` prints that document without
   writing, `--reconfigure` rebuilds an existing valid `workspace.json`, and
