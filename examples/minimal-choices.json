@@ -1,0 +1,17 @@
+{
+  "schema": "pappra/init-choices/1",
+  "repositories": [],
+  "knowledge": {
+    "sources": [],
+    "newDocuments": ".pappra/knowledge",
+    "taskVisibility": "private"
+  },
+  "code": {
+    "graph": "none",
+    "symbols": "none",
+    "prepare": "on-demand"
+  },
+  "validation": [],
+  "excludes": [],
+  "hosts": []
+}

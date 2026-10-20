@@ -90,7 +90,10 @@ test('status is passive and text fallback does not create an index', async () =>
     const service = new CodeIntelligenceService(root);
     const before = await service.status({ repositoryId: 'app' });
     assert.notEqual(before.identity, null);
-    assert.equal(before.health.state, 'missing');
+    assert.equal(
+      before.health.state,
+      codeGraphInstalled ? 'missing' : 'unsupported',
+    );
     assert.equal(before.registrationPresent, false);
     assert.equal(existsSync(join(root, '.codegraph')), false);
 
@@ -112,8 +115,14 @@ test('status is passive and text fallback does not create an index', async () =>
       rebuild: false,
     });
     assert.equal(planned.status, 'planned');
-    assert.equal(planned.plan.action, 'init');
-    assert.equal(planned.plan.mutates, true);
+    if (codeGraphInstalled) {
+      assert.equal(planned.plan.action, 'init');
+      assert.equal(planned.plan.mutates, true);
+    } else {
+      assert.equal(planned.plan.action, 'none');
+      assert.equal(planned.plan.mutates, false);
+      assert(planned.plan.reasons.includes('prepare_unsupported'));
+    }
     assert.equal(existsSync(join(root, '.codegraph')), false);
   } finally {
     cleanup(root);
@@ -204,6 +213,33 @@ test(
   },
 );
 
+test(
+  'absent optional engine reports unsupported without inventing an index',
+  { skip: codeGraphInstalled ? 'codegraph CLI is present' : false },
+  async () => {
+    const root = makeSingleWorkspace({ source });
+    try {
+      const service = new CodeIntelligenceService(root);
+      const status = await service.status({ repositoryId: 'app' });
+      assert.notEqual(status.identity, null);
+      assert.equal(status.health.state, 'unsupported');
+      assert.equal(existsSync(join(root, '.codegraph')), false);
+      const fallback = await service.query({
+        root,
+        repositoryId: 'app',
+        kind: 'text',
+        query: 'alpha',
+      });
+      assert.equal(fallback.result?.provider, 'text');
+      assert.equal(fallback.result?.coverage, 'fallback');
+      assert.equal(fallback.result?.items[0]?.path, 'src/lib.ts');
+      assert.equal(existsSync(join(root, '.codegraph')), false);
+    } finally {
+      cleanup(root);
+    }
+  },
+);
+
 test('working-tree identity includes untracked file content and kind', async () => {
   const root = makeSingleWorkspace({ source });
   try {
@@ -270,9 +306,10 @@ test('two linked worktrees keep distinct identities and selected-only indexes', 
       ]).size,
       3,
     );
-    assert.equal(main.health.state, 'missing');
-    assert.equal(first.health.state, 'missing');
-    assert.equal(second.health.state, 'missing');
+    const passiveState = codeGraphInstalled ? 'missing' : 'unsupported';
+    assert.equal(main.health.state, passiveState);
+    assert.equal(first.health.state, passiveState);
+    assert.equal(second.health.state, passiveState);
     assert.equal(existsSync(join(root, '.codegraph')), false);
     assert.equal(existsSync(join(one, '.codegraph')), false);
     assert.equal(existsSync(join(two, '.codegraph')), false);

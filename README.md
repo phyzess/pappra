@@ -8,21 +8,43 @@ Pappra is the manager. External coding hosts, code-graph engines and collaborati
 
 Requirements: Node.js 24 or later and `pnpm` 12.3.4. Git is required only when a command observes repository identity.
 
+Build the checkout, then invoke the built CLI by an explicit path from the **target workspace**; there is no global `pappra` binary to install for this workflow.
+
 ```sh
-pnpm install
+# In the Pappra checkout
+pnpm install --frozen-lockfile
 pnpm build
-node dist/cli/main.js --help
-node dist/cli/main.js init --help
-node dist/cli/main.js doctor --json
+CHECKOUT="$(pwd)"
+PAPPRA_CLI="$CHECKOUT/dist/cli/main.js"
+
+# In a separate empty target workspace
+mkdir -p /tmp/pappra-demo
+cd /tmp/pappra-demo
+cp "$CHECKOUT/examples/minimal-choices.json" ./minimal-choices.json
+
+# Preview first. JSON/config mode is non-interactive and does not prompt.
+node "$PAPPRA_CLI" init --config ./minimal-choices.json --json
+
+# Apply the same choices. With no runtime installed, apply intentionally
+# reports external-actions-pending and exits nonzero after writing config.
+node "$PAPPRA_CLI" init --config ./minimal-choices.json --apply --json
+node "$PAPPRA_CLI" doctor --json
 ```
 
-Initialize a workspace from a choices file:
+`minimal-choices.json` is complete for a host-free, no-graph, single-directory
+workspace. The example intentionally has no repositories or optional hosts.
+`init --json` without `--config` fails closed because JSON mode does not open the
+interactive wizard; run `node "$PAPPRA_CLI" init` without `--json` in a TTY if you want to
+enter selections interactively. `--config` and `--json` never prompt.
 
-```sh
-node dist/cli/main.js init --config init-choices.json --apply --json
-```
+An apply result can be `ok:true` with `status:"external-actions-pending"` and a
+nonzero process exit. That is a successful, partial configuration write, not a
+claim that a runtime or external tool was installed. Inspect `pendingExternalActions`
+and run `doctor` before adding optional integrations.
 
-A successful apply can still report `external-actions-pending`; inspect `pendingExternalActions` before assuming optional runtime or host wiring is complete.
+Optional examples have prerequisites rather than generated files: code-graph and
+host commands require the selected external CLI/support, and collaboration
+requires an explicit controller. They are not needed for the core workflow above.
 
 ## What it manages
 
