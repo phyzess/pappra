@@ -7,7 +7,9 @@ binary.
 ## Published package
 
 The package is published as `@phyzess/pappra`. Install it once if you use it every day
-(`npm install -g @phyzess/pappra@beta`), then the command is plain `pappra`; the `npx` form
+(`npm install -g @phyzess/pappra@beta`), then the command is plain `pappra`; with mise or another
+version manager, use `npm install -g --prefix "$HOME/.local"` so the command is not bound to one
+Node version's shim. The `npx` form
 below stays valid and pins a version without installing. From an empty target workspace:
 
 ```sh

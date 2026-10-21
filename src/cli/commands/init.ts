@@ -865,7 +865,7 @@ export async function runInitCommand(
         message: 'Missing init selections in a non-interactive session.',
         diagnostics: context.diagnostics,
         nextAction:
-          'Rerun with --yes to apply the derived selections, provide --config with pappra/init-choices/1, or run in a TTY for the interactive wizard.',
+          'Rerun with --print-choices to inspect derived selections, --yes --apply to write them, --config with pappra/init-choices/1, or use a TTY for the wizard.',
         details: {
           candidates: derived.candidates,
           suggestedChoices: derived.choices,
