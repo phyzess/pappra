@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import type { DiagnosticCode } from '../schemas/errors.js';
@@ -211,7 +211,9 @@ async function inspectInstallState(
         );
       }
       if (entry.backupRef !== null) {
-        const backupPath = join(root, ...entry.backupRef.split('/'));
+        const backupPath = isAbsolute(entry.backupRef)
+          ? resolve(entry.backupRef)
+          : join(root, ...entry.backupRef.split('/'));
         const backupBoundary = await ensureStatePathBoundary(root, backupPath);
         const realBackup = await resolveRealpath(backupPath);
         const backupEscapes =
