@@ -23,14 +23,76 @@ Write tools, gated by arguments:
 | `docs_scan` | `apply: true` registers; omitted/`false` only plans |
 | `code_prepare` | `apply: true` mutates; omitted/`false` only plans |
 | `runtime_install` | `apply: true` |
-| `collab_prepare` | writes the prepared goal/claims; the generated card is `declared` |
+| `collab_prepare` | writes the prepared goal/claims from an explicit goal; generates no card |
 | `collab_start` | `confirm: true` **and** a runtime capability card; a declared card is refused |
 
-`collab_prepare` turns an objective, acceptance list and explicit resource paths into a
-`pappra/collaboration-goal/1`, runs `collab prepare`, and writes
-`card.declared.json` next to `prepared.json`. A declared card cannot authorize a work
-launch: provide a runtime card observed from an admitted session before calling
-`collab_start`.
+`collab_prepare` accepts `{ domainRoot, goal }`, where `goal` is the shared strict
+`pappra/collaboration-goal/1` document — the same document the installed CLI consumes
+through `pappra collab prepare --goal <file> --domain-root <dir>`. Coordinator
+(`agent_id`/`session_id`/`harness`/`owner_epoch`), assignee
+(`agent_id`/`session_id`/`harness`/`surface`/`configuration_id`/`cwd`), resources,
+`roles` and `required`/`preferred` capabilities are supplied explicitly; nothing is
+inferred from prose, resource paths or defaults, and the assignee cwd must be a real
+existing directory. Preparation maps the assignee harness to its established runner on
+the assignment (`pi` → `pi-cli`, `codex` → `codex-exec`, `claude` → `claude-cli`); other
+harnesses are refused before any task or claim is written. Explicit bounded unique
+`roles` are copied to the assignment; omitting them defaults to `['implementer']`, and
+`phase` never replaces an explicit role.
+
+The earlier flat MCP form (`objective`, `task`, `acceptance`, `resources`,
+`coordinatorSession`, `assigneeSession`, `harness`, `subtaskId`, `attempt`, `phase`,
+`prompt` as tool arguments) is intentionally unsupported. Missing `goal`, mixed
+legacy/new fields and unknown fields are refused by schema validation before any task
+metadata, claim or card write. Migrate by building the goal document explicitly — the
+same fields move under `goal` with snake_case protocol names, the coordinator/owner
+epoch become required, and the assignee gains `surface`/`configuration_id`/`cwd`.
+
+Preparation returns the existing prepared bundle and goal. It no longer synthesizes a
+`card.declared.json` and no longer returns the removed `cardPath`/`card` outputs: a
+declared card never authorized a launch. Callers supply actual capability evidence
+separately — observe the receiving session, derive a runtime card with
+`pappra collab capabilities derive`, check it with `pappra collab preflight`, then call
+`collab_start` with `confirm: true`. Declared, stale or mismatched evidence is still
+refused by admission. This is metadata support only: live controllers remain
+`fixture` and `pi-rpc`, `collab_start`/`collab run` reject a real controller whose
+harness does not match the assignment without launching, and no Codex/Claude live
+controller is added here.
+
+An explicit `collab_prepare` call:
+
+```json
+{
+  "domainRoot": "/absolute/domain",
+  "goal": {
+    "schema": "pappra/collaboration-goal/1",
+    "task_id": "FIJI-123456",
+    "subtask_id": "c10-explicit-preparation",
+    "attempt": 1,
+    "phase": "fix",
+    "objective": "Prepare one bounded collaboration slice.",
+    "acceptance": ["prepared references verify"],
+    "prompt": "Use only the frozen prompt.",
+    "roles": ["implementer"],
+    "coordinator": {
+      "agent_id": "pappra-coordinator",
+      "session_id": "coordinator-native-session",
+      "harness": "codex",
+      "owner_epoch": 1
+    },
+    "assignee": {
+      "agent_id": "pappra-implement",
+      "session_id": "assignee-native-session",
+      "harness": "pi",
+      "surface": "cli",
+      "configuration_id": "daily-herdr",
+      "cwd": "/absolute/assignee/working/directory"
+    },
+    "resources": [{ "path": "/absolute/repo", "access": "write" }],
+    "required": { "skills": [], "tools": ["read"] },
+    "preferred": { "skills": [], "tools": [] }
+  }
+}
+```
 
 ## Register the MCP server
 

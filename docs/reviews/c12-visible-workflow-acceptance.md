@@ -1,0 +1,11 @@
+# C12 visible collaboration guidance and help: acceptance
+
+Accepted within the documented visible-peer entry/help scope. R2 REPORT pointer/native correlation, assignment/input/review, every output/artifact/readiness digest and all 67 current-manifest files independently verify. The coordinator copied the validator, tarball and replay into `/tmp/pappra-c12r2-independent-VODNYP` and independently repeated offline consumer installation plus actual extracted/substituted Nushell snippets; install and probe both exited zero. Original evidence was preserved.
+
+The tested Nu argument-list/single-line invocations no longer pass backslash arguments, capability derivation saves the returned card and preflights ready, and the selected prepare-registered ASSIGN satisfies uniqueness/input/digest checks. This closes the shell-boundary gap the earlier JavaScript argv smoke missed. No broad suite was repeated for this copy correction.
+
+The prior flow corrections remain accepted: preparation's mutation boundary is explicit; the caller supplies a declared non-evidence template; initial ASSIGN is reused rather than duplicated; bounded discovery contact precedes bound work; ACK/result return and coordinator acceptance remain distinct. Shipped skill discoverability, matching mirrors and truthful MCP/global help cover the restored entry path. Live pane bootstrap/start/delivery and real multi-host control were not re-executed by this desk validation. C1's actual message roundtrip remains separate evidence.
+
+Process deviation remains recorded: Pi reports initial R2 snippet edits occurred before its new-assignment preflight, were restored to baseline, then reapplied after the ready check at `2026-10-21T14:10:55.877Z`. Restoration does not make the first writes retroactively preflighted. This did not alter the accepted final source/evidence result; subsequent assignments must check readiness before the first write, including trial edits/formatting. Do not erase or recast that ordering history.
+
+The usable daily visible-peer/message baseline is restored. Library-only native/history controls and current real three-host/version verification remain explicitly open; this acceptance does not claim complete native extraction parity or native-owner adoption. Resume the original reliability/initialization work while retaining those gaps in the collaboration plan.

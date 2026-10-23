@@ -1,0 +1,27 @@
+# W1: complete and verify the preserved task-state reliability patch
+
+The message-driven visible-peer baseline is usable and accepted through C12. Resume original workspace-experience batch 1. The earlier five-file reliability patch was deliberately preserved through C0-C12, but never accepted. Review it as unfinished work; do not assume its increased code size or prior basic tests prove safety.
+
+## Scope
+
+Complete task pin/unpin/read and the workspace autoResume toggle, sharing continuity's 64-character task-ID rule. Existing partial files are `src/app/task-pin.ts`, `src/cli/commands/task.ts`, `src/continuity/paths.ts`, `src/schemas/continuity.ts`, `src/schemas/install.ts`. Add meaningful tests in the recorded task/continuity/CLI scopes. Existing generic filesystem/ownership helpers may be read and reused; changing shared helpers or unrelated accepted collaboration behavior requires a concrete need reported before broadening scope.
+
+Keep the independent collaboration ID contract at 128 characters. Do not shorten collaboration aliases/task IDs, rewrite existing checkpoints/pins, migrate registries or infer execution permission from resume context. No checkpoint filename/repository-coverage or init/knowledge changes in this slice.
+
+## Required behavior
+
+- Task pin and continuity share the exact safe single-segment rule, 64 accepted and 65 refused before writes. Malformed/path traversal/absolute/empty identifiers refuse. Existing unusable pin bytes are not silently migrated or deleted; explicit unpin remains deliberate removal only of the selected pin file.
+- Resolve only the selected valid registered workspace for mutating CLI actions. An incomplete/invalid inner marker must not cause writes into an outer workspace. Preserve ordinary canonical workspace-root aliases where supported. Direct library behavior must retain its documented validation rather than relying solely on CLI checks.
+- `.pappra`, `.pappra/local`, pin/config/temporary/backup/lock paths must fail closed on redirected or unsupported state. Static symlink/FIFO/special-file cases must not read/write/remove an outside target or hang. Cover `.pappra` and `local` redirects as well as final files. Preserve outside bytes and existing local metadata on refused operations.
+- Revalidate private namespace and relevant path identities around actual async seams before publication, deletion, configuration replacement, backup/lock creation and cleanup. The partial pin path currently checks once, then awaits mkdir/write/rename; unpin checks once before awaited removal. Reproduce a controlled mid-operation redirect and ensure no later redirected write/delete/cleanup occurs. State cooperative filesystem limits honestly; do not claim OS-level fencing or add a general transaction framework.
+- Configuration autoResume updates reuse existing workspace ownership/lock conventions, preserve unrelated valid fields/extensions, workspace identity, visibility/settings and current values. Refuse conflicting managed operations without stealing/breaking their lock. Recheck the actual current bytes after acquiring the lock so concurrent edits are not overwritten. Keep backups inside guarded private state and never age-reclaim a lock.
+- Keep errors truthful. If pin succeeded but the subsequent autoResume toggle failed, report partial success explicitly; do not claim a fully applied combined operation or undo unrelated state. Preserve current JSON/public contracts where possible, and do not broaden resume authority. Missing pin/unpin idempotence and normal autoResume behavior remain usable.
+- Avoid overengineering the existing partial patch. Reuse stable bounded reads/atomic/ownership primitives where appropriate, but verify their guarantees at this caller's await boundaries; calling an atomic helper alone is not evidence of full namespace safety. Keep any simplification limited to the requested task-state path. Format the touched task-pin file as part of completing its currently unaccepted patch.
+
+## Verification and delivery
+
+First run deterministic fresh-fixture before/after probes for the real remaining gaps. Cover static and controlled async redirects, outside-byte preservation, special-file nonblocking refusal, 64/65 IDs across task pin/checkpoint/resume path entry points, registered-workspace selection, config extension preservation/concurrent-lock or byte-change refusal, and honest CLI partial outcomes. Never mutate this checkout's actual task pin/config, user workspace, live collaboration task or claims during tests. Do not repeat tests that merely mirror private helper implementation.
+
+Run relevant task/continuity/workspace/CLI regressions and typecheck/build. Broaden to the full deterministic suite/package/source/format/mirror checks once at this reliability milestone; report actual skipped/integration limits separately. Preserve accepted C0-C12 sources and coordinator plans/reviews. Return a combined baseline-plus-changes manifest, before/after evidence, pinned input revision, actual new-assignment readiness before the **first** write and test results via one proactive product REPORT/notification.
+
+Same Pi pane/native session. Existing source claims plus explicit continuity/task-test file extensions govern this slice. No global/dependency/model/native/pane operations, publication, unrelated cleanup, completion polling/timer, --wait or native notification fallback. Initial trial edits before preflight cannot be made compliant retroactively by restoring/reapplying them.

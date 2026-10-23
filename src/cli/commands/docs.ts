@@ -21,8 +21,9 @@ export const docsUsage =
   '  check  [--include-private] [--json]\n' +
   '  archive <documentId> [--json]\n' +
   '  scan   [--apply] [--json]\n\n' +
-  'scan registers documents discovered under the configured knowledge sources; without\n' +
-  '--apply it only reports the candidates.';
+  'scan registers existing documents discovered under knowledge.sources; newDocuments is\n' +
+  'only the destination for future authored documents. Without --apply scan only reports\n' +
+  'candidates.';
 
 export interface DocsCommandOptions {
   readonly cwd: string;
@@ -47,19 +48,39 @@ async function runDocsScan(
     if (options.json) {
       output.stdout(`${JSON.stringify(result)}\n`);
     } else {
-      output.stdout(`Scan candidates: ${result.candidates.length}\n`);
-      for (const candidate of result.candidates) {
-        output.stdout(`  ${candidate.kind}  ${candidate.path}\n`);
+      if (result.candidates.length === 0) {
+        output.stdout('No new documents found.\n');
+      } else {
+        output.stdout(`Scan candidates: ${result.candidates.length}\n`);
+        for (const candidate of result.candidates) {
+          output.stdout(`  ${candidate.kind}  ${candidate.path}\n`);
+        }
       }
-      output.stdout('Plan only; rerun with --apply to register them.\n');
+      printDiagnostics(output, result.diagnostics);
+      for (const action of result.nextActions) {
+        output.stdout(`${action}\n`);
+      }
+      output.stdout(
+        result.ok
+          ? 'Plan only; rerun with --apply to register them.\n'
+          : 'Scan coverage is incomplete; no complete result is claimed.\n',
+      );
     }
-    return 0;
+    return result.ok ? 0 : 1;
   }
   if (options.json) {
     output.stdout(`${JSON.stringify(result)}\n`);
   } else {
     output.stdout(`Registered ${result.registered.length} document(s).\n`);
+    if (!result.ok) {
+      output.stdout(
+        'Scan coverage is incomplete; the registration result is not a complete scan.\n',
+      );
+    }
     printDiagnostics(output, result.diagnostics);
+    for (const action of result.nextActions) {
+      output.stdout(`${action}\n`);
+    }
   }
   return result.ok ? 0 : 1;
 }
@@ -121,7 +142,7 @@ export async function runDocsCommand(
     if (options.json) {
       output.stdout(
         `${JSON.stringify({
-          commands: ['list', 'check', 'archive'],
+          commands: ['list', 'check', 'archive', 'scan'],
           usage: docsUsage,
         })}\n`,
       );
@@ -208,6 +229,19 @@ export async function runDocsCommand(
       output.stdout(`${JSON.stringify(report.data)}\n`);
     } else {
       for (const record of result.records) printDocument(output, record);
+      if (result.records.length === 0 && !options.includePrivate && result.ok) {
+        const command = options.includeArchived
+          ? 'pappra docs list --include-private --include-archived'
+          : 'pappra docs list --include-private';
+        output.stdout(
+          `No documents in the default view. Private documents are hidden; run: ${command}\n`,
+        );
+        if (!options.includeArchived) {
+          output.stdout(
+            'Archived documents also remain hidden; add --include-archived to include them.\n',
+          );
+        }
+      }
       printDiagnostics(output, result.diagnostics);
     }
     return result.ok ? 0 : 1;

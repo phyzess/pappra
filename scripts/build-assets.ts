@@ -40,3 +40,58 @@ await build({
     'typebox',
   ],
 });
+await build({
+  entryPoints: [join(hostRuntime, 'pi-bootstrap-extension.js')],
+  outfile: join(hostRuntime, 'pappra-bootstrap-extension.mjs'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node24',
+  sourcemap: false,
+  legalComments: 'none',
+  logLevel: 'silent',
+  // Pi provides these packages to extensions; they must not be bundled.
+  external: [
+    '@earendil-works/pi-ai',
+    '@earendil-works/pi-agent-core',
+    '@earendil-works/pi-coding-agent',
+    '@earendil-works/pi-tui',
+    'typebox',
+  ],
+});
+await build({
+  entryPoints: [join(hostRuntime, 'pi-recovery-extension.js')],
+  outfile: join(hostRuntime, 'pappra-recovery-extension.mjs'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node24',
+  sourcemap: false,
+  legalComments: 'none',
+  logLevel: 'silent',
+  external: [
+    '@earendil-works/pi-ai',
+    '@earendil-works/pi-agent-core',
+    '@earendil-works/pi-coding-agent',
+    '@earendil-works/pi-tui',
+    'typebox',
+  ],
+});
+await build({
+  entryPoints: [join(hostRuntime, 'pi-session-transition-extension.js')],
+  outfile: join(hostRuntime, 'pappra-session-transition-extension.mjs'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node24',
+  sourcemap: false,
+  legalComments: 'none',
+  logLevel: 'silent',
+  external: [
+    '@earendil-works/pi-ai',
+    '@earendil-works/pi-agent-core',
+    '@earendil-works/pi-coding-agent',
+    '@earendil-works/pi-tui',
+    'typebox',
+  ],
+});

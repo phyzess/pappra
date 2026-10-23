@@ -29,6 +29,7 @@ import {
 } from '../infra/fs.js';
 import {
   loadContinuityWorkspace,
+  repositoryIdentities,
   snapshotRepository,
   type ContinuityWorkspace,
 } from './context.js';
@@ -708,6 +709,35 @@ function boundedArray<T>(values: readonly T[]): {
     : { values: [...values], truncated: false };
 }
 
+function boundedCoverageIds(values: readonly string[]): string {
+  const unique = [...new Set(values)].sort();
+  const shown = unique
+    .slice(0, 8)
+    .map((value) => (value.length > 200 ? `${value.slice(0, 197)}...` : value));
+  const text = `${shown.join(', ')}${unique.length > shown.length ? `, ... (${unique.length - shown.length} more)` : ''}`;
+  return text.length > 900 ? `${text.slice(0, 897)}...` : text;
+}
+
+function repositoryCoverageLimitations(
+  workspace: ContinuityWorkspace,
+): readonly string[] {
+  const limitations: string[] = [];
+  if (workspace.unresolvedRepositories.length > 0) {
+    const entries = workspace.unresolvedRepositories.map(
+      (entry) => `${entry.id} (${entry.configuredPath})`,
+    );
+    limitations.push(
+      `Repository coverage incomplete: ${entries.length} configured repositories unresolved: ${boundedCoverageIds(entries)}.`,
+    );
+  }
+  if (workspace.discoveryTruncated) {
+    limitations.push(
+      'Repository discovery was truncated; configured/resolved coverage is incomplete.',
+    );
+  }
+  return limitations;
+}
+
 export class CheckpointService {
   readonly root: string;
   readonly #options: ContinuityServiceOptions;
@@ -771,6 +801,25 @@ export class CheckpointService {
       };
     }
     const paths = continuityTaskPaths(workspace.root, input.taskId);
+    if (workspace.repositories.length > 64) {
+      const released = await releaseTaskLock(lock.path, lock.token);
+      return {
+        ok: false,
+        status: 'failed',
+        checkpoint: null,
+        checkpointPath: null,
+        latestPath: paths.latestPath,
+        diagnostics: [
+          diag(
+            diagnosticCodes.document_record_invalid,
+            `Repository coverage has ${workspace.repositories.length} resolved entries; the checkpoint schema supports at most 64. No checkpoint pointer was advanced.`,
+            paths.contextPath,
+            'Reduce the configured/resolved repository set or declare a later coverage scope; semantic context was not dropped silently.',
+          ),
+        ],
+        residualPaths: released.ok ? [] : [lock.path],
+      };
+    }
     const now = new Date().toISOString();
     let checkpointPath: string | null = null;
     let result: SaveCheckpointResult | undefined;
@@ -880,6 +929,10 @@ export class CheckpointService {
           }
           if (result === undefined) {
             const observedRepositories: Checkpoint['repositories'] = [];
+            const identities = repositoryIdentities(
+              workspace.repositories,
+              workspace.config.repositories.map((repository) => repository.id),
+            );
             for (const [
               index,
               repository,
@@ -888,6 +941,7 @@ export class CheckpointService {
                 workspace,
                 repository,
                 index,
+                identities[index],
               );
               if (
                 snapshot.patchBytes !== null &&
@@ -939,8 +993,17 @@ export class CheckpointService {
                     ...(input.attempted ?? []),
                     ...(input.nextActions ?? []),
                   ].length > 0;
+                const coverageLimitations =
+                  repositoryCoverageLimitations(workspace);
+                const coverageIncomplete = coverageLimitations.length > 0;
+                const combinedLimitations = [
+                  ...(input.limitations ?? []),
+                  ...coverageLimitations,
+                ];
                 const contextCompleteness: 'complete' | 'partial' =
-                  semanticPresent && input.contextCompleteness !== 'partial'
+                  semanticPresent &&
+                  input.contextCompleteness !== 'partial' &&
+                  !coverageIncomplete
                     ? 'complete'
                     : 'partial';
                 if (!semanticPresent) {
@@ -953,6 +1016,21 @@ export class CheckpointService {
                       continuityTaskPaths(workspace.root, input.taskId)
                         .contextPath,
                       'Add an explicit semantic summary before claiming complete recovery context.',
+                    ),
+                  );
+                }
+                if (coverageIncomplete) {
+                  saveDiagnostics.push(
+                    diag(
+                      diagnosticCodes.document_write_partial,
+                      `Checkpoint capture has incomplete repository coverage: ${boundedCoverageIds(
+                        workspace.unresolvedRepositories.map(
+                          (entry) => `${entry.id} (${entry.configuredPath})`,
+                        ),
+                      )}${workspace.discoveryTruncated ? '; discovery was truncated' : ''}.`,
+                      continuityTaskPaths(workspace.root, input.taskId)
+                        .contextPath,
+                      'Inspect configured repositories; the checkpoint is partial and does not claim complete coverage.',
                     ),
                   );
                 }
@@ -974,7 +1052,7 @@ export class CheckpointService {
                   decisions: [...(input.decisions ?? [])],
                   attempted: [...(input.attempted ?? [])],
                   nextActions: [...(input.nextActions ?? [])],
-                  limitations: [...(input.limitations ?? [])],
+                  limitations: combinedLimitations,
                   repositories: observedRepositories,
                   artifacts: artifacts.artifacts,
                   validations: (input.validations ?? []).map((validation) => ({
@@ -1384,10 +1462,45 @@ export class CheckpointService {
       string,
       Checkpoint['repositories'][number]
     >();
+    const currentIdentities = repositoryIdentities(
+      workspace.repositories,
+      workspace.config.repositories.map((repository) => repository.id),
+    );
     for (const [index, repository] of workspace.repositories.entries()) {
-      const snapshot = await snapshotRepository(workspace, repository, index);
+      const snapshot = await snapshotRepository(
+        workspace,
+        repository,
+        index,
+        currentIdentities[index],
+      );
       currentRepositories.set(snapshot.record.repoId, snapshot.record);
     }
+    const storedRepositoryIds = new Set(
+      checkpoint.repositories.map((repository) => repository.repoId),
+    );
+    const currentOnly = [...currentRepositories.keys()]
+      .filter((repoId) => !storedRepositoryIds.has(repoId))
+      .sort();
+    const unresolvedIds = workspace.unresolvedRepositories.map(
+      (entry) => `${entry.id} (${entry.configuredPath})`,
+    );
+    const coverageParts: string[] = [];
+    if (unresolvedIds.length > 0) {
+      coverageParts.push(
+        `configured but unresolved: ${boundedCoverageIds(unresolvedIds)}`,
+      );
+    }
+    if (currentOnly.length > 0) {
+      coverageParts.push(`current-only: ${boundedCoverageIds(currentOnly)}`);
+    }
+    if (workspace.discoveryTruncated) {
+      coverageParts.push('discovery was truncated');
+    }
+    const coverageMessage =
+      coverageParts.length === 0
+        ? null
+        : `Repository coverage is incomplete: ${coverageParts.join('; ')}.`;
+    const coverageUnknown = coverageMessage !== null;
     const repositoryDrift: ResumePacket['codeDrift']['repositories'] = [];
     for (const stored of checkpoint.repositories) {
       const patchPath =
@@ -1487,7 +1600,7 @@ export class CheckpointService {
         detail,
       });
     }
-    const codeStatus: ResumePacket['codeDrift']['status'] =
+    const driftStatus: ResumePacket['codeDrift']['status'] =
       repositoryDrift.some((entry) => entry.status === 'relocated')
         ? 'relocated'
         : repositoryDrift.some((entry) => entry.status === 'changed')
@@ -1498,6 +1611,9 @@ export class CheckpointService {
               )
             ? 'unknown'
             : 'unchanged';
+    const codeStatus: ResumePacket['codeDrift']['status'] = coverageUnknown
+      ? 'unknown'
+      : driftStatus;
     const artifactChecks: ResumePacket['artifactChecks'] = [];
     for (const artifact of checkpoint.artifacts) {
       const resolved = await readArtifactPath(workspace.root, artifact.path);
@@ -1578,6 +1694,9 @@ export class CheckpointService {
         'private_patch_unavailable',
         'A private patch is missing, changed or unsafe; verification is not current.',
       );
+    }
+    if (coverageMessage !== null) {
+      pushBlock('repository_coverage_incomplete', coverageMessage);
     }
     if (
       repositoryDrift.some(

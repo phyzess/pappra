@@ -238,6 +238,30 @@ export function applyMessage(
         result: transition,
       };
     }
+    case 'ASK': {
+      // A question is evidence, not a transition. Blocking a clarification stays
+      // BLOCK(kind=clarification); ANSWER resolves only that state. This branch completes
+      // the advertised envelope vocabulary without adding authority or execution.
+      const subtaskId = message.subtask_id ?? null;
+      const attempt = message.attempt ?? null;
+      recordMessage(
+        record,
+        message,
+        'recorded',
+        'question recorded; no task state change',
+        clock,
+      );
+      return {
+        record,
+        op: 'ask',
+        summary: { subtask_id: subtaskId, attempt },
+        result: {
+          ok: true as const,
+          awaiting: 'response',
+          state_changed: false,
+        },
+      };
+    }
     case 'ANSWER': {
       const referenced = message.reply_to
         ? findMessage(record, message.reply_to)

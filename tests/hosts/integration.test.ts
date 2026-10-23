@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  statSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -27,6 +33,10 @@ function runtimeEntry(): string {
     'integration',
     'pappra-hook.mjs',
   );
+}
+
+function collaborationArtifact(name: string): string {
+  return join(dirname(runtimeEntry()), name);
 }
 
 function workspace(): string {
@@ -393,6 +403,126 @@ test('exports host-native plugin bundles without registering them', async () => 
         ?.source,
       './pappra',
     );
+  } finally {
+    cleanup(out);
+  }
+});
+
+test('exports explicitly selected recovery and transition Pi extensions as movable packages', async () => {
+  const out = makeTempDir('host-pi-collaboration-bundle');
+  const outDir = join(out, 'opt-in');
+  const configFile = join(out, 'private-recovery.json');
+  const config = {
+    schema: 'pappra/pi-recovery-config/1',
+    taskRoot: join(out, 'task'),
+    planFile: join(out, 'task', 'work-plan.json'),
+    self: { agent_id: 'writer', session_id: 'native-session', harness: 'pi' },
+    policy: { role: 'writer' },
+    expected: {
+      session_id: 'native-session',
+      cwd: out,
+      binding_ref: join(out, 'task', 'binding.json'),
+      binding_digest: `sha256:${'a'.repeat(64)}`,
+      pane_id: 'w3:p8',
+      harness: 'pi',
+    },
+    mode: 'plan',
+    target: { agent: 'writer' },
+    requestId: 'recovery-request',
+  };
+  const configBytes = Buffer.from(`${JSON.stringify(config, null, 2)}\n`);
+  writeFileSync(configFile, configBytes);
+  try {
+    const invalidConfig = join(out, 'invalid-recovery.json');
+    writeFileSync(invalidConfig, '{}\n');
+    await assert.rejects(
+      exportHostPluginBundle({
+        host: 'pi',
+        hostVersion: '1.3.0',
+        outDir: join(out, 'invalid-output'),
+        packageVersion: '9.9.9',
+        recovery: {
+          configFile: invalidConfig,
+          artifactPath: collaborationArtifact('pappra-recovery-extension.mjs'),
+        },
+      }),
+      /recovery config is invalid/,
+    );
+    assert.equal(existsSync(join(out, 'invalid-output')), false);
+
+    const bundle = await exportHostPluginBundle({
+      host: 'pi',
+      hostVersion: '1.3.0',
+      outDir,
+      packageVersion: '9.9.9',
+      recovery: {
+        configFile,
+        artifactPath: collaborationArtifact('pappra-recovery-extension.mjs'),
+      },
+      transition: {
+        artifactPath: collaborationArtifact(
+          'pappra-session-transition-extension.mjs',
+        ),
+      },
+    });
+
+    assert.equal(bundle.verification, 'unsupported');
+    assert.equal(bundle.recovery?.schema, 'pappra/pi-recovery-config/1');
+    assert.equal(bundle.recovery?.registeredByExport, false);
+    assert.equal(bundle.transition?.registeredByExport, false);
+    assert.equal(bundle.transition?.nativeQuiescence, 'unavailable');
+    assert(bundle.files.includes('extensions/pappra-recovery/index.ts'));
+    assert(bundle.files.includes('extensions/pappra-recovery/runtime.mjs'));
+    assert(bundle.files.includes('extensions/pappra-recovery/recovery.json'));
+    assert(
+      bundle.files.includes('extensions/pappra-session-transition/index.ts'),
+    );
+    assert(
+      bundle.files.includes('extensions/pappra-session-transition/runtime.mjs'),
+    );
+
+    const manifest = JSON.parse(
+      readFileSync(join(outDir, 'package.json'), 'utf8'),
+    ) as Record<string, unknown>;
+    assert.deepEqual((manifest.pi as Record<string, unknown>).extensions, [
+      './extensions/pappra-recovery/index.ts',
+      './extensions/pappra-session-transition/index.ts',
+    ]);
+    assert.equal(
+      readFileSync(
+        join(outDir, 'extensions/pappra-recovery/index.ts'),
+        'utf8',
+      ).includes('./runtime.mjs'),
+      true,
+    );
+    assert.equal(
+      readFileSync(
+        join(outDir, 'extensions/pappra-session-transition/index.ts'),
+        'utf8',
+      ).includes('./runtime.mjs'),
+      true,
+    );
+    const copiedConfig = join(
+      outDir,
+      'extensions/pappra-recovery/recovery.json',
+    );
+    assert.deepEqual(readFileSync(copiedConfig), configBytes);
+    assert.equal(statSync(copiedConfig).mode & 0o777, 0o600);
+    assert.equal(
+      readFileSync(join(outDir, 'package.json'), 'utf8').includes(
+        'native-session',
+      ),
+      false,
+    );
+    for (const path of [
+      'extensions/pappra-recovery/runtime.mjs',
+      'extensions/pappra-session-transition/runtime.mjs',
+    ]) {
+      const runtime = readFileSync(join(outDir, path), 'utf8');
+      assert.equal(runtime.includes('file:///'), false);
+      assert.equal(runtime.includes('src/hosts/integration'), false);
+    }
+    assert.equal(existsSync(outDir), true);
   } finally {
     cleanup(out);
   }

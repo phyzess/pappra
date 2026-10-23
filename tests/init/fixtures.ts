@@ -41,6 +41,8 @@ export interface FakeUiCall {
   readonly kind: 'text' | 'select' | 'multiselect' | 'confirm';
   readonly message: string;
   readonly options: readonly SelectOption[];
+  readonly initialValue?: string | boolean;
+  readonly initialValues?: readonly string[];
 }
 
 export class FakeWizardUi implements WizardUi {
@@ -51,6 +53,11 @@ export class FakeWizardUi implements WizardUi {
   readonly #confirm: (boolean | symbol)[];
   readonly cancelled: string[] = [];
   readonly notes: string[] = [];
+  readonly validationErrors: {
+    readonly message: string;
+    readonly value: string;
+    readonly error: string;
+  }[] = [];
 
   constructor(queues: FakeUiQueues) {
     this.#text = [...(queues.text ?? [])];
@@ -67,19 +74,46 @@ export class FakeWizardUi implements WizardUi {
     this.notes.push(message);
   }
 
-  async text(message: string): Promise<string | symbol> {
-    this.calls.push({ kind: 'text', message, options: [] });
-    const next = this.#text.shift();
+  async text(
+    message: string,
+    initialValue?: string,
+    validate?: (value: string) => string | undefined,
+  ): Promise<string | symbol> {
+    this.calls.push({
+      kind: 'text',
+      message,
+      options: [],
+      ...(initialValue === undefined ? {} : { initialValue }),
+    });
+    let next = this.#text.shift();
     if (next === undefined)
       throw new Error(`No fake text answer for: ${message}`);
+    if (typeof next === 'string' && validate !== undefined) {
+      let error = validate(next);
+      while (error !== undefined) {
+        this.validationErrors.push({ message, value: next, error });
+        next = this.#text.shift();
+        if (next === undefined) {
+          throw new Error(`No corrected fake text answer for: ${message}`);
+        }
+        if (typeof next === 'symbol') return next;
+        error = validate(next);
+      }
+    }
     return next;
   }
 
   async select(
     message: string,
     options: readonly SelectOption[],
+    initialValue?: string,
   ): Promise<string | symbol> {
-    this.calls.push({ kind: 'select', message, options });
+    this.calls.push({
+      kind: 'select',
+      message,
+      options,
+      ...(initialValue === undefined ? {} : { initialValue }),
+    });
     const next = this.#select.shift();
     if (next === undefined)
       throw new Error(`No fake select answer for: ${message}`);
@@ -89,8 +123,14 @@ export class FakeWizardUi implements WizardUi {
   async multiselect(
     message: string,
     options: readonly SelectOption[],
+    initialValues?: readonly string[],
   ): Promise<readonly string[] | symbol> {
-    this.calls.push({ kind: 'multiselect', message, options });
+    this.calls.push({
+      kind: 'multiselect',
+      message,
+      options,
+      ...(initialValues === undefined ? {} : { initialValues }),
+    });
     const next = this.#multiselect.shift();
     if (next === undefined) {
       throw new Error(`No fake multiselect answer for: ${message}`);
@@ -98,8 +138,16 @@ export class FakeWizardUi implements WizardUi {
     return next;
   }
 
-  async confirm(message: string): Promise<boolean | symbol> {
-    this.calls.push({ kind: 'confirm', message, options: [] });
+  async confirm(
+    message: string,
+    initialValue?: boolean,
+  ): Promise<boolean | symbol> {
+    this.calls.push({
+      kind: 'confirm',
+      message,
+      options: [],
+      ...(initialValue === undefined ? {} : { initialValue }),
+    });
     const next = this.#confirm.shift();
     if (next === undefined)
       throw new Error(`No fake confirm answer for: ${message}`);

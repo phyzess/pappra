@@ -43,6 +43,18 @@ const input = createInterface({ input: process.stdin });
 input.on('line', (line) => {
   const request = parseJson(line);
   if (!object(request)) return;
+  const trace = process.env['FAKE_PI_TRACE'];
+  if (trace) appendFileSync(trace, `${JSON.stringify(request)}\n`);
+  if (process.env['FAKE_PI_FAIL_COMMAND'] === request['type']) {
+    emit({
+      type: 'response',
+      id: request['id'],
+      command: request['type'],
+      success: false,
+      error: 'Synthetic fixture command failure',
+    });
+    return;
+  }
   const response = (data: unknown = {}) =>
     emit({
       type: 'response',

@@ -1,0 +1,43 @@
+# E3 public visible bootstrap: implementation direction
+
+Implement the first public visible-bootstrap workflow, using the investigator's corrected contract as design input, with the corrections below taking precedence. Original visible Pi writes; coordinator independently reviews. This is a product implementation assignment, not permission for live pane/model fixtures or complete rollover.
+
+## Scope
+
+Add `pappra collab bootstrap <plan|apply> --task-root <absolute> --request <absolute> [--json]`, a narrow app workflow, companion Herdr operations and bounded available-shell readiness. Reuse existing bounded file readers, task namespace checks, cooperative task locking/reservation and registered-message notification. Avoid a new scheduler, launcher profile framework, generic retry framework or replacement authority model. Keep `HerdrTransport` implementations compatible; exporting its existing command runner is allowed, changing notification behavior is not.
+
+Use a task-bound existing participant when explicitly requested and verified; otherwise create a visible sibling of the resolved caller pane, preserving focus and assignment cwd. Never create a separate workspace by default. Resolve the exact caller rather than relying on focus. Split with explicit `--pane <resolved-caller>` and `--no-focus`. Existing-participant reuse validates binding, current occupant/native session, task and capabilities; it must not wait for a shell or start another agent. No silent reuse-to-split fallback.
+
+## Launch, evidence and authority
+
+Launch only Pi in this slice. Pin and validate the existing exported bootstrap directory's exact entry, runtime and co-located `bootstrap.json`, using a bounded manifest of regular files rather than an undefined directory digest. Validate the config with the accepted parser and match task, attempt, input revision, generation, coordinator epoch and intended successor. Load the accepted gate through `-- --extension <absolute entry>` at startup. Use the validated successor UUID as explicit `--session-id <uuid>`; the accepted native fixture already used that Pi argument. Reject arbitrary resume selectors/argv, approval switches, shell fragments and unrelated environment overrides. Resume is out of scope for new sibling creation.
+
+Preserve daily settings and the user's existing sessions. Do not claim that omitting `--model` preserves a mutable model chosen inside another session: report daily-default launch distinctly, and report selected-runtime inheritance as unverified unless exact supported observations establish it. Do not switch existing agents back to old models or add global settings. No bootstrap/config/file receipt or caller capability card proves a new successor's capabilities, gate registration or work acceptance. New launch stays read/context-only under the accepted gate until the existing handoff protocol permits writes. Do not synthesize receiver capability observations or transfer ownership in this workflow.
+
+Validate assignment/card inputs through existing preflight and reconcile the real current task's coordinator/attempt/resources. A capability card is reported readiness, not authority. Resolve the registered first-contact message and its recipient/task/content digest; notify its pointer through the existing protocol once, without adding an unrelated second prompt. Never infer current-session authority from focused UI or a configuration label. New participants need verified native identity and a task-local binding before notification; no forged ACK. If supported APIs cannot establish a required fact, return an actionable needs-input/unknown result rather than bypassing it.
+
+## Durability and failure
+
+Persist a bounded request identity and content digest under the validated task namespace before effects, using existing task synchronization. Reject same-key/different-content and concurrent applies. Record intent before each effect and its typed outcome afterward. A crash between an effect and receipt is unknown and must not automatically relaunch/resplit/resubmit; a duplicate returns the recorded outcome or an actionable reconciliation result. Preserve metadata needed for diagnosis; ambiguous state is not permission to retry. Do not require every failure to become automatically recoverable in this slice.
+
+Successful prompt submission means submitted, not consumed or accepted. Failures after launch do not prove process stop. Only close a created sibling before agent start, after reconciling its exact identity and verifying it still has the expected available shell and no agent; never close reused/unrelated panes. Unknown mutation results cannot become invented owned IDs or cleanup proof. `herdr pane close <pane-id>` is supported; preserve bounded typed results and report cleanup failures truthfully. Do not dump raw process command lines, environment or transcripts.
+
+## Readiness and plan boundary
+
+Local shell readiness is explicitly polling inside one bounded apply process: at most 10 seconds, 100 ms intervals and 100 samples. Share the remaining deadline across process-info commands and final identity checks; check time after awaited operations and before allowing start. Detect shell/pane/terminal/workspace/cwd drift and abort. Sanitize PID/group/normalized shell-name samples. Parse typed RPC `.result` fields; top-level correlation IDs are not resource IDs. Use installed shell admission predicate, not fixed sleeps or pane output as proof. The whole apply must also have bounded launch/notification/cleanup commands. No `--wait`, model wakeup, task-completion polling or hidden managed fallback.
+
+`plan` performs bounded validation and read-only observations, projects exact intended argv and prerequisites, and writes nothing: no request reservation, bundle export, split/start/close, binding mutation or notification. `apply` explicitly performs the one-shot effects after revalidation. Reject unknown/duplicate CLI flags and malformed or conflicting request values before any effect. Report pending quiescence, production transfer, first work, archive and automatic thresholds without marking those capabilities implemented.
+
+## Exact writable files
+
+- New: `src/app/collab-bootstrap-transport.ts`, `src/app/shell-readiness.ts`, `src/app/collab-bootstrap.ts`, `src/cli/commands/collaboration-bootstrap.ts`.
+- Existing: `src/app/collab-notify.ts` only to export/reuse its runner; `src/cli/commands/collaboration.ts` help; `src/cli/run.ts` only bootstrap parse/dispatch/help. Preserve existing host bundle and all other CLI behavior.
+- New: `tests/collab/shell-readiness.test.ts`, `tests/collab/bootstrap-transport.test.ts`, `tests/collab/bootstrap-app-cli.test.ts`, `docs/collaboration-bootstrap.md`.
+
+Keep all other existing files unchanged. Use local types/validation in the new app module rather than expanding shared schemas in this slice. Ask coordinator with a concrete dependency if an additional source file is necessary; do not expand broad historical claims into permission. `src/cli/run.ts` is deliberately released from the prior protected baseline solely for this routing delta; the other nineteen accepted pins remain immutable.
+
+## Verification and report
+
+Save a genuine matching assignment preflight before source work, using the pinned fresh card and exact cooperative claims. If it becomes stale, capture genuine new observations and ask for/reconcile the new input; never retimestamp. Do not proceed after a refusal. Preserve dirty user changes and use isolated compilation/test output; no shared `dist`, `.build`, dependency mutation, lifecycle build over shared symlinked dependencies, settings/install/publish/commit or live Herdr/pane/model fixture.
+
+Test the actual composed app/transport and public CLI with injected host operations and fake time, plus real temporary filesystem task state where persistence matters. Cover ready/transient/timeout/max samples/post-await deadline/abort, typed malformed RPC and drift, exact gate+session argv, reuse without shell/start, dry-plan zero writes, identity/admission/input refusal before effects, same-key concurrency/content conflict/duplicates, crash windows around split/start/prompt, persist-before-notify, ambiguous submission without resubmit and owned cleanup limits. Tests should reproduce these failure modes and assert effects, not mirror implementation branches. Run relevant existing notification/CLI regressions and type checks once; no full-suite repeat unless justified by a new failure. Report exact commands, outcomes, changed-file hashes, protected pins, limitations and a bounded installed-user example. Return one proactive REPORT; independent acceptance remains with coordinator.

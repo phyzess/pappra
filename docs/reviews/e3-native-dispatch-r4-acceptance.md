@@ -1,0 +1,17 @@
+# Native bootstrap gate acceptance
+
+Accept the scoped actual-host tool-gate milestone on Pi1.3.0. R4 delivery `sha256:e84f3db6de71ac26a6ceea48b0d90b82475bb8ed17f1dd97ad50edf100330613`,31outputs,20protected product hashes and the exact corrected library `sha256:d4bdcfaf8d7bc480512b3949737e197c05db79ece89358ed16de38f259df4eb6` verified. Coordinator independently parsed the63durable events, correlated the three settled segments and seven unique tool call IDs, compared prompt2/3 exact full target/content digests, actual results and current/copied output. Evidence `/private/tmp/native-execution-r4-review.ttG6qC/review.json`; helper `/tmp/native-execution-r4-review.mjs`.
+
+Actual visible session43896eae-b2ae-406a-8524-aa7ed36870ba in owned w8:p1 demonstrated:
+
+- Four local readiness samples,492ms, observed initialization processes before nu shell-only foreground; no fixed sleep was treated as readiness.
+- Vetted read success and actual write denied before fixture handoff completion, reason bootstrap-guard: handoff_not_completed.
+- Genuine fixture handoff completed at revision9, followed by an actual successful write whose exact prompt/output digest is `sha256:ccdccdf309ef81071a98d055fc8f9e2f2d2e093133ea247e484f801e7a1b1650`.
+- Claim release followed by actual denied write, reason bootstrap-guard: claim_released, expected new content rejected and previous file digest unchanged.
+- Three submitted prompts, three settled boundaries, seven unique calls; driver accounting agrees with durable log, no duplicate tool accounting. Exact owned workspace/pane/agent metadata absence after close is recorded.
+
+The one-shot terminal log pump is a dropped-notification recovery read, not periodic worker-completion polling. Offline four-case regression evidence is pinned. R3's exact delivery-loss cause remains unknown; successful recovery does not establish a platform bug or universal loss-free transport. Shell readiness uses bounded local process observations, not a native event guarantee or OS identity fence.
+
+Limits: stop/inventory/native-binding evidence for the fixture's old identity was supplied by its controller, not observed from a real old writer. Do not claim complete live takeover, arbitrary descendant stop, production binding/routing removal, native reversible archive or automatic context thresholds. The readiness/launch/reconciliation helpers currently live in private verification artifacts. Only the exported bootstrap gate and its public export path are product implementation. Installed users still need a supported public visible-bootstrap workflow; do not mark that delivered from a successful temp driver. No new package/archive was built by this native check.
+
+Next: inspect the existing product application/host/CLI/skill surfaces and design the smallest integration of verified visible shell readiness and participant bootstrap. Default to task-bound participant reuse or visible sibling pane, preserve chosen model/daily environment and message-driven completion, distinguish prepare/dry-run from effects. Avoid another independent launcher/profile/scheduler or hidden managed fallback. Plan exact ownership, public API/CLI shape, existing module reuse and targeted tests before assigning source edits. Then proceed toward real old-writer quiescence, successor first-work proof, routing removal and supported archive. No more model fixtures to reprove this accepted gate milestone.

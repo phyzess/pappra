@@ -7,11 +7,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
+  statSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { npmCli, pnpmCommand, projectRoot, runNode } from './project.js';
 
 const temporary = mkdtempSync(join(tmpdir(), 'pappra-package-'));
@@ -51,6 +53,23 @@ try {
   });
   assert(files.includes('dist/cli/main.js'));
   assert(files.includes('dist/index.d.ts'));
+  for (const file of [
+    'dist/collab/work-plan.js',
+    'dist/app/collab-work-plan.js',
+    'dist/app/collab-work-execution.js',
+    'dist/app/collab-recovery.js',
+    'dist/app/collab-recovery-projection.js',
+    'dist/app/collab-recovery-executor.js',
+    'dist/app/collab-session-transition.js',
+    'dist/hosts/integration/pi-recovery-extension.js',
+    'dist/hosts/integration/pi-session-transition-extension.js',
+    'dist/hosts/integration/pappra-recovery-extension.mjs',
+    'dist/hosts/integration/pappra-session-transition-extension.mjs',
+  ])
+    assert(
+      files.includes(file),
+      `Missing public collaboration package file: ${file}`,
+    );
   assert(files.includes('assets/manifest.json'));
   assert(files.includes('assets/integrations/skills/pappra/SKILL.md'));
   assert(
@@ -151,6 +170,28 @@ try {
     join(consumer, 'consumer.js'),
   );
   runNode(['consumer.js', metadata.version], consumer);
+  const collaborationConsumer = join(consumer, 'collaboration-consumer.mjs');
+  writeFileSync(
+    collaborationConsumer,
+    [
+      "import * as root from '@phyzess/pappra';",
+      "import { validateWorkPlan, evaluateWorkPlan } from '@phyzess/pappra/collab/work-plan';",
+      "import { inspectWorkPlan } from '@phyzess/pappra/collab/work-plan-inspection';",
+      "import { runWorkExecution } from '@phyzess/pappra/collab/work-execution';",
+      "import { inspectRecovery } from '@phyzess/pappra/collab/recovery';",
+      "import { executeRecovery } from '@phyzess/pappra/collab/recovery-executor';",
+      "import { validateSessionTransitionRequest } from '@phyzess/pappra/collab/session-transition';",
+      "import { PI_RECOVERY_CONFIG_SCHEMA } from '@phyzess/pappra/hosts/pi-recovery';",
+      "import { PI_SESSION_TRANSITION_EXTENSION_ID } from '@phyzess/pappra/hosts/pi-session-transition';",
+      'for (const value of [validateWorkPlan, evaluateWorkPlan, inspectWorkPlan, runWorkExecution, inspectRecovery, executeRecovery, validateSessionTransitionRequest]) {',
+      '  if (typeof value !== "function") throw new Error("public collaboration API missing");',
+      '}',
+      'if (!root.collabWorkExecution || !root.collabRecoveryExecutor || !root.collabSessionTransition) throw new Error("root namespace export missing");',
+      'if (PI_RECOVERY_CONFIG_SCHEMA !== "pappra/pi-recovery-config/1") throw new Error("recovery host export missing");',
+      'if (PI_SESSION_TRANSITION_EXTENSION_ID !== "pappra/pi-session-transition-host/1") throw new Error("transition host export missing");',
+    ].join('\n'),
+  );
+  runNode(['collaboration-consumer.mjs'], consumer);
 
   const lifecycleRoot = join(temporary, 'installed workspace ünicode');
   const lifecycleHome = join(temporary, 'fixture home');
@@ -203,6 +244,88 @@ try {
     assert(typeof decoded === 'object' && decoded !== null);
     return decoded as Record<string, unknown>;
   };
+  const recoveryConfigPath = join(temporary, 'installed-recovery-config.json');
+  const recoveryConfig = {
+    schema: 'pappra/pi-recovery-config/1',
+    taskRoot: lifecycleRoot,
+    planFile: join(lifecycleRoot, '.pappra', 'work-plan.json'),
+    self: {
+      agent_id: 'installed-writer',
+      session_id: 'installed-session',
+      harness: 'pi',
+    },
+    policy: { role: 'writer' },
+    expected: {
+      session_id: 'installed-session',
+      cwd: lifecycleRoot,
+      binding_ref: join(lifecycleRoot, '.pappra', 'binding.json'),
+      binding_digest: `sha256:${'b'.repeat(64)}`,
+      pane_id: 'w3:p1',
+      harness: 'pi',
+    },
+    mode: 'plan',
+    target: { agent: 'installed-writer' },
+    requestId: 'installed-recovery-smoke',
+  };
+  writeFileSync(
+    recoveryConfigPath,
+    `${JSON.stringify(recoveryConfig, null, 2)}\n`,
+  );
+  const collaborationBundlePath = join(
+    temporary,
+    'installed collaboration bundle',
+  );
+  const collaborationBundle = runInstalled([
+    'host',
+    'bundle',
+    '--host',
+    'pi',
+    '--host-version',
+    '1.3.0',
+    '--out',
+    collaborationBundlePath,
+    '--recovery-config',
+    recoveryConfigPath,
+    '--transition-extension',
+    '--json',
+  ]);
+  if (collaborationBundle.error) throw collaborationBundle.error;
+  assert.equal(collaborationBundle.status, 0, collaborationBundle.stderr);
+  const collaborationBundleResult = parseInstalled(collaborationBundle.stdout);
+  assert.equal(collaborationBundleResult.ok, true);
+  const collaborationManifest = JSON.parse(
+    readFileSync(join(collaborationBundlePath, 'package.json'), 'utf8'),
+  ) as Record<string, unknown>;
+  assert.deepEqual(
+    (collaborationManifest['pi'] as Record<string, unknown>)['extensions'],
+    [
+      './extensions/pappra-recovery/index.ts',
+      './extensions/pappra-session-transition/index.ts',
+    ],
+  );
+  assert.equal(
+    readFileSync(
+      join(collaborationBundlePath, 'extensions/pappra-recovery/recovery.json'),
+      'utf8',
+    ),
+    `${JSON.stringify(recoveryConfig, null, 2)}\n`,
+  );
+  assert.equal(
+    existsSync(
+      join(
+        collaborationBundlePath,
+        'extensions/pappra-session-transition/runtime.mjs',
+      ),
+    ),
+    true,
+  );
+  console.log('Installed opt-in recovery/transition bundle smoke passed.');
+  assert.equal(
+    statSync(
+      join(collaborationBundlePath, 'extensions/pappra-recovery/recovery.json'),
+    ).mode & 0o777,
+    0o600,
+  );
   const userSentinel = Buffer.from('pre-init user-owned content\n', 'utf8');
   const sentinelPath = join(lifecycleRoot, 'user-sentinel.txt');
   writeFileSync(sentinelPath, userSentinel);
@@ -436,6 +559,251 @@ try {
     assert.match(executable.stdout, /init/);
     assert.match(executable.stdout, /doctor/);
   }
+  const selectedRealProject =
+    process.env['PAPPRA_VALIDATION_REAL_PROJECT'] ?? projectRoot;
+  const selectedProjectWorkspace = join(
+    temporary,
+    'read-only selected project workspace',
+  );
+  const selectedProjectHome = join(
+    temporary,
+    'read-only selected project home',
+  );
+  const selectedProjectData = join(
+    temporary,
+    'read-only selected project data',
+  );
+  const selectedProjectState = join(
+    temporary,
+    'read-only selected project state',
+  );
+  for (const directory of [
+    selectedProjectWorkspace,
+    selectedProjectHome,
+    selectedProjectData,
+    selectedProjectState,
+    join(selectedProjectWorkspace, '.pappra', 'local'),
+    join(selectedProjectWorkspace, 'notes'),
+  ])
+    mkdirSync(directory, { recursive: true });
+  const selectedProjectEnv: NodeJS.ProcessEnv = {
+    ...lifecycleEnv,
+    HOME: selectedProjectHome,
+    XDG_CONFIG_HOME: join(selectedProjectHome, 'config'),
+    XDG_DATA_HOME: selectedProjectData,
+    XDG_STATE_HOME: selectedProjectState,
+    PAPPRA_DATA_HOME: selectedProjectData,
+  };
+  const selectedWorkspaceId = randomUUID();
+  writeFileSync(
+    join(selectedProjectWorkspace, '.pappra', 'local', 'machine.json'),
+    `${JSON.stringify(
+      {
+        schema: 'pappra/machine/1',
+        workspaceRealpath: realpathSync(selectedProjectWorkspace),
+        checkoutId: randomUUID(),
+        externalRepositories: [{ id: 'pappra', path: selectedRealProject }],
+        selectedHosts: [],
+        runtime: null,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    join(selectedProjectWorkspace, '.pappra', 'workspace.json'),
+    `${JSON.stringify(
+      {
+        schema: 'pappra/workspace/1',
+        workspaceId: selectedWorkspaceId,
+        name: 'read-only selected project workspace',
+        runtimeVersion: metadata.version,
+        repositories: [
+          { id: 'pappra', path: 'external:pappra', access: 'read' },
+        ],
+        knowledge: {
+          sources: ['notes'],
+          newDocuments: '.pappra/knowledge',
+          taskVisibility: 'private',
+        },
+        code: { graph: 'none', symbols: 'none', prepare: 'manual' },
+        validation: [],
+        excludes: [],
+        extensions: {},
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    join(selectedProjectWorkspace, 'notes', 'existing.md'),
+    '# Existing private knowledge\n\nIsolated package verification fixture.\n',
+  );
+  const selectedChoicesPath = join(temporary, 'read-only-project-choices.json');
+  const selectedChoices = {
+    schema: 'pappra/init-choices/1',
+    name: 'read-only selected project workspace',
+    workspaceId: selectedWorkspaceId,
+    repositories: [{ id: 'pappra', path: 'external:pappra', access: 'read' }],
+    knowledge: {
+      sources: ['notes'],
+      newDocuments: '.pappra/knowledge',
+      taskVisibility: 'private',
+    },
+    code: { graph: 'none', symbols: 'auto', prepare: 'on-demand' },
+    validation: [],
+    excludes: [],
+    hosts: [],
+  };
+  const reconfiguredChoices = {
+    ...selectedChoices,
+    name: 'read-only selected project reconfigured',
+  };
+  writeFileSync(
+    selectedChoicesPath,
+    `${JSON.stringify(reconfiguredChoices, null, 2)}\n`,
+  );
+  const sourceStatusBefore = spawnSync('git', ['status', '--porcelain'], {
+    cwd: selectedRealProject,
+    encoding: 'utf8',
+    shell: false,
+    timeout: 10_000,
+  });
+  if (sourceStatusBefore.error) throw sourceStatusBefore.error;
+  assert.equal(sourceStatusBefore.status, 0, sourceStatusBefore.stderr);
+  const sourcePackageBytes = readFileSync(
+    join(selectedRealProject, 'package.json'),
+  );
+  const runSelectedProject = (args: readonly string[]) =>
+    spawnSync(process.execPath, [installedCli, ...args], {
+      cwd: selectedProjectWorkspace,
+      encoding: 'utf8',
+      shell: false,
+      timeout: 90_000,
+      env: selectedProjectEnv,
+    });
+  const runSelectedProjectOk = (
+    args: readonly string[],
+  ): Record<string, unknown> => {
+    const result = runSelectedProject(args);
+    if (result.error) throw result.error;
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return parseInstalled(result.stdout);
+  };
+  const workspaceConfigPath = join(
+    selectedProjectWorkspace,
+    '.pappra',
+    'workspace.json',
+  );
+  const workspaceConfigBefore = readFileSync(workspaceConfigPath);
+  const selectedPlanResult = runSelectedProject([
+    'init',
+    '--config',
+    selectedChoicesPath,
+    '--reconfigure',
+    '--no-runtime',
+    '--json',
+  ]);
+  if (selectedPlanResult.error) throw selectedPlanResult.error;
+  assert([0, 1].includes(selectedPlanResult.status ?? -1));
+  assert.equal(parseInstalled(selectedPlanResult.stdout).ok, true);
+  assert.deepEqual(readFileSync(workspaceConfigPath), workspaceConfigBefore);
+  const selectedPlan = parseInstalled(selectedPlanResult.stdout);
+  assert.equal(selectedPlan.ok, true);
+  const selectedScope = selectedPlan.scope as {
+    readonly workspaceRoot: string;
+    readonly repositories: readonly { readonly path: string }[];
+  };
+  assert.equal(
+    selectedScope.workspaceRoot,
+    realpathSync(selectedProjectWorkspace),
+  );
+  assert.equal(selectedScope.repositories[0]?.path, 'external:pappra');
+  assert.deepEqual(readFileSync(workspaceConfigPath), workspaceConfigBefore);
+  runSelectedProjectOk(['docs', 'scan', '--apply', '--json']);
+  const listedKnowledge = runSelectedProjectOk([
+    'docs',
+    'list',
+    '--include-private',
+    '--json',
+  ]);
+  assert(JSON.stringify(listedKnowledge).includes('existing.md'));
+  const newDocument = join(
+    selectedProjectWorkspace,
+    '.pappra',
+    'knowledge',
+    'authored-during-verification.md',
+  );
+  mkdirSync(dirname(newDocument), { recursive: true });
+  writeFileSync(newDocument, '# New isolated knowledge\n');
+  const repositoryStatus = runSelectedProject([
+    'code',
+    'status',
+    '--repo',
+    'pappra',
+    '--json',
+  ]);
+  if (repositoryStatus.error) throw repositoryStatus.error;
+  assert([0, 1].includes(repositoryStatus.status ?? -1));
+  parseInstalled(repositoryStatus.stdout);
+  const projectCheckpoint = runSelectedProjectOk([
+    'checkpoint',
+    '--task',
+    'read-only-project-walkthrough',
+    '--objective',
+    'Verify the installed package with a selected read-only repository',
+    '--acceptance',
+    'The real repository remains unchanged',
+    '--decision',
+    'Keep workspace and knowledge roots isolated',
+    '--next-action',
+    'Review the saved resume packet',
+    '--author-session',
+    'isolated-package-session',
+    '--native-session',
+    'isolated-package-session',
+    '--context-completeness',
+    'complete',
+    '--json',
+  ]);
+  assert.equal(projectCheckpoint.schema, 'pappra/checkpoint-result/1');
+  const projectResumeResult = runSelectedProject([
+    'resume',
+    'read-only-project-walkthrough',
+    '--session',
+    'isolated-package-session',
+    '--json',
+  ]);
+  if (projectResumeResult.error) throw projectResumeResult.error;
+  assert.equal(projectResumeResult.status, 1, projectResumeResult.stderr);
+  const projectResume = parseInstalled(projectResumeResult.stdout);
+  assert.equal(projectResume.schema, 'pappra/resume-packet/1');
+  assert.equal(projectResume.executionAllowed, false);
+  assert.equal(projectResume.contextCompleteness, 'complete');
+  const projectRuntime = runSelectedProjectOk([
+    'runtime',
+    'install',
+    '--apply',
+    '--json',
+  ]);
+  assert.equal(projectRuntime.ok, true);
+  runSelectedProjectOk(['runtime', 'status', '--json']);
+  assert.deepEqual(
+    readFileSync(join(selectedRealProject, 'package.json')),
+    sourcePackageBytes,
+  );
+  const sourceStatusAfter = spawnSync('git', ['status', '--porcelain'], {
+    cwd: selectedRealProject,
+    encoding: 'utf8',
+    shell: false,
+    timeout: 10_000,
+  });
+  if (sourceStatusAfter.error) throw sourceStatusAfter.error;
+  assert.equal(sourceStatusAfter.status, 0, sourceStatusAfter.stderr);
+  assert.equal(sourceStatusAfter.stdout, sourceStatusBefore.stdout);
+  console.log(
+    'Installed selected-project walkthrough passed (read-only external repository; isolated workspace, config, knowledge, runtime and task roots).',
+  );
   console.log(`Package smoke passed (${files.length} files).`);
 } finally {
   rmSync(temporary, { recursive: true, force: true });

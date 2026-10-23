@@ -137,6 +137,8 @@ export const nativeDir = (taskRoot: string) => path.join(taskRoot, 'native');
 export const abortedDir = (taskRoot: string) => path.join(taskRoot, 'aborted');
 export const brokenLocksDir = (taskRoot: string) =>
   path.join(taskRoot, 'broken-locks');
+export const notificationsDir = (taskRoot: string) =>
+  path.join(taskRoot, 'notifications');
 
 export function domainIdOf(domainRoot: string) {
   return `domain:${crypto.createHash('sha256').update(domainRoot).digest('hex').slice(0, 24)}`;

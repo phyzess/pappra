@@ -6,4 +6,6 @@ export * as messages from './messages.js';
 export * as lifecycle from './lifecycle.js';
 export * as handoff from './handoff.js';
 export * as notify from './notify.js';
+export * as workPlan from './work-plan.js';
+export * as rollover from './rollover.js';
 export type * from './types.js';

@@ -238,3 +238,74 @@ test('docs scan previews and registers documents from configured sources', () =>
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('docs scan exposes incomplete coverage and private list guidance', () => {
+  const root = makeTempDir('knowledge-scan-incomplete');
+  const home = mkdtempSync(join(tmpdir(), 'knowledge-scan-incomplete-home-'));
+  try {
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        knowledge: {
+          sources: ['docs', 'missing'],
+          newDocuments: 'knowledge',
+          taskVisibility: 'private',
+        },
+      }),
+    );
+    writeMachineConfig(root, baseMachineConfig(root));
+    writeText(join(root, 'docs', 'private.md'), '# Private\n');
+
+    const plan = invoke(['docs', 'scan', '--json'], root, home);
+    assert.equal(plan.status, 1, plan.stderr);
+    const planValue = parse(plan.stdout);
+    assert.equal(planValue.ok, false);
+    assert.equal((planValue.candidates as unknown[]).length, 1);
+    assert.equal(
+      (planValue.nextActions as string[]).some((action) =>
+        action.includes('pappra docs list --include-private'),
+      ),
+      true,
+    );
+    assert.equal(
+      (planValue.diagnostics as Array<{ code: string }>).some(
+        (diagnostic) => diagnostic.code === 'knowledge_source_missing',
+      ),
+      true,
+    );
+
+    const humanPlan = invoke(['docs', 'scan'], root, home);
+    assert.equal(humanPlan.status, 1, humanPlan.stderr);
+    assert.match(
+      humanPlan.stderr,
+      /Configured knowledge source does not exist/,
+    );
+    assert.match(humanPlan.stdout, /incomplete/i);
+    assert.match(humanPlan.stdout, /pappra docs list --include-private/);
+
+    const applied = invoke(['docs', 'scan', '--apply', '--json'], root, home);
+    assert.equal(applied.status, 1, applied.stderr);
+    const appliedValue = parse(applied.stdout);
+    assert.equal(appliedValue.ok, false);
+    assert.equal((appliedValue.registered as unknown[]).length, 1);
+
+    const defaultList = invoke(['docs', 'list', '--json'], root, home);
+    assert.equal(defaultList.status, 0, defaultList.stderr);
+    assert.equal((parse(defaultList.stdout).documents as unknown[]).length, 0);
+
+    const humanList = invoke(['docs', 'list'], root, home);
+    assert.equal(humanList.status, 0, humanList.stderr);
+    assert.match(humanList.stdout, /pappra docs list --include-private/);
+
+    const all = invoke(
+      ['docs', 'list', '--include-private', '--json'],
+      root,
+      home,
+    );
+    assert.equal(all.status, 0, all.stderr);
+    assert.equal((parse(all.stdout).documents as unknown[]).length, 1);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});

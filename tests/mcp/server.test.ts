@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -14,6 +20,9 @@ import {
   writeMachineConfig,
   writeWorkspaceConfig,
 } from '../workspace/fixtures.js';
+
+import type { Assignment, CapabilityCard } from '../../src/collab/contracts.js';
+import { preflight } from '../../src/collab/preflight.js';
 
 async function connect(root: string) {
   const server = createPappraMcpServer({ root });
@@ -243,6 +252,52 @@ test('mcp write tools require apply and then persist', async () => {
   }
 });
 
+test('docs_scan preserves incomplete coverage in MCP results', async () => {
+  const root = makeTempDir('mcp-docs-scan-incomplete');
+  try {
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        knowledge: {
+          sources: ['AGENTS.md', 'missing'],
+          newDocuments: '.pappra/knowledge',
+          taskVisibility: 'private',
+        },
+      }),
+    );
+    writeMachineConfig(root, baseMachineConfig(root));
+    writeFileSync(join(root, 'AGENTS.md'), '# agents\n');
+    const { client, server } = await connect(root);
+    try {
+      const scanned = textPayload(
+        await client.callTool({
+          name: 'docs_scan',
+          arguments: { apply: true },
+        }),
+      );
+      assert.equal(scanned.ok, false);
+      assert.equal((scanned.registered as unknown[]).length, 1);
+      assert.equal(
+        (scanned.diagnostics as Array<{ code: string }>).some(
+          (diagnostic) => diagnostic.code === 'knowledge_source_missing',
+        ),
+        true,
+      );
+      assert.equal(
+        (scanned.nextActions as string[]).some((action) =>
+          action.includes('pappra docs list --include-private'),
+        ),
+        true,
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
 test('collab_start refuses without confirmation and never launches', async () => {
   const root = makeTempDir('mcp-collab');
   try {
@@ -264,6 +319,392 @@ test('collab_start refuses without confirmation and never launches', async () =>
       );
       assert.equal(refused.ok, false);
       assert.equal(refused.status, 'confirmation_required');
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+function explicitGoal(
+  root: string,
+  overrides: {
+    readonly harness?: string;
+    readonly cwd?: string;
+    readonly roles?: string[];
+    readonly taskId?: string;
+  } = {},
+) {
+  const goal: Record<string, unknown> = {
+    schema: 'pappra/collaboration-goal/1',
+    task_id: overrides.taskId ?? 'mcp-goal',
+    subtask_id: 'work',
+    attempt: 1,
+    phase: 'fix',
+    objective: 'Prepare one bounded collaboration slice from MCP.',
+    acceptance: ['prepared references verify'],
+    prompt: 'Use only the frozen prompt.',
+    coordinator: {
+      agent_id: 'coord-mcp',
+      session_id: 'coord-session',
+      harness: 'codex',
+      owner_epoch: 2,
+    },
+    assignee: {
+      agent_id: 'worker-mcp',
+      session_id: 'worker-session',
+      harness: overrides.harness ?? 'pi',
+      surface: 'cli',
+      configuration_id: 'custom-config',
+      cwd: overrides.cwd ?? join(root, 'assignee-cwd'),
+    },
+    resources: [{ path: join(root, 'slice.txt'), access: 'write' }],
+    required: { skills: [], tools: ['read'] },
+    preferred: { skills: [], tools: [] },
+    ...(overrides.roles === undefined ? {} : { roles: overrides.roles }),
+  };
+  return goal;
+}
+
+function domainHasTasks(root: string): boolean {
+  return existsSync(join(root, 'domain', 'tasks'));
+}
+
+async function refusalText(call: Promise<unknown>): Promise<string> {
+  const result = (await call) as {
+    content?: { text?: string }[];
+    isError?: boolean;
+  };
+  assert.equal(result.isError, true);
+  return result.content?.[0]?.text ?? '';
+}
+
+test('collab_prepare builds explicit goal bundles without synthesizing cards', async () => {
+  const root = makeTempDir('mcp-prepare');
+  try {
+    createRepository(root);
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    writeMachineConfig(root, baseMachineConfig(root));
+    const cwd = join(root, 'assignee-cwd');
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(root, 'slice.txt'), 'first file resource\n');
+    const { client, server } = await connect(root);
+    try {
+      const prepared = textPayload(
+        await client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            goal: explicitGoal(root, { roles: ['reviewer', 'implementer'] }),
+          },
+        }),
+      );
+      assert.equal(prepared.ok, true);
+      assert.equal(prepared.cardPath, undefined);
+      assert.equal(prepared.card, undefined);
+      const bundle = prepared.prepared as Record<string, unknown>;
+      const goal = prepared.goal as Record<string, unknown>;
+      assert.equal(goal.task_id, 'mcp-goal');
+      const assignment = JSON.parse(
+        readFileSync(bundle.assignment_path as string, 'utf8'),
+      ) as Record<string, unknown>;
+      assert.deepEqual(assignment.roles, ['reviewer', 'implementer']);
+      assert.deepEqual(goal.roles, ['reviewer', 'implementer']);
+      assert.deepEqual(assignment.required, { skills: [], tools: ['read'] });
+      assert.deepEqual(assignment.preferred, { skills: [], tools: [] });
+      const coordinator = assignment.coordinator as Record<string, unknown>;
+      assert.equal(coordinator.agent_id, 'coord-mcp');
+      assert.equal(coordinator.session_id, 'coord-session');
+      assert.equal(coordinator.harness, 'codex');
+      assert.equal(coordinator.owner_epoch, 2);
+      const assignee = assignment.assignee as Record<string, unknown>;
+      assert.equal(assignee.agent_id, 'worker-mcp');
+      assert.equal(assignee.session_id, 'worker-session');
+      assert.equal(assignee.harness, 'pi');
+      assert.equal(assignee.surface, 'cli');
+      assert.equal(assignee.configuration_id, 'custom-config');
+      assert.equal(assignee.cwd, cwd);
+      const runner = assignment.runner as Record<string, unknown>;
+      assert.equal(runner.name, 'pi-cli');
+      assert.equal(runner.mode, 'native');
+      const resources = assignment.resources as Record<string, unknown>[];
+      assert.equal(resources[0]?.path, join(root, 'slice.txt'));
+      assert.equal(typeof resources[0]?.resource_epoch, 'number');
+      assert.equal(
+        readdirSync(bundle.prepared_dir as string).some((name) =>
+          name.startsWith('card.declared'),
+        ),
+        false,
+      );
+
+      const declaredCard = {
+        schema: 'harness-collab/capabilities/1',
+        agent_id: 'worker-mcp',
+        session_id: 'worker-session',
+        harness: 'pi',
+        surface: 'cli',
+        configuration_id: 'custom-config',
+        cwd,
+        observed_at: new Date().toISOString(),
+        evidence_level: 'declared',
+        skills: [],
+        tools: [],
+      } as unknown as CapabilityCard;
+      const check = preflight(
+        assignment as unknown as Assignment,
+        declaredCard,
+      );
+      assert.equal(check.status, 'needs_input');
+      assert(
+        check.blockers.some(
+          (entry) => entry.code === 'runtime_capabilities_unconfirmed',
+        ),
+      );
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('collab_prepare refuses legacy and unknown input before any write', async () => {
+  const root = makeTempDir('mcp-prepare-legacy');
+  try {
+    createRepository(root);
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    writeMachineConfig(root, baseMachineConfig(root));
+    writeFileSync(join(root, 'slice.txt'), 'first file resource\n');
+    const { client, server } = await connect(root);
+    try {
+      const legacy = await refusalText(
+        client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            objective: 'via mcp',
+            task: 'mcp-goal',
+            acceptance: ['prepared references verify'],
+            resources: [{ path: root, access: 'write' }],
+            coordinatorSession: 'coord-session',
+            assigneeSession: 'worker-session',
+            harness: 'pi',
+          },
+        }),
+      );
+      assert.match(legacy, /collab_prepare/);
+      assert.match(legacy, /Unrecognized keys/);
+      const mixed = await refusalText(
+        client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            goal: explicitGoal(root),
+            objective: 'legacy leftover',
+          },
+        }),
+      );
+      assert.match(mixed, /Unrecognized key: "objective"/);
+      const unknownField = await refusalText(
+        client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            goal: { ...explicitGoal(root), extra: true },
+          },
+        }),
+      );
+      assert.match(unknownField, /"extra" at goal/);
+      const missing = await refusalText(
+        client.callTool({
+          name: 'collab_prepare',
+          arguments: { domainRoot: join(root, 'domain') },
+        }),
+      );
+      assert.match(missing, /expected object, received undefined at goal/);
+      assert.equal(domainHasTasks(root), false);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('collab_prepare maps supported runners and refuses invalid metadata without artifacts', async () => {
+  const root = makeTempDir('mcp-prepare-runners');
+  try {
+    createRepository(root);
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    writeMachineConfig(root, baseMachineConfig(root));
+    mkdirSync(join(root, 'assignee-cwd'), { recursive: true });
+    writeFileSync(join(root, 'slice.txt'), 'first file resource\n');
+    const { client, server } = await connect(root);
+    try {
+      const expected = new Map([
+        ['pi', 'pi-cli'],
+        ['codex', 'codex-exec'],
+        ['claude', 'claude-cli'],
+      ]);
+      for (const [harness, runner] of expected) {
+        const prepared = textPayload(
+          await client.callTool({
+            name: 'collab_prepare',
+            arguments: {
+              domainRoot: join(root, 'domain'),
+              goal: explicitGoal(root, { harness, taskId: `mcp-${harness}` }),
+            },
+          }),
+        );
+        assert.equal(prepared.ok, true, harness);
+        const bundle = prepared.prepared as Record<string, unknown>;
+        const assignment = JSON.parse(
+          readFileSync(bundle.assignment_path as string, 'utf8'),
+        ) as Record<string, unknown>;
+        assert.equal(
+          (assignment.runner as Record<string, unknown>).name,
+          runner,
+          harness,
+        );
+        assert.deepEqual(assignment.roles, ['implementer']);
+      }
+
+      const tasksBeforeInvalid = readdirSync(
+        join(root, 'domain', 'tasks'),
+      ).sort();
+      for (const [index, harness] of [
+        'gemini',
+        'constructor',
+        'toString',
+        '__proto__',
+      ].entries()) {
+        const unsupported = textPayload(
+          await client.callTool({
+            name: 'collab_prepare',
+            arguments: {
+              domainRoot: join(root, 'domain'),
+              goal: explicitGoal(root, {
+                harness,
+                taskId: `mcp-unsupported-${index}`,
+              }),
+            },
+          }),
+        );
+        assert.equal(unsupported.ok, false, harness);
+        assert.equal(unsupported.code, 'assignee_harness_unsupported', harness);
+      }
+      assert.deepEqual(
+        readdirSync(join(root, 'domain', 'tasks')).sort(),
+        tasksBeforeInvalid,
+      );
+      const missingCwd = textPayload(
+        await client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            goal: explicitGoal(root, {
+              cwd: join(root, 'missing-directory'),
+              taskId: 'mcp-missing-cwd',
+            }),
+          },
+        }),
+      );
+      assert.equal(missingCwd.ok, false);
+      assert.equal(missingCwd.code, 'cwd_unavailable');
+
+      const fileCwd = textPayload(
+        await client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            goal: explicitGoal(root, {
+              cwd: join(root, 'slice.txt'),
+              taskId: 'mcp-file-cwd',
+            }),
+          },
+        }),
+      );
+      assert.equal(fileCwd.ok, false);
+      assert.equal(fileCwd.code, 'cwd_unavailable');
+
+      const duplicateRoles = await refusalText(
+        client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            goal: explicitGoal(root, {
+              roles: ['implementer', 'implementer'],
+              taskId: 'mcp-duplicate-roles',
+            }),
+          },
+        }),
+      );
+      assert.match(duplicateRoles, /roles must be unique/);
+      const emptyRoles = await refusalText(
+        client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            goal: explicitGoal(root, { roles: [], taskId: 'mcp-empty-roles' }),
+          },
+        }),
+      );
+      assert.match(emptyRoles, /goal\.roles/);
+      assert.equal(domainHasTasks(root), true);
+      const tasks = readdirSync(join(root, 'domain', 'tasks'));
+      assert.deepEqual(tasks.sort(), ['mcp-claude', 'mcp-codex', 'mcp-pi']);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('collab_start refuses a real controller on a foreign harness without launching', async () => {
+  const root = makeTempDir('mcp-prepare-controller');
+  try {
+    createRepository(root);
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    writeMachineConfig(root, baseMachineConfig(root));
+    mkdirSync(join(root, 'assignee-cwd'), { recursive: true });
+    writeFileSync(join(root, 'slice.txt'), 'first file resource\n');
+    const { client, server } = await connect(root);
+    try {
+      const prepared = textPayload(
+        await client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(root, 'domain'),
+            goal: explicitGoal(root, { harness: 'codex' }),
+          },
+        }),
+      );
+      assert.equal(prepared.ok, true);
+      const bundle = prepared.prepared as Record<string, unknown>;
+      const refused = textPayload(
+        await client.callTool({
+          name: 'collab_start',
+          arguments: {
+            prepared: join(bundle.prepared_dir as string, 'prepared.json'),
+            capabilities: join(root, 'card.json'),
+            controller: 'pi-rpc',
+            confirm: true,
+          },
+        }),
+      );
+      assert.equal(refused.ok, false);
+      assert.equal(refused.code, 'controller_harness_mismatch');
+      const record = JSON.parse(
+        readFileSync(join(bundle.task_root as string, 'task.json'), 'utf8'),
+      ) as Record<string, unknown>;
+      assert.equal(record.launch_reservations, undefined);
+      assert.equal(existsSync(join(root, 'card.json')), false);
     } finally {
       await client.close();
       await server.close();

@@ -20,23 +20,32 @@ curl -fsSL https://raw.githubusercontent.com/phyzess/pappra/main/examples/minima
 npx @phyzess/pappra@beta init --config ./minimal-choices.json --json
 
 # Apply the same choices. Apply also installs and binds a durable runtime copy,
-# so this converges with exit code 0; add --no-runtime to leave it pending.
+# so this converges with exit code 0; add --no-runtime to skip that work and
+# leave a still-required runtime action pending.
 npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
 npx @phyzess/pappra@beta doctor --json
 ```
 
 `examples/minimal-choices.json` is complete for a host-free, no-graph, single-directory workspace. The example intentionally has no repositories or optional hosts.
 
-For a non-interactive derived setup, `npx @phyzess/pappra@beta init --yes --apply --json` derives repositories, knowledge sources, code engine, validation commands, excludes and hosts from discovery. `--print-choices` prints that `pappra/init-choices/1` document and writes nothing, and `init --json` without selections returns the discovery candidates plus the suggested document. JSON mode never prompts; only a TTY without selections opens the wizard.
+For a non-interactive derived setup, `npx @phyzess/pappra@beta init --yes --apply --json` derives repositories, knowledge sources, code engine, validation commands, excludes and hosts from discovery; with an existing workspace plus `--reconfigure` it keeps the current represented selections instead of deriving new ones, and `--print-choices --reconfigure` prints those current choices. `--print-choices` normally prints the derived `pappra/init-choices/1` document and writes nothing, and `init --json` without selections returns the discovery candidates plus the suggested document. JSON mode never prompts.
 
 Development from a checkout works the same way: `pnpm install --frozen-lockfile`, `pnpm build`, then invoke `dist/cli/main.js` by absolute path from the target workspace.
 
-`init --apply` also installs a durable runtime copy of the executing package under the
-Pappra data directory and binds it in `machine.json`, so an npx/dlx bootstrap survives
-cache eviction and the command converges with exit code `0`. Pass `--no-runtime` to leave
-that action pending instead; the result is then `ok:true` with
-`status:"external-actions-pending"` and a nonzero exit, which is a partial configuration
-write rather than a claim that a runtime exists.
+`init` never writes during planning. `--apply` writes the planned files through a managed
+journal. By default it then verifies an existing runtime for the workspace's recorded runtime
+version and reuses it when the manifest, package contents, executable and smoke check all pass;
+otherwise it packs and installs the current package under the Pappra data directory and binds
+that runtime in `machine.json`. So an npx/dlx bootstrap survives cache eviction. If the current
+package version differs from the workspace target, a previously installed verified target
+runtime may still be reused; when none is reusable the configuration is applied and runtime
+setup fails afterwards with a nonzero exit. Pass `--no-runtime` to suppress runtime verification,
+installation and binding for that invocation. When a runtime action is still required afterwards,
+the configuration is applied, that action stays pending, and the result is `ok:true` with
+`status:"external-actions-pending"` and a nonzero exit rather than a claim that a runtime exists.
+A workspace that already has a bound runtime for its target and needs no file changes can instead
+report `ok:true`, apply status `no-changes` and exit `0`; `initComplete` then stays `false`,
+because that invocation verified no runtime.
 
 For a new workspace or a new machine, `pappra onboard --dry-run --json` shows the plan and
 the host version matrix; `pappra onboard --yes --apply-host --json` applies config, runtime
@@ -51,12 +60,49 @@ npx @phyzess/pappra@beta runtime status --json
 npx @phyzess/pappra@beta runtime verify --json
 ```
 
-A workspace that already has a valid `.pappra/workspace.json` is never rewritten silently.
-`init --yes --reconfigure --apply` rebuilds it from discovery (for example to move the
-recorded runtime version to the running package), backing the previous file up under
-`.pappra/local/backups`. Apply also reports advisory `nextActions`: `pappra code prepare`
-for a selected code engine and `pappra docs scan --apply` to register documents from the
-configured knowledge sources.
+A workspace that already has a valid `.pappra/workspace.json` is never rewritten silently: a
+plain `init` reuses it and only plans missing local state. `--reconfigure` is the explicit opt-in
+that re-derives `workspace.json` from the current selections, and it preserves the workspace
+identity, `extensions`, `continuity`, custom validation entries with their original checkout
+binding, and existing local machine settings; the previous file is backed up under
+`.pappra/local/backups`. `--yes --reconfigure` therefore keeps the represented selections instead
+of re-deriving them from discovery, while `--config <file> --reconfigure` applies explicitly
+supplied edits.
+
+Knowledge sources and the document destination are different settings. `knowledge.sources` lists
+existing rules and documents that stay in place and are only registered later by
+`pappra docs scan --apply`; `knowledge.newDocuments` is merely the destination for future
+authored documents and is not created by `init`. Apply also reports advisory `nextActions`:
+`pappra code prepare` for a selected code engine and `pappra docs scan --apply` to register
+documents from the configured knowledge sources.
+
+### Interactive init
+
+A TTY opens the full wizard only when selections are actually needed: a plain `init` in a
+workspace that already has a valid configuration reuses it and asks only for missing local
+state, and `--reconfigure` is what opens the editor. The workspace name, new-document
+destination and excludes are editable text fields seeded with the current or derived value, so
+the suggested value is visible and can be changed before submitting; an invalid entry is
+reported at that field and re-asked. Repository and knowledge sections pre-select the current
+choices and offer **Add existing repository…** and **Add existing knowledge file or folder…**.
+That action inspects only the workspace-relative path you type: it checks portability,
+canonical containment, workspace exclusions, nested-workspace boundaries, unsafe symlinks and,
+for repositories, that the path is the exact Git checkout root. It never scans ancestors or the
+home directory, never reads document bodies, and empty knowledge folders are valid sources.
+Advanced preferences are opt-in (`Keep current advanced settings` is the default), sections after
+the first offer `Back` alongside `Review selections`, the review screen can reopen one section, and
+`Cancel` (also Ctrl-C) discards the draft before anything is written. Graph/symbols/preparation
+choices, validation candidates and host declarations are recorded preferences only: `init` does not
+install, index, execute or wire them.
+
+A TTY run that collected selections without `--apply` prints the plan and then asks one
+confirmation when configuration writes are planned; declining exits `130` with no files written.
+`--apply` never prompts, `--config` without `--apply` stays a preview even on a TTY, and an empty
+read-only plan performs no runtime work and asks nothing. `--print-choices` prints the
+`pappra/init-choices/1` document and writes nothing, `--config` reads that document,
+`--yes`/`--no-interactive` derive selections non-interactively, and `--json` never prompts.
+Exit `0` means the requested work completed; a nonzero exit after a successful configuration
+write means a later step is still pending (for example a deferred required runtime action).
 
 Optional examples have prerequisites rather than generated files: code-graph and
 host commands require the selected external CLI/support, and collaboration

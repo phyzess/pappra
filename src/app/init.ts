@@ -33,6 +33,7 @@ import {
   normalizePortableRelativePath,
   resolvePortableRelativePath,
   samePath,
+  toWorkspaceRelativePath,
 } from '../schemas/paths.js';
 import {
   WORKSPACE_SCHEMA,
@@ -46,6 +47,10 @@ import { spawnSync } from 'node:child_process';
 import { executableOnPath } from '../hosts/detect.js';
 import { HOST_SUPPORT } from '../hosts/integration/support.js';
 import { observePath, resolveRealpath, sha256Digest } from '../infra/fs.js';
+import {
+  inspectGitRepository,
+  type GitRepositoryObservation,
+} from '../infra/git.js';
 import type {
   MachineConfigInspection,
   WorkspaceConfigInspection,
@@ -58,6 +63,7 @@ import {
   discoverWorkspace,
   type WorkspaceDiscovery,
 } from '../workspace/discover.js';
+import { isExcludedPath } from '../workspace/ignore.js';
 import { resolveWorkspaceRoot } from '../workspace/resolve.js';
 import type {
   DiscoveredRepository,
@@ -214,6 +220,26 @@ export interface RepositoryCandidate {
   readonly configured: boolean;
 }
 
+export type InitPathAdditionKind = 'repository' | 'knowledge';
+
+/** Read-only snapshot of one exact, explicitly entered workspace-relative path. */
+export interface InitPathObservation {
+  readonly kind: InitPathAdditionKind;
+  readonly requestedPath: string;
+  /** Canonical workspace-relative path suitable for an existing InitChoices field. */
+  readonly path: string;
+  readonly realPath: string;
+  readonly targetKind: 'file' | 'directory';
+  readonly device: number;
+  readonly inode: number;
+  /** Actual bounded Git metadata observation for repository additions. */
+  readonly git: GitRepositoryObservation | null;
+}
+
+export type InitPathInspectionResult =
+  | { readonly ok: true; readonly observation: InitPathObservation }
+  | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] };
+
 export interface PlanInitOptions {
   readonly root: string;
   readonly choices?: InitChoices | null;
@@ -224,6 +250,8 @@ export interface PlanInitOptions {
   readonly discoveredAt?: string;
   /** Reuse an immediately preceding inspectInitContext result. */
   readonly context?: InitContext;
+  /** In-memory UI observations; planning re-inspects each path before use. */
+  readonly pathObservations?: readonly InitPathObservation[];
 }
 
 function failure(
@@ -313,7 +341,20 @@ function uniqueIdentifier(base: string, used: Set<string>): string {
   return candidate;
 }
 
-function repositoryKey(repository: DiscoveredRepository): string {
+type RepositorySelectionSource = Pick<
+  DiscoveredRepository,
+  | 'id'
+  | 'external'
+  | 'access'
+  | 'root'
+  | 'relativePath'
+  | 'configuredPath'
+  | 'git'
+  | 'kind'
+  | 'diagnostics'
+>;
+
+function repositoryKey(repository: RepositorySelectionSource): string {
   if (repository.configuredPath !== null) {
     return isExternalRepositoryPath(repository.configuredPath)
       ? repository.configuredPath
@@ -582,6 +623,459 @@ const derivedExcludes = [
 ] as const;
 const derivedValidationScripts = ['lint', 'typecheck', 'test'] as const;
 
+export interface CommonInitDefaults {
+  readonly name: string;
+  readonly knowledge: InitChoices['knowledge'];
+  readonly code: Pick<InitChoices['code'], 'symbols' | 'prepare'>;
+  readonly excludes: readonly string[];
+}
+
+/**
+ * Pure discovery-based selections shared by derived and interactive setup.
+ * Mode-specific repositories, validation, graph and host choices stay with
+ * their callers.
+ */
+export function deriveCommonInitDefaults(
+  discovery: WorkspaceDiscovery,
+): CommonInitDefaults {
+  const knowledgeCandidates = listKnowledgeCandidates(discovery);
+  const knowledgeSources: string[] = [];
+  for (const name of ['AGENTS.md', 'CLAUDE.md']) {
+    const candidate = knowledgeCandidates.find(
+      (entry) => entry.path.toLowerCase() === name.toLowerCase(),
+    );
+    if (candidate !== undefined) knowledgeSources.push(candidate.path);
+  }
+  const docs = knowledgeCandidates.find((entry) => entry.path === 'docs');
+  if (docs !== undefined) knowledgeSources.push(docs.path);
+  return {
+    name: basename(discovery.root),
+    knowledge: {
+      sources: knowledgeSources,
+      newDocuments: '.pappra/knowledge',
+      taskVisibility: 'private',
+    },
+    code: { symbols: 'auto', prepare: 'on-demand' },
+    excludes: [...derivedExcludes],
+  };
+}
+
+/**
+ * Converts an existing valid workspace/machine pair into a lossless editable
+ * selection draft. Extensions and continuity are intentionally not part of
+ * InitChoices; plan reconstruction preserves them from the existing config.
+ */
+export function existingInitChoices(
+  config: WorkspaceConfig,
+  machine: MachineConfig | null,
+): InitChoices {
+  return {
+    schema: INIT_CHOICES_SCHEMA,
+    name: config.name,
+    workspaceId: config.workspaceId,
+    repositories: config.repositories.map((repository) => ({
+      path: repository.path,
+      id: repository.id,
+      access: repository.access,
+    })),
+    knowledge: {
+      sources: [...config.knowledge.sources],
+      newDocuments: config.knowledge.newDocuments,
+      taskVisibility: config.knowledge.taskVisibility,
+    },
+    code: { ...config.code },
+    validation: config.validation.map(
+      (validation) => `workspace-config:${validation.id}`,
+    ),
+    excludes: [...config.excludes],
+    hosts: [...(machine?.selectedHosts ?? [])] as InitChoices['hosts'],
+  };
+}
+
+export type InitEditableField =
+  'name' | 'newDocuments' | 'excludes' | 'repositoryPath' | 'knowledgePath';
+
+function portableFieldError(label: string, value: string): string | null {
+  if (value.includes('\0') || value.includes('\\')) {
+    return `${label} must use forward slashes and must not contain NUL or backslashes.`;
+  }
+  if (
+    value.startsWith('/') ||
+    /^[A-Za-z]:/.test(value) ||
+    value.startsWith('\\\\')
+  ) {
+    return `${label} must be relative to the workspace root, not absolute.`;
+  }
+  if (!isPortableRelativePath(value)) {
+    return `${label} must be a workspace-relative path that does not escape the root.`;
+  }
+  return null;
+}
+
+/**
+ * Immediate UI field feedback using the same name schema, portable-path rules,
+ * literal-prefix exclusion policy and workspace-relative semantics as planning.
+ */
+export function validateInitField(
+  field: InitEditableField,
+  value: string,
+): string | null {
+  if (field === 'name') {
+    const parsed = workspaceConfigSchema.shape.name.safeParse(value.trim());
+    return parsed.success
+      ? null
+      : (parsed.error.issues[0]?.message ?? 'Use a non-empty workspace name.');
+  }
+  if (field === 'newDocuments') {
+    const parsed =
+      workspaceConfigSchema.shape.knowledge.shape.newDocuments.safeParse(value);
+    if (!parsed.success) {
+      return (
+        parsed.error.issues[0]?.message ??
+        'Use a workspace-relative new document destination.'
+      );
+    }
+    return portableFieldError('New document destination', value);
+  }
+  if (field === 'repositoryPath') {
+    return portableFieldError('Repository path', value);
+  }
+  if (field === 'knowledgePath') {
+    return portableFieldError('Knowledge source path', value);
+  }
+  for (const entry of value
+    .split(/[,\n]/)
+    .map((item) => item.trim())
+    .filter((item) => item !== '')) {
+    const pathError = portableFieldError('Exclude entry', entry);
+    if (pathError !== null) return pathError;
+    if (/[*?[\]{}]/.test(entry)) {
+      return `Exclude entry "${entry}" contains glob metacharacters; use literal workspace-relative prefixes.`;
+    }
+  }
+  return null;
+}
+
+async function nestedWorkspaceBoundaryForPath(
+  root: string,
+  path: string,
+  kind: 'file' | 'directory',
+): Promise<string | null> {
+  let current = kind === 'directory' ? path : dirname(path);
+  while (!samePath(current, root)) {
+    if (!isPathInside(root, current)) return null;
+    const marker = await observePath(join(current, '.pappra'));
+    if (marker.kind !== 'missing') return current;
+    const parent = dirname(current);
+    if (samePath(parent, current) || !isPathInside(root, parent)) return null;
+    current = parent;
+  }
+  return null;
+}
+
+function explicitPathDiagnostic(
+  code: DiagnosticCode,
+  message: string,
+  location: string | null,
+  hint: string,
+): Diagnostic {
+  return createDiagnostic({
+    code,
+    severity: 'error',
+    message,
+    source: 'init explicit path inspection',
+    pointer: location,
+    hint,
+  });
+}
+
+/** Inspects one user-entered path only; it never broadens workspace discovery. */
+export async function inspectInitPathAddition(
+  root: string,
+  kind: InitPathAdditionKind,
+  inputPath: string,
+  excludes: readonly string[] = [],
+  location: string | null = null,
+): Promise<InitPathInspectionResult> {
+  const label =
+    kind === 'repository' ? 'Repository path' : 'Knowledge source path';
+  const pathError = portableFieldError(label, inputPath);
+  if (pathError !== null) {
+    return {
+      ok: false,
+      diagnostics: [
+        explicitPathDiagnostic(
+          diagnosticCodes.initInvalidInput,
+          pathError,
+          location,
+          'Enter an existing workspace-relative path using forward slashes; absolute and escaping paths are not accepted.',
+        ),
+      ],
+    };
+  }
+  if (inputPath === '~' || inputPath.startsWith('~/')) {
+    return {
+      ok: false,
+      diagnostics: [
+        explicitPathDiagnostic(
+          diagnosticCodes.initInvalidInput,
+          `${label} must not use a home-relative path: ${inputPath}`,
+          location,
+          'Enter a path relative to the resolved workspace root.',
+        ),
+      ],
+    };
+  }
+  if (kind === 'repository' && isExternalRepositoryPath(inputPath)) {
+    return {
+      ok: false,
+      diagnostics: [
+        explicitPathDiagnostic(
+          diagnosticCodes.initInvalidInput,
+          'Explicit repository addition does not create external repository mappings.',
+          location,
+          'Add an existing checkout located inside the workspace root.',
+        ),
+      ],
+    };
+  }
+
+  const requestedPath = normalizePortableRelativePath(inputPath);
+  const candidatePath = resolvePortableRelativePath(root, requestedPath);
+  if (!isPathInside(root, candidatePath)) {
+    return {
+      ok: false,
+      diagnostics: [
+        explicitPathDiagnostic(
+          diagnosticCodes.initInvalidInput,
+          `${label} escapes the workspace root: ${inputPath}`,
+          location,
+          'Keep the path within the resolved workspace root.',
+        ),
+      ],
+    };
+  }
+
+  try {
+    const initial = await observePath(candidatePath);
+    if (initial.kind === 'missing') {
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            kind === 'repository'
+              ? diagnosticCodes.repositoryPathMissing
+              : diagnosticCodes.knowledgeSourceMissing,
+            `${label} does not exist: ${candidatePath}`,
+            location,
+            'Correct the path or cancel the addition; init does not create the location.',
+          ),
+        ],
+      };
+    }
+    const realPath = await resolveRealpath(candidatePath);
+    if (realPath === null) {
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            kind === 'repository'
+              ? diagnosticCodes.repositoryPathMissing
+              : diagnosticCodes.knowledgeSourceNotReadable,
+            `Cannot resolve ${label.toLowerCase()}: ${candidatePath}`,
+            location,
+            'Check the entered path and permissions.',
+          ),
+        ],
+      };
+    }
+    if (!isPathInside(root, realPath)) {
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            kind === 'repository'
+              ? diagnosticCodes.repositorySymlinkEscape
+              : diagnosticCodes.knowledgeSourceSymlinkEscape,
+            `${label} resolves outside the workspace root: ${candidatePath} -> ${realPath}`,
+            location,
+            'Keep the resolved target inside the workspace; explicit additions do not create external mappings.',
+          ),
+        ],
+      };
+    }
+    const target = await observePath(realPath);
+    if (target.kind !== 'file' && target.kind !== 'directory') {
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            kind === 'repository'
+              ? diagnosticCodes.repositoryNotGit
+              : diagnosticCodes.knowledgeSourceNotReadable,
+            `${label} is not an existing regular file or directory: ${realPath}`,
+            location,
+            'Special files, FIFOs and unreadable locations are not accepted.',
+          ),
+        ],
+      };
+    }
+    if (kind === 'repository' && target.kind !== 'directory') {
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            diagnosticCodes.repositoryNotGit,
+            `Repository path is not a checkout directory: ${realPath}`,
+            location,
+            'Enter the exact existing Git checkout root, not a file or a subdirectory.',
+          ),
+        ],
+      };
+    }
+    const nested = await nestedWorkspaceBoundaryForPath(
+      root,
+      realPath,
+      target.kind,
+    );
+    if (nested !== null) {
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            kind === 'repository'
+              ? diagnosticCodes.repositoryNestedWorkspace
+              : diagnosticCodes.discoveryNestedWorkspace,
+            `${label} is inside nested workspace ${nested}.`,
+            location,
+            'Configure the nested workspace separately; outer init does not absorb its paths.',
+          ),
+        ],
+      };
+    }
+    const canonicalPath = toWorkspaceRelativePath(root, realPath);
+    if (canonicalPath === null) {
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            kind === 'repository'
+              ? diagnosticCodes.repositorySymlinkEscape
+              : diagnosticCodes.knowledgeSourceSymlinkEscape,
+            `${label} has no safe workspace-relative identity: ${realPath}`,
+            location,
+            'Keep the resolved target inside the workspace root.',
+          ),
+        ],
+      };
+    }
+    if (isExcludedPath(canonicalPath, excludes)) {
+      const label = kind === 'repository' ? 'Repository' : 'Knowledge source';
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            kind === 'repository'
+              ? diagnosticCodes.initRepositoryUnknown
+              : diagnosticCodes.initKnowledgeUnknown,
+            `${label} is excluded by workspace policy: ${canonicalPath}`,
+            location,
+            'Remove or change the exclude before adding this path.',
+          ),
+        ],
+      };
+    }
+
+    let git: GitRepositoryObservation | null = null;
+    if (kind === 'repository') {
+      const inspected = await inspectGitRepository(realPath);
+      if (!inspected.ok) {
+        return {
+          ok: false,
+          diagnostics: [
+            createDiagnostic({
+              code: inspected.code,
+              severity: 'error',
+              message: inspected.message,
+              source: 'init explicit repository path',
+              pointer: location,
+              hint:
+                inspected.nextAction ??
+                'Check the exact repository path and Git metadata.',
+            }),
+          ],
+        };
+      }
+      if (!samePath(inspected.value.root, realPath)) {
+        return {
+          ok: false,
+          diagnostics: [
+            explicitPathDiagnostic(
+              diagnosticCodes.repositoryNotGit,
+              `Entered location is not the exact repository root: ${realPath}; Git resolved ${inspected.value.root}.`,
+              location,
+              'Enter the checkout root itself; init does not substitute a parent repository.',
+            ),
+          ],
+        };
+      }
+      if (!isPathInside(root, inspected.value.root)) {
+        return {
+          ok: false,
+          diagnostics: [
+            explicitPathDiagnostic(
+              diagnosticCodes.repositorySymlinkEscape,
+              `Repository resolves outside the workspace root: ${inspected.value.root}`,
+              location,
+              'Use a workspace-local checkout; external mapping creation is not part of init path addition.',
+            ),
+          ],
+        };
+      }
+      git = inspected.value;
+    }
+
+    if (target.stats === null) {
+      return {
+        ok: false,
+        diagnostics: [
+          explicitPathDiagnostic(
+            diagnosticCodes.fileUnreadable,
+            `Cannot snapshot ${label.toLowerCase()}: ${realPath}`,
+            location,
+            'Check the path and permissions, then try the explicit addition again.',
+          ),
+        ],
+      };
+    }
+    return {
+      ok: true,
+      observation: {
+        kind,
+        requestedPath,
+        path: canonicalPath,
+        realPath,
+        targetKind: target.kind,
+        device: target.stats.dev,
+        inode: target.stats.ino,
+        git,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      diagnostics: [
+        explicitPathDiagnostic(
+          diagnosticCodes.fileUnreadable,
+          `Cannot inspect ${label.toLowerCase()} ${candidatePath}: ${error instanceof Error ? error.message : String(error)}`,
+          location,
+          'Check permissions and the path; init does not open document bodies during path addition.',
+        ),
+      ],
+    };
+  }
+}
+
 export function detectedHostVersion(
   command: string,
   pathEnv: string,
@@ -630,28 +1124,16 @@ export async function deriveInitChoices(
     return { path, access };
   });
 
+  const common = deriveCommonInitDefaults(discovery);
   const knowledgeCandidates = listKnowledgeCandidates(discovery);
-  const rootRuleFiles = ['AGENTS.md', 'CLAUDE.md'];
-  const knowledgeSources: string[] = [];
-  for (const name of rootRuleFiles) {
-    const candidate = knowledgeCandidates.find(
-      (entry) => entry.path.toLowerCase() === name.toLowerCase(),
-    );
-    if (candidate === undefined) continue;
-    knowledgeSources.push(candidate.path);
+  for (const source of common.knowledge.sources) {
     rules.push({
       field: 'knowledge.sources',
-      value: candidate.path,
-      reason: 'workspace-root rule file reported by discovery',
-    });
-  }
-  const docs = knowledgeCandidates.find((entry) => entry.path === 'docs');
-  if (docs !== undefined) {
-    knowledgeSources.push(docs.path);
-    rules.push({
-      field: 'knowledge.sources',
-      value: docs.path,
-      reason: 'documentation directory reported by discovery',
+      value: source,
+      reason:
+        source === 'docs'
+          ? 'documentation directory reported by discovery'
+          : 'workspace-root rule file reported by discovery',
     });
   }
 
@@ -674,12 +1156,12 @@ export async function deriveInitChoices(
   });
   rules.push({
     field: 'code.symbols',
-    value: 'auto',
+    value: common.code.symbols,
     reason: 'symbol providers are detected passively at use time',
   });
   rules.push({
     field: 'code.prepare',
-    value: 'on-demand',
+    value: common.code.prepare,
     reason: 'index preparation stays an explicit, bounded action',
   });
 
@@ -700,7 +1182,7 @@ export async function deriveInitChoices(
 
   rules.push({
     field: 'excludes',
-    value: derivedExcludes.join(', '),
+    value: common.excludes.join(', '),
     reason:
       'built-in defaults keep generated and dependency trees out of scope',
   });
@@ -728,7 +1210,7 @@ export async function deriveInitChoices(
     });
   }
 
-  const name = basename(discovery.root);
+  const name = common.name;
   rules.push({
     field: 'name',
     value: name,
@@ -739,14 +1221,14 @@ export async function deriveInitChoices(
     schema: INIT_CHOICES_SCHEMA,
     name,
     repositories,
-    knowledge: {
-      sources: knowledgeSources,
-      newDocuments: '.pappra/knowledge',
-      taskVisibility: 'private',
+    knowledge: common.knowledge,
+    code: {
+      graph,
+      symbols: common.code.symbols,
+      prepare: common.code.prepare,
     },
-    code: { graph, symbols: 'auto', prepare: 'on-demand' },
     validation,
-    excludes: [...derivedExcludes],
+    excludes: [...common.excludes],
     hosts,
   };
 
@@ -767,7 +1249,7 @@ export async function deriveInitChoices(
 }
 
 interface SelectedRepository {
-  readonly repository: DiscoveredRepository;
+  readonly repository: RepositorySelectionSource;
   readonly id: string;
   readonly path: string;
   readonly access: 'read' | 'write';
@@ -778,12 +1260,17 @@ function selectRepositories(
   choices: InitChoices,
   discovery: WorkspaceDiscovery,
   root: string,
+  additionalRepositories: ReadonlyMap<
+    string,
+    RepositorySelectionSource
+  > = new Map(),
+  reservedRepositoryIds: readonly string[] = [],
 ): {
   readonly selected: readonly SelectedRepository[];
   readonly diagnostics: readonly Diagnostic[];
 } {
   const diagnostics: Diagnostic[] = [];
-  const byKey = new Map<string, DiscoveredRepository>();
+  const byKey = new Map<string, RepositorySelectionSource>();
   for (const repository of discovery.repositories) {
     byKey.set(repositoryKey(repository), repository);
     if (repository.relativePath !== null) {
@@ -793,6 +1280,15 @@ function selectRepositories(
       );
     }
   }
+  for (const [key, repository] of additionalRepositories) {
+    if (!byKey.has(key)) byKey.set(key, repository);
+  }
+  const reservedIds = new Set([
+    ...reservedRepositoryIds,
+    ...choices.repositories.flatMap((choice) =>
+      choice.id === undefined ? [] : [choice.id],
+    ),
+  ]);
   const usedIds = new Set<string>();
   const selected: SelectedRepository[] = [];
   const seenRepositories = new Set<string>();
@@ -804,10 +1300,10 @@ function selectRepositories(
         createDiagnostic({
           code: diagnosticCodes.initRepositoryUnknown,
           severity: 'error',
-          message: `Init selection references an undiscovered repository: ${choice.path}`,
+          message: `Init selection references an undiscovered or uninspected repository: ${choice.path}`,
           source: 'init choices',
           pointer: pointer('repositories', index, 'path'),
-          hint: 'Select a repository path reported by discovery; Pappra does not invent repository scopes.',
+          hint: 'Select a discovered checkout or add an existing workspace-relative checkout through the bounded path action.',
         }),
       );
       continue;
@@ -820,7 +1316,7 @@ function selectRepositories(
           message: `Repository selection repeats ${repository.root}.`,
           source: 'init choices',
           pointer: pointer('repositories', index, 'path'),
-          hint: 'Keep one selection per discovered checkout.',
+          hint: 'Keep one selection per canonical checkout.',
         }),
       );
       continue;
@@ -832,9 +1328,12 @@ function selectRepositories(
       (repository.relativePath === null || repository.relativePath === '.'
         ? basename(root)
         : basename(repository.relativePath));
-    const id = choice.id
-      ? choice.id
-      : uniqueIdentifier(sanitizeIdentifier(derivedBase), usedIds);
+    const id =
+      choice.id ??
+      uniqueIdentifier(
+        sanitizeIdentifier(derivedBase),
+        new Set([...reservedIds, ...usedIds]),
+      );
     if (choice.id !== undefined) {
       if (usedIds.has(choice.id)) {
         diagnostics.push(
@@ -849,8 +1348,8 @@ function selectRepositories(
         );
         continue;
       }
-      usedIds.add(choice.id);
     }
+    usedIds.add(id);
     const configPath = external
       ? repository.configuredPath
       : (repository.relativePath ?? repository.configuredPath ?? '.');
@@ -881,6 +1380,8 @@ function selectRepositories(
 function selectKnowledgeSources(
   choices: InitChoices,
   discovery: WorkspaceDiscovery,
+  retainedSources: readonly string[] = [],
+  explicitSources: ReadonlyMap<string, string> = new Map(),
 ): {
   readonly sources: readonly string[];
   readonly diagnostics: readonly Diagnostic[];
@@ -891,6 +1392,12 @@ function selectKnowledgeSources(
       candidate.path,
     ]),
   );
+  for (const [key, path] of explicitSources) {
+    if (!allowed.has(key)) allowed.set(key, path);
+  }
+  const retained = new Map(
+    retainedSources.map((source) => [candidateKey(source), source]),
+  );
   const diagnostics: Diagnostic[] = [];
   const sources: string[] = [];
   const seen = new Set<string>();
@@ -898,6 +1405,24 @@ function selectKnowledgeSources(
     const key = candidateKey(source);
     const canonical = allowed.get(key);
     if (canonical === undefined) {
+      const kept = retained.get(key);
+      if (kept !== undefined) {
+        diagnostics.push(
+          createDiagnostic({
+            code: diagnosticCodes.initKnowledgeUnknown,
+            severity: 'warning',
+            message: `Configured knowledge source is retained but not currently discovered: ${kept}`,
+            source: 'init choices',
+            pointer: pointer('knowledge', 'sources', index),
+            hint: 'Keep the source if it is intentionally unavailable, or remove it explicitly.',
+          }),
+        );
+        if (!seen.has(kept)) {
+          seen.add(kept);
+          sources.push(kept);
+        }
+        continue;
+      }
       diagnostics.push(
         createDiagnostic({
           code: diagnosticCodes.initKnowledgeUnknown,
@@ -918,18 +1443,258 @@ function selectKnowledgeSources(
   return { sources, diagnostics };
 }
 
+interface ExplicitInitPathSelections {
+  readonly repositories: ReadonlyMap<string, RepositorySelectionSource>;
+  readonly knowledgeSources: ReadonlyMap<string, string>;
+  readonly observations: readonly InitPathObservation[];
+}
+
+type ExplicitInitPathInspectionResult =
+  | { readonly ok: true; readonly value: ExplicitInitPathSelections }
+  | {
+      readonly ok: false;
+      readonly status: 'invalid' | 'conflict';
+      readonly diagnostics: readonly Diagnostic[];
+    };
+
+function pathObservationKey(kind: InitPathAdditionKind, path: string): string {
+  return `${kind}:${candidateKey(path)}`;
+}
+
+function sameInitPathObservation(
+  left: InitPathObservation,
+  right: InitPathObservation,
+): boolean {
+  if (
+    left.kind !== right.kind ||
+    candidateKey(left.path) !== candidateKey(right.path) ||
+    !samePath(left.realPath, right.realPath) ||
+    left.targetKind !== right.targetKind ||
+    left.device !== right.device ||
+    left.inode !== right.inode
+  ) {
+    return false;
+  }
+  if (left.git === null || right.git === null) return left.git === right.git;
+  return (
+    samePath(left.git.root, right.git.root) &&
+    samePath(left.git.gitDir, right.git.gitDir) &&
+    samePath(left.git.commonDir, right.git.commonDir) &&
+    left.git.kind === right.git.kind
+  );
+}
+
+function repositorySelectionFromPathObservation(
+  observation: InitPathObservation,
+): RepositorySelectionSource {
+  if (observation.kind !== 'repository' || observation.git === null) {
+    throw new Error('Repository selection requires a Git path observation.');
+  }
+  return {
+    id: null,
+    external: false,
+    access: 'read',
+    root: observation.git.root,
+    relativePath: observation.path,
+    configuredPath: observation.path,
+    git: observation.git,
+    kind: observation.git.kind,
+    diagnostics: [],
+  };
+}
+
+async function inspectExplicitInitPathSelections(
+  root: string,
+  choices: InitChoices,
+  discovery: WorkspaceDiscovery,
+  preservedConfig: WorkspaceConfig | null,
+  priorObservations: readonly InitPathObservation[],
+): Promise<ExplicitInitPathInspectionResult> {
+  const repositories = new Map<string, RepositorySelectionSource>();
+  const knowledgeSources = new Map<string, string>();
+  const observations: InitPathObservation[] = [];
+  const diagnostics: Diagnostic[] = [];
+  const priorByPath = new Map<string, InitPathObservation>();
+  for (const observation of priorObservations) {
+    const key = pathObservationKey(observation.kind, observation.path);
+    if (!priorByPath.has(key)) priorByPath.set(key, observation);
+  }
+  const discoveredRepositories = new Map<string, RepositorySelectionSource>();
+  for (const repository of discovery.repositories) {
+    discoveredRepositories.set(repositoryKey(repository), repository);
+    if (repository.relativePath !== null) {
+      discoveredRepositories.set(
+        candidateKey(repository.relativePath),
+        repository,
+      );
+    }
+  }
+  const discoveredKnowledge = new Map(
+    listKnowledgeCandidates(discovery).map((candidate) => [
+      candidateKey(candidate.path),
+      candidate.path,
+    ]),
+  );
+  const retainedRepositoryPaths = new Set(
+    (preservedConfig?.repositories ?? []).map((repository) =>
+      candidateKey(repository.path),
+    ),
+  );
+  const retainedKnowledgePaths = new Set(
+    (preservedConfig?.knowledge.sources ?? []).map(candidateKey),
+  );
+  const inspectedChoices = new Set<string>();
+  let failureStatus: 'invalid' | 'conflict' = 'invalid';
+
+  const inspectChoice = async (
+    kind: InitPathAdditionKind,
+    inputPath: string,
+    location: string,
+  ): Promise<void> => {
+    const inputKey = candidateKey(inputPath);
+    const inspectionKey = pathObservationKey(kind, inputKey);
+    if (inspectedChoices.has(inspectionKey)) return;
+    inspectedChoices.add(inspectionKey);
+    const inspected = await inspectInitPathAddition(
+      root,
+      kind,
+      inputPath,
+      choices.excludes,
+      location,
+    );
+    if (!inspected.ok) {
+      diagnostics.push(...inspected.diagnostics);
+      return;
+    }
+    const observation = inspected.observation;
+    const prior =
+      priorByPath.get(pathObservationKey(kind, observation.path)) ??
+      priorByPath.get(inspectionKey);
+    if (prior !== undefined && !sameInitPathObservation(prior, observation)) {
+      failureStatus = 'conflict';
+      diagnostics.push(
+        createDiagnostic({
+          code: diagnosticCodes.initPlanStale,
+          severity: 'error',
+          message: `Explicit ${kind} path changed after it was inspected: ${observation.path}`,
+          source: 'init explicit path inspection',
+          pointer: location,
+          hint: 'Review the changed location and re-enter it deliberately; init does not refresh path identity automatically.',
+        }),
+      );
+      return;
+    }
+    observations.push(observation);
+    if (kind === 'repository') {
+      const discovered = [...discovery.repositories].find((entry) =>
+        samePath(entry.root, observation.realPath),
+      );
+      const source =
+        discovered ?? repositorySelectionFromPathObservation(observation);
+      repositories.set(inputKey, source);
+      repositories.set(candidateKey(observation.path), source);
+    } else {
+      const canonical =
+        discoveredKnowledge.get(candidateKey(observation.path)) ??
+        observation.path;
+      knowledgeSources.set(inputKey, canonical);
+      knowledgeSources.set(candidateKey(observation.path), canonical);
+    }
+  };
+
+  for (const [index, choice] of choices.repositories.entries()) {
+    const key = candidateKey(choice.path);
+    const hasPriorObservation = priorByPath.has(
+      pathObservationKey('repository', key),
+    );
+    if (
+      !hasPriorObservation &&
+      (retainedRepositoryPaths.has(key) ||
+        (discoveredRepositories.has(key) &&
+          !isExcludedPath(key, choices.excludes)))
+    ) {
+      continue;
+    }
+    await inspectChoice(
+      'repository',
+      choice.path,
+      pointer('repositories', index, 'path'),
+    );
+  }
+  for (const [index, source] of choices.knowledge.sources.entries()) {
+    const key = candidateKey(source);
+    const hasPriorObservation = priorByPath.has(
+      pathObservationKey('knowledge', key),
+    );
+    if (
+      !hasPriorObservation &&
+      (retainedKnowledgePaths.has(key) ||
+        (discoveredKnowledge.has(key) &&
+          !isExcludedPath(key, choices.excludes)))
+    ) {
+      continue;
+    }
+    await inspectChoice(
+      'knowledge',
+      source,
+      pointer('knowledge', 'sources', index),
+    );
+  }
+  if (diagnostics.some((entry) => entry.severity === 'error')) {
+    return { ok: false, status: failureStatus, diagnostics };
+  }
+  return {
+    ok: true,
+    value: { repositories, knowledgeSources, observations },
+  };
+}
+
+async function revalidateExplicitInitPaths(
+  root: string,
+  observations: readonly InitPathObservation[],
+  excludes: readonly string[],
+): Promise<readonly Diagnostic[]> {
+  const diagnostics: Diagnostic[] = [];
+  for (const previous of observations) {
+    const current = await inspectInitPathAddition(
+      root,
+      previous.kind,
+      previous.path,
+      excludes,
+    );
+    if (
+      !current.ok ||
+      !sameInitPathObservation(previous, current.observation)
+    ) {
+      diagnostics.push(
+        createDiagnostic({
+          code: diagnosticCodes.initPlanStale,
+          severity: 'error',
+          message: `Explicit ${previous.kind} path changed or became unsafe before the final plan: ${previous.path}`,
+          source: 'init explicit path inspection',
+          pointer: null,
+          hint: 'Review and re-enter the exact path; init does not refresh a stale path observation automatically.',
+        }),
+      );
+    }
+  }
+  return diagnostics;
+}
+
 function findSelectedRepositoryForCandidate(
   candidate: ValidationCandidate,
   selected: readonly SelectedRepository[],
 ): SelectedRepository | null {
-  for (const repository of selected) {
-    if (
-      candidate.repositoryId !== null &&
-      (candidate.repositoryId === repository.originalId ||
-        candidate.repositoryId === repository.id)
-    ) {
-      return repository;
+  if (candidate.repositoryId !== null) {
+    for (const repository of selected) {
+      if (repository.originalId === candidate.repositoryId) return repository;
     }
+    // A configured/discovered repository identity is authoritative. A
+    // different checkout that merely reuses its final selected ID is not a
+    // substitute, and working-directory evidence must not override it.
+    return null;
+  }
+  for (const repository of selected) {
     if (
       candidate.workingDirectory !== null &&
       samePath(candidate.workingDirectory, repository.repository.root)
@@ -944,6 +1709,7 @@ function selectValidationEntries(
   choices: InitChoices,
   discovery: WorkspaceDiscovery,
   selected: readonly SelectedRepository[],
+  strictExistingBinding = false,
 ): {
   readonly validation: readonly WorkspaceValidation[];
   readonly diagnostics: readonly Diagnostic[];
@@ -957,6 +1723,11 @@ function selectValidationEntries(
   const diagnostics: Diagnostic[] = [];
   const validation: WorkspaceValidation[] = [];
   const usedIds = new Set<string>();
+  const existingIds = new Set<string>();
+  for (const candidate of discovery.validationCandidates) {
+    if (candidate.origin !== 'workspace-config') continue;
+    existingIds.add(candidate.id.slice('workspace-config:'.length));
+  }
   const seen = new Set<string>();
   for (const [index, candidateId] of choices.validation.entries()) {
     if (seen.has(candidateId)) continue;
@@ -980,7 +1751,10 @@ function selectValidationEntries(
       diagnostics.push(
         createDiagnostic({
           code: diagnosticCodes.initValidationUnbound,
-          severity: 'warning',
+          severity:
+            strictExistingBinding && candidate.origin === 'workspace-config'
+              ? 'error'
+              : 'warning',
           message: `Validation candidate "${candidateId}" is not bound to a selected repository.`,
           source: 'init choices',
           pointer: pointer('validation', index),
@@ -989,11 +1763,35 @@ function selectValidationEntries(
       );
       continue;
     }
-    const base = sanitizeIdentifier(
-      candidate.id.replace(/^(?:workspace-config|package-script):/, ''),
-    );
+    const existing = candidate.origin === 'workspace-config';
+    const base = existing
+      ? candidate.id.slice('workspace-config:'.length)
+      : sanitizeIdentifier(
+          candidate.id.replace(/^(?:workspace-config|package-script):/, ''),
+        );
+    let id: string;
+    if (existing) {
+      if (usedIds.has(base)) {
+        diagnostics.push(
+          createDiagnostic({
+            code: diagnosticCodes.initValidationUnknown,
+            severity: 'error',
+            message: `Configured validation id "${base}" is selected more than once.`,
+            source: 'init choices',
+            pointer: pointer('validation', index),
+            hint: 'Keep one selection per configured validation id.',
+          }),
+        );
+        continue;
+      }
+      id = base;
+      usedIds.add(id);
+    } else {
+      id = uniqueIdentifier(base, new Set([...usedIds, ...existingIds]));
+      usedIds.add(id);
+    }
     validation.push({
-      id: uniqueIdentifier(base, usedIds),
+      id,
       repositoryId: repository.id,
       executable: candidate.executable,
       args: [...candidate.args],
@@ -1007,20 +1805,41 @@ function buildWorkspaceConfig(
   choices: InitChoices,
   discovery: WorkspaceDiscovery,
   runtimeVersion: string,
+  options: {
+    readonly preserveFrom?: WorkspaceConfig;
+    readonly strictExistingValidation?: boolean;
+    readonly explicitRepositories?: ReadonlyMap<
+      string,
+      RepositorySelectionSource
+    >;
+    readonly explicitKnowledgeSources?: ReadonlyMap<string, string>;
+  } = {},
 ): {
   readonly config: WorkspaceConfig | null;
   readonly selected: readonly SelectedRepository[];
   readonly diagnostics: readonly Diagnostic[];
 } {
   const diagnostics: Diagnostic[] = [];
-  const repositorySelection = selectRepositories(choices, discovery, root);
+  const repositorySelection = selectRepositories(
+    choices,
+    discovery,
+    root,
+    options.explicitRepositories,
+    options.preserveFrom?.repositories.map((repository) => repository.id) ?? [],
+  );
   diagnostics.push(...repositorySelection.diagnostics);
-  const knowledgeSelection = selectKnowledgeSources(choices, discovery);
+  const knowledgeSelection = selectKnowledgeSources(
+    choices,
+    discovery,
+    options.preserveFrom?.knowledge.sources ?? [],
+    options.explicitKnowledgeSources,
+  );
   diagnostics.push(...knowledgeSelection.diagnostics);
   const validationSelection = selectValidationEntries(
     choices,
     discovery,
     repositorySelection.selected,
+    options.strictExistingValidation === true,
   );
   diagnostics.push(...validationSelection.diagnostics);
   if (hasErrors(diagnostics)) {
@@ -1034,7 +1853,8 @@ function buildWorkspaceConfig(
   const name = choices.name?.trim() ?? '';
   const config: WorkspaceConfig = {
     schema: WORKSPACE_SCHEMA,
-    workspaceId: choices.workspaceId ?? randomUUID(),
+    workspaceId:
+      options.preserveFrom?.workspaceId ?? choices.workspaceId ?? randomUUID(),
     name: name === '' ? basename(root) || 'workspace' : name,
     runtimeVersion,
     repositories: repositorySelection.selected.map((repository) => ({
@@ -1050,7 +1870,10 @@ function buildWorkspaceConfig(
     code: choices.code,
     validation: [...validationSelection.validation],
     excludes: [...new Set(choices.excludes)],
-    extensions: {},
+    extensions: options.preserveFrom?.extensions ?? {},
+    ...(options.preserveFrom?.continuity === undefined
+      ? {}
+      : { continuity: options.preserveFrom.continuity }),
   };
   const parsed = workspaceConfigSchema.safeParse(config);
   if (!parsed.success) {
@@ -1096,6 +1919,7 @@ function buildWorkspaceConfig(
 function scopeRepositories(
   config: WorkspaceConfig,
   discovery: WorkspaceDiscovery,
+  selected: readonly SelectedRepository[] = [],
 ): readonly InitScopeRepository[] {
   const byConfiguredPath = new Map(
     discovery.repositories.map((repository) => [
@@ -1103,8 +1927,13 @@ function scopeRepositories(
       repository,
     ]),
   );
+  const bySelectedPath = new Map(
+    selected.map((repository) => [candidateKey(repository.path), repository]),
+  );
   return config.repositories.map((repository) => {
-    const discovered = byConfiguredPath.get(repository.path);
+    const planned = bySelectedPath.get(candidateKey(repository.path));
+    const discovered =
+      planned?.repository ?? byConfiguredPath.get(repository.path);
     return {
       id: repository.id,
       path: repository.path,
@@ -1113,7 +1942,10 @@ function scopeRepositories(
       root: discovered?.root ?? null,
       kind: discovered?.kind ?? null,
       dirty: discovered?.git.dirty ?? null,
-      declaredBy: 'existing' as const,
+      declaredBy:
+        planned?.originalId === null
+          ? ('planned' as const)
+          : ('existing' as const),
     };
   });
 }
@@ -1314,6 +2146,21 @@ export async function planWorkspaceInit(
     choices = parsedChoices.value;
   }
   const existingConfig = context.workspaceInspection.value;
+  if (
+    existingConfig !== null &&
+    options.reconfigure === true &&
+    choices !== null &&
+    choices.workspaceId !== undefined &&
+    choices.workspaceId !== existingConfig.workspaceId
+  ) {
+    return failure(
+      'invalid',
+      diagnosticCodes.initInvalidInput,
+      'Reconfiguration cannot change workspaceId; the existing workspace identity is stable.',
+      context.diagnostics,
+      'Remove the conflicting workspaceId from the reconfiguration selections, or create a new workspace separately.',
+    );
+  }
   const existingMachine = context.machineInspection.value;
   const diagnostics: Diagnostic[] = [...context.diagnostics];
   const runtimeVersion =
@@ -1328,6 +2175,11 @@ export async function planWorkspaceInit(
   let needMachineConfig = false;
   let selected: readonly SelectedRepository[] = [];
 
+  let explicitPathSelections: ExplicitInitPathSelections = {
+    repositories: new Map(),
+    knowledgeSources: new Map(),
+    observations: [],
+  };
   if (existingConfig !== null && options.reconfigure !== true) {
     config = existingConfig;
     if (choices !== null) {
@@ -1375,11 +2227,35 @@ export async function planWorkspaceInit(
       existingConfig !== null && choices.workspaceId === undefined
         ? { ...choices, workspaceId: existingConfig.workspaceId }
         : choices;
+    const explicitPaths = await inspectExplicitInitPathSelections(
+      context.root,
+      effectiveChoices,
+      context.discovery,
+      existingConfig,
+      options.pathObservations ?? [],
+    );
+    if (!explicitPaths.ok) {
+      return failureFromDiagnostics(
+        explicitPaths.status,
+        explicitPaths.diagnostics,
+        diagnosticCodes.initInvalidInput,
+        'Explicit init paths could not be inspected safely.',
+      );
+    }
+    explicitPathSelections = explicitPaths.value;
     const built = buildWorkspaceConfig(
       context.root,
       effectiveChoices,
       context.discovery,
       runtimeVersion,
+      {
+        ...(existingConfig === null ? {} : { preserveFrom: existingConfig }),
+        ...(options.reconfigure === true
+          ? { strictExistingValidation: true }
+          : {}),
+        explicitRepositories: explicitPaths.value.repositories,
+        explicitKnowledgeSources: explicitPaths.value.knowledgeSources,
+      },
     );
     diagnostics.push(...built.diagnostics);
     if (built.config === null) {
@@ -1394,15 +2270,32 @@ export async function planWorkspaceInit(
     selected = built.selected;
     needWorkspaceConfig = true;
     if (existingMachine !== null) {
-      machine = existingMachine;
-      diagnostics.push(
-        info(
-          diagnosticCodes.initExistingConfigReused,
-          'Existing valid machine.json is reused while workspace.json is created.',
-          context.machineInspection.path,
-          'Use a future configure flow to change local host or external repository mappings.',
-        ),
-      );
+      const desiredHosts = [
+        ...new Set(choices.hosts),
+      ] as MachineConfig['selectedHosts'];
+      const hostsChanged =
+        desiredHosts.length !== existingMachine.selectedHosts.length ||
+        desiredHosts.some(
+          (host) => !existingMachine.selectedHosts.includes(host),
+        );
+      if (
+        options.reconfigure === true &&
+        existingConfig !== null &&
+        hostsChanged
+      ) {
+        machine = { ...existingMachine, selectedHosts: desiredHosts };
+        needMachineConfig = true;
+      } else {
+        machine = existingMachine;
+        diagnostics.push(
+          info(
+            diagnosticCodes.initExistingConfigReused,
+            'Existing valid machine.json is reused while workspace.json is created.',
+            context.machineInspection.path,
+            'Use a future configure flow to change local host or external repository mappings.',
+          ),
+        );
+      }
     } else {
       needMachineConfig = true;
       machine = {
@@ -1454,6 +2347,19 @@ export async function planWorkspaceInit(
       ? {}
       : { discoveredAt: options.discoveredAt }),
   });
+  const pathRevalidation = await revalidateExplicitInitPaths(
+    context.root,
+    explicitPathSelections.observations,
+    config.excludes,
+  );
+  if (pathRevalidation.length > 0) {
+    return failureFromDiagnostics(
+      'conflict',
+      [...diagnostics, ...pathRevalidation],
+      diagnosticCodes.initPlanStale,
+      'An explicitly added path changed while init was planning.',
+    );
+  }
 
   const finalWorkspace = await inspectWorkspaceConfig(context.root, {
     missing: 'info',
@@ -1490,7 +2396,7 @@ export async function planWorkspaceInit(
   const rootIdentity = context.rootIdentity;
   const scopeRepos: readonly InitScopeRepository[] =
     existingConfig !== null
-      ? scopeRepositories(config, context.discovery)
+      ? scopeRepositories(config, context.discovery, selected)
       : selected.map((repository) => ({
           id: repository.id,
           path: repository.path,
@@ -2243,27 +3149,16 @@ export async function bindAndRecordRuntime(
 }
 
 /**
- * Converges the runtime binding by installing a durable copy of the package that
- * is currently executing. Reusing an already verified copy is cheap: the install
- * machinery short-circuits before packing.
+ * Ensures and binds the runtime package that is currently executing.
+ *
+ * The installer reuses an existing runtime only after its manifest, package
+ * contents, executable and smoke checks pass; a regular file is not proof of a
+ * verified durable runtime.
  */
 export async function ensureDefaultRuntime(
   root: string,
   targetVersion: string,
 ): Promise<RuntimeFlowResult> {
-  const machine = await inspectMachineConfig(root);
-  const binding = machine.value?.runtime ?? null;
-  if (binding !== null && binding.version === targetVersion) {
-    const executable = await observePath(binding.executable);
-    if (executable.kind === 'file') {
-      return {
-        ok: true,
-        completion: true,
-        runtime: null,
-        diagnostics: [],
-      };
-    }
-  }
   const installed = await installRuntime({
     version: targetVersion,
     source: { kind: 'self', path: getPackageRoot() },

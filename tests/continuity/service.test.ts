@@ -10,12 +10,17 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { CheckpointService } from '../../src/continuity/index.js';
 import { writeContinuityBytes } from '../../src/continuity/paths.js';
 import * as store from '../../src/collab/store.js';
 import { sha256Digest } from '../../src/infra/fs.js';
-import type { ResumePacket } from '../../src/schemas/continuity.js';
+import {
+  checkpointSchema,
+  resumePacketSchema,
+  type ResumePacket,
+} from '../../src/schemas/continuity.js';
 import {
   baseMachineConfig,
   baseWorkspaceConfig,
@@ -67,6 +72,34 @@ function initialInput(taskId = 'task-p07') {
       },
     ],
   };
+}
+
+function ignorePaths(root: string, paths: readonly string[]): void {
+  writeText(join(root, '.gitignore'), `${paths.join('\n')}\n`);
+  const add = spawnSync('git', ['add', '.gitignore'], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  assert.equal(add.status, 0, add.stderr);
+  const commit = spawnSync(
+    'git',
+    [
+      '-c',
+      'user.email=fixture@example.com',
+      '-c',
+      'user.name=Fixture',
+      'commit',
+      '-q',
+      '-m',
+      'ignore fixture state',
+    ],
+    { cwd: root, encoding: 'utf8' },
+  );
+  assert.equal(commit.status, 0, commit.stderr);
+}
+
+function ignorePrivateState(root: string): void {
+  ignorePaths(root, ['.pappra/']);
 }
 
 test('saves a task context and checkpoint with a stable revision chain', async () => {
@@ -467,6 +500,433 @@ test('captures untracked file bodies in the private patch and detects body drift
     assert.equal(resumed.packet?.verificationStatus, 'stale');
   } finally {
     cleanup(root);
+  }
+});
+
+test('NUL-delimited capture preserves quoted and whitespace filenames', async () => {
+  const root = makeRepoWorkspace();
+  try {
+    const moved = spawnSync('git', ['mv', 'tracked.txt', 'renamed.txt'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    assert.equal(moved.status, 0, moved.stderr);
+    const names = {
+      chinese: '中文-文件.txt',
+      quote: 'quote"name.txt',
+      tab: 'tab\tname.txt',
+      newline: 'line\nname.txt',
+      spaces: 'space  name.txt',
+      leading: ' leading.txt',
+      trailing: 'trailing.txt ',
+    };
+    for (const [key, name] of Object.entries(names)) {
+      writeText(join(root, name), `BODY:${key}:filename capture\n`);
+    }
+    const service = new CheckpointService(root);
+    const saved = await service.save(initialInput());
+    assert.equal(saved.ok, true, saved.diagnostics[0]?.message);
+    assert.equal(saved.checkpoint?.repositories[0]?.captureStatus, 'complete');
+    const digest = saved.checkpoint?.repositories[0]?.patchDigest;
+    assert.notEqual(digest, null);
+    const patch = readFileSync(
+      join(
+        root,
+        '.pappra/local/tasks/task-p07/patches',
+        `${digest!.slice('sha256:'.length)}.patch`,
+      ),
+    );
+    for (const key of Object.keys(names)) {
+      assert.equal(
+        patch.includes(Buffer.from(`BODY:${key}:`)),
+        true,
+        `missing captured body for ${key}`,
+      );
+    }
+    // The tracked rename is a status continuation, not an untracked body
+    // path; a misparse would make the capture partial or add a bogus body.
+    assert.equal(patch.includes(Buffer.from('R  ')), true);
+
+    writeText(join(root, names.chinese), 'BODY:chinese:modified body only\n');
+    const resumed = await service.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(resumed.packet?.codeDrift.repositories[0]?.status, 'changed');
+    assert.equal(resumed.packet?.verificationStatus, 'stale');
+
+    const second = await service.save(initialInput());
+    assert.equal(second.ok, true, second.diagnostics[0]?.message);
+    assert.notEqual(second.checkpoint?.repositories[0]?.patchDigest, digest);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('unresolved configured repositories capture incomplete coverage without fabricated rows', async () => {
+  const root = makeRepoWorkspace();
+  try {
+    ignorePrivateState(root);
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        repositories: [
+          { id: 'app', path: '.', access: 'write' },
+          { id: 'missing', path: 'missing-repo', access: 'read' },
+          { id: 'external', path: 'external:missing-map', access: 'read' },
+        ],
+      }),
+    );
+    const service = new CheckpointService(root);
+    const saved = await service.save(initialInput());
+    assert.equal(saved.ok, true, saved.diagnostics[0]?.message);
+    assert.equal(saved.checkpoint?.contextCompleteness, 'partial');
+    assert.deepEqual(
+      saved.checkpoint?.repositories.map((repository) => repository.repoId),
+      ['app'],
+    );
+    assert.equal(checkpointSchema.safeParse(saved.checkpoint).success, true);
+    assert.equal(
+      saved.checkpoint?.limitations.some((entry) =>
+        entry.includes('missing (missing-repo)'),
+      ),
+      true,
+    );
+    assert.equal(
+      saved.checkpoint?.limitations.includes('Synthetic tests only'),
+      true,
+    );
+    assert.equal(
+      saved.diagnostics.some(
+        (diagnostic) => diagnostic.code === 'document_write_partial',
+      ),
+      true,
+    );
+    assert.equal(
+      saved.diagnostics.some(
+        (diagnostic) => diagnostic.code === 'repository_path_missing',
+      ),
+      true,
+    );
+    assert.equal(
+      saved.diagnostics.some(
+        (diagnostic) => diagnostic.code === 'external_repository_unmapped',
+      ),
+      true,
+    );
+    assert.notEqual(saved.checkpointPath, null);
+    const checkpointBytes = readFileSync(saved.checkpointPath!);
+    const resumed = await service.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(resumed.status, 'blocked');
+    assert.equal(resumePacketSchema.safeParse(resumed.packet).success, true);
+    assert.equal(resumed.packet?.verificationStatus, 'unknown');
+    assert.equal(resumed.packet?.codeDrift.status, 'unknown');
+    assert.deepEqual(
+      resumed.packet?.codeDrift.repositories.map((entry) => entry.repoId),
+      ['app'],
+    );
+    assert.equal(
+      resumed.packet?.blockingReasons.some(
+        (entry) => entry.code === 'repository_coverage_incomplete',
+      ),
+      true,
+    );
+    assert.equal(
+      resumed.packet?.blockingReasons.some(
+        (entry) => entry.code === 'context_partial',
+      ),
+      true,
+    );
+    assert.deepEqual(readFileSync(saved.checkpointPath!), checkpointBytes);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('previously unresolved and newly configured repositories cannot verify current', async () => {
+  const laterRoot = makeRepoWorkspace();
+  const laterOutside = makeTempDir('continuity-later-external');
+  const newRoot = makeRepoWorkspace();
+  const newOutside = makeTempDir('continuity-new-external');
+  try {
+    ignorePrivateState(laterRoot);
+    writeWorkspaceConfig(
+      laterRoot,
+      baseWorkspaceConfig({
+        repositories: [
+          { id: 'app', path: '.', access: 'write' },
+          { id: 'later', path: 'external:later', access: 'read' },
+        ],
+      }),
+    );
+    const laterService = new CheckpointService(laterRoot);
+    const laterSaved = await laterService.save(initialInput());
+    assert.equal(laterSaved.ok, true, laterSaved.diagnostics[0]?.message);
+    assert.notEqual(laterSaved.checkpointPath, null);
+    const laterBytes = readFileSync(laterSaved.checkpointPath!);
+    createRepository(laterOutside);
+    writeMachineConfig(
+      laterRoot,
+      baseMachineConfig(laterRoot, {
+        externalRepositories: [{ id: 'later', path: laterOutside }],
+      }),
+    );
+    const laterResume = await laterService.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(
+      resumePacketSchema.safeParse(laterResume.packet).success,
+      true,
+    );
+    assert.equal(laterResume.packet?.verificationStatus, 'unknown');
+    assert.equal(laterResume.packet?.codeDrift.status, 'unknown');
+    assert.equal(
+      laterResume.packet?.codeDrift.repositories.some(
+        (entry) => entry.repoId === 'later',
+      ),
+      false,
+    );
+    assert.equal(
+      laterResume.packet?.blockingReasons.some((entry) =>
+        entry.message.includes('current-only: later'),
+      ),
+      true,
+    );
+    assert.deepEqual(readFileSync(laterSaved.checkpointPath!), laterBytes);
+
+    ignorePrivateState(newRoot);
+    const newService = new CheckpointService(newRoot);
+    const newSaved = await newService.save(initialInput());
+    assert.equal(newSaved.ok, true, newSaved.diagnostics[0]?.message);
+    assert.notEqual(newSaved.checkpointPath, null);
+    const newBytes = readFileSync(newSaved.checkpointPath!);
+    createRepository(newOutside);
+    writeMachineConfig(
+      newRoot,
+      baseMachineConfig(newRoot, {
+        externalRepositories: [{ id: 'new', path: newOutside }],
+      }),
+    );
+    writeWorkspaceConfig(
+      newRoot,
+      baseWorkspaceConfig({
+        repositories: [
+          { id: 'app', path: '.', access: 'write' },
+          { id: 'new', path: 'external:new', access: 'read' },
+        ],
+      }),
+    );
+    const newResume = await newService.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(resumePacketSchema.safeParse(newResume.packet).success, true);
+    assert.equal(newResume.packet?.verificationStatus, 'unknown');
+    assert.equal(newResume.packet?.codeDrift.status, 'unknown');
+    assert.equal(
+      newResume.packet?.codeDrift.repositories.some(
+        (entry) => entry.repoId === 'new',
+      ),
+      false,
+    );
+    assert.equal(
+      newResume.packet?.blockingReasons.some((entry) =>
+        entry.message.includes('current-only: new'),
+      ),
+      true,
+    );
+    assert.deepEqual(readFileSync(newSaved.checkpointPath!), newBytes);
+  } finally {
+    cleanup(laterRoot);
+    cleanup(laterOutside);
+    cleanup(newRoot);
+    cleanup(newOutside);
+  }
+});
+
+test('complete and intentionally empty repository coverage remains current', async () => {
+  const completeRoot = makeRepoWorkspace();
+  const emptyRoot = makeTempDir('continuity-empty-repositories');
+  try {
+    ignorePrivateState(completeRoot);
+    const completeService = new CheckpointService(completeRoot);
+    const completeSaved = await completeService.save(initialInput());
+    assert.equal(completeSaved.ok, true, completeSaved.diagnostics[0]?.message);
+    assert.equal(completeSaved.checkpoint?.contextCompleteness, 'complete');
+    const completeResume = await completeService.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(completeResume.packet?.verificationStatus, 'current');
+    assert.equal(completeResume.packet?.codeDrift.status, 'unchanged');
+    assert.equal(
+      completeResume.packet?.blockingReasons.some(
+        (entry) => entry.code === 'repository_coverage_incomplete',
+      ),
+      false,
+    );
+
+    writeWorkspaceConfig(emptyRoot, baseWorkspaceConfig({ repositories: [] }));
+    writeMachineConfig(emptyRoot, baseMachineConfig(emptyRoot));
+    const emptyService = new CheckpointService(emptyRoot);
+    const emptySaved = await emptyService.save(initialInput());
+    assert.equal(emptySaved.ok, true, emptySaved.diagnostics[0]?.message);
+    assert.equal(emptySaved.checkpoint?.repositories.length, 0);
+    const emptyResume = await emptyService.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(
+      resumePacketSchema.safeParse(emptyResume.packet).success,
+      true,
+    );
+    assert.equal(emptyResume.packet?.verificationStatus, 'current');
+    assert.equal(emptyResume.packet?.codeDrift.status, 'unchanged');
+    assert.equal(
+      emptyResume.packet?.blockingReasons.some(
+        (entry) => entry.code === 'repository_coverage_incomplete',
+      ),
+      false,
+    );
+  } finally {
+    cleanup(completeRoot);
+    cleanup(emptyRoot);
+  }
+});
+
+test('generated fallback identities avoid configured repository IDs', async () => {
+  const root = makeRepoWorkspace();
+  const control = makeRepoWorkspace();
+  const fallback = makeRepoWorkspace();
+  try {
+    createRepository(join(root, 'child'));
+    ignorePaths(root, ['.pappra/', 'child/']);
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        repositories: [{ id: 'workspace-2', path: 'child', access: 'write' }],
+      }),
+    );
+    const service = new CheckpointService(root);
+    const saved = await service.save(initialInput());
+    assert.equal(saved.ok, true, saved.diagnostics[0]?.message);
+    assert.equal(checkpointSchema.safeParse(saved.checkpoint).success, true);
+    const rows = saved.checkpoint?.repositories ?? [];
+    const rowIds = rows.map((repository) => repository.repoId);
+    assert.equal(new Set(rowIds).size, rows.length);
+    assert.equal(rowIds.includes('workspace-2'), true);
+    const configuredChild = rows.find((repository) =>
+      repository.root.endsWith('/child'),
+    );
+    assert.equal(configuredChild?.repoId, 'workspace-2');
+    const automaticRoot = rows.find(
+      (repository) => !repository.root.endsWith('/child'),
+    );
+    assert.notEqual(automaticRoot?.repoId, 'workspace-2');
+    assert.notEqual(automaticRoot, undefined);
+    assert.notEqual(saved.checkpointPath, null);
+    const checkpointBytes = readFileSync(saved.checkpointPath!);
+    const resumed = await service.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(resumePacketSchema.safeParse(resumed.packet).success, true);
+    assert.equal(resumed.packet?.verificationStatus, 'current');
+    assert.equal(resumed.packet?.codeDrift.status, 'unchanged');
+    assert.equal(
+      resumed.packet?.codeDrift.repositories.some(
+        (entry) => entry.status === 'relocated',
+      ),
+      false,
+    );
+    assert.deepEqual(readFileSync(saved.checkpointPath!), checkpointBytes);
+
+    ignorePrivateState(control);
+    const controlService = new CheckpointService(control);
+    const controlSaved = await controlService.save(initialInput());
+    assert.equal(controlSaved.ok, true, controlSaved.diagnostics[0]?.message);
+    const controlIds =
+      controlSaved.checkpoint?.repositories.map(
+        (repository) => repository.repoId,
+      ) ?? [];
+    assert.equal(new Set(controlIds).size, controlIds.length);
+    const controlResume = await controlService.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(controlResume.packet?.verificationStatus, 'current');
+    assert.equal(controlResume.packet?.codeDrift.status, 'unchanged');
+    ignorePrivateState(fallback);
+    writeWorkspaceConfig(fallback, baseWorkspaceConfig({ repositories: [] }));
+    const fallbackService = new CheckpointService(fallback);
+    const fallbackSaved = await fallbackService.save(initialInput());
+    assert.equal(fallbackSaved.ok, true, fallbackSaved.diagnostics[0]?.message);
+    assert.deepEqual(
+      fallbackSaved.checkpoint?.repositories.map(
+        (repository) => repository.repoId,
+      ),
+      ['workspace'],
+    );
+    const fallbackResume = await fallbackService.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.equal(fallbackResume.packet?.verificationStatus, 'current');
+    assert.equal(fallbackResume.packet?.codeDrift.status, 'unchanged');
+  } finally {
+    cleanup(root);
+    cleanup(control);
+    cleanup(fallback);
+  }
+});
+
+test('repository coverage beyond the checkpoint bound refuses without a pointer', async () => {
+  const root = makeTempDir('continuity-coverage-bound');
+  const externalRoots: string[] = [];
+  try {
+    const repositories = Array.from({ length: 65 }, (_, index) => ({
+      id: `repo-${index}`,
+      path: `external:repo-${index}`,
+      access: 'read' as const,
+    }));
+    const mappings = repositories.map((repository) => {
+      const external = makeTempDir(`continuity-bound-${repository.id}`);
+      externalRoots.push(external);
+      const initialized = spawnSync('git', ['init', '-q', '-b', 'main'], {
+        cwd: external,
+        encoding: 'utf8',
+      });
+      assert.equal(initialized.status, 0, initialized.stderr);
+      return { id: repository.id, path: external };
+    });
+    writeWorkspaceConfig(root, baseWorkspaceConfig({ repositories }));
+    writeMachineConfig(
+      root,
+      baseMachineConfig(root, { externalRepositories: mappings }),
+    );
+    const saved = await new CheckpointService(root).save(initialInput());
+    assert.equal(saved.ok, false);
+    assert.equal(saved.checkpoint, null);
+    assert.equal(saved.checkpointPath, null);
+    assert.equal(
+      existsSync(join(root, '.pappra/local/tasks/task-p07/latest.json')),
+      false,
+    );
+    assert.equal(
+      saved.diagnostics.some(
+        (diagnostic) =>
+          diagnostic.code === 'document_record_invalid' &&
+          diagnostic.message.includes('64'),
+      ),
+      true,
+    );
+  } finally {
+    cleanup(root);
+    for (const external of externalRoots) cleanup(external);
   }
 });
 

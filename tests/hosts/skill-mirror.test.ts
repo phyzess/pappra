@@ -30,3 +30,33 @@ test('the published skill mirror matches the packaged skill source', () => {
     );
   }
 });
+
+test('the shipped skill documents the visible collaboration entry path', () => {
+  const skill = readFileSync(join(source, 'SKILL.md'), 'utf8');
+  assert.match(skill, /references\/environment\.md/);
+  assert.match(skill, /visible/i);
+  assert.match(skill, /cross-harness collaboration/);
+
+  const environment = readFileSync(
+    join(source, 'references/environment.md'),
+    'utf8',
+  );
+  for (const required of [
+    'HERDR_ENV',
+    'direct mode',
+    'pappra/collab-binding/1',
+    '--caller-pane',
+    'pappra collab message notify',
+    'pappra collab preflight',
+    'recovery inspect',
+    'do not poll panes',
+    'does not create, start, or discover a participant',
+  ])
+    assert.ok(environment.includes(required), required);
+  assert.equal(
+    readFileSync(join(mirror, 'references/environment.md')).equals(
+      readFileSync(join(source, 'references/environment.md')),
+    ),
+    true,
+  );
+});

@@ -10,7 +10,10 @@ import {
   inspectWorkspaceConfig,
 } from '../workspace/config.js';
 import { discoverRepositories } from '../workspace/repositories.js';
-import type { DiscoveredRepository } from '../workspace/types.js';
+import type {
+  DiscoveredRepository,
+  UnresolvedRepository,
+} from '../workspace/types.js';
 import { runGit } from '../infra/git.js';
 import { observePath, readFileBounded, sha256Digest } from '../infra/fs.js';
 import { readlink } from 'node:fs/promises';
@@ -30,6 +33,8 @@ export interface ContinuityWorkspace {
   readonly config: WorkspaceConfig;
   readonly machine: MachineConfig | null;
   readonly repositories: readonly DiscoveredRepository[];
+  readonly unresolvedRepositories: readonly UnresolvedRepository[];
+  readonly discoveryTruncated: boolean;
   readonly diagnostics: readonly Diagnostic[];
 }
 
@@ -69,6 +74,8 @@ export async function loadContinuityWorkspace(
       config: config.value,
       machine: machine.value,
       repositories: repositories.repositories,
+      unresolvedRepositories: repositories.unresolved,
+      discoveryTruncated: repositories.truncated,
       diagnostics,
     },
     diagnostics,
@@ -81,20 +88,82 @@ function repoId(repository: DiscoveredRepository, index: number): string {
   );
 }
 
+/**
+ * Assigns stable identities that never shadow a configured logical ID. The
+ * normal fallback remains unchanged when collision-free; an automatic
+ * repository whose preferred fallback is reserved receives the first free
+ * `workspace-N` identity instead. Capture and resume must use the same list.
+ */
+export function repositoryIdentities(
+  repositories: readonly DiscoveredRepository[],
+  reservedIds: readonly string[] = [],
+): readonly string[] {
+  const used = new Set([
+    ...reservedIds,
+    ...repositories.flatMap((repository) =>
+      repository.id === null ? [] : [repository.id],
+    ),
+  ]);
+  return repositories.map((repository, index) => {
+    if (repository.id !== null) return repository.id;
+    const preferred = index === 0 ? 'workspace' : `workspace-${index + 1}`;
+    let candidate = preferred;
+    let suffix = 1;
+    while (used.has(candidate)) {
+      candidate = `workspace-${suffix}`;
+      suffix += 1;
+    }
+    used.add(candidate);
+    return candidate;
+  });
+}
+
 function repoScope(repository: DiscoveredRepository): 'workspace' | 'external' {
   return repository.external ? 'external' : 'workspace';
 }
 
+/**
+ * Parses `git status --porcelain=v1 -z` untracked paths without display
+ * unquoting. Rename/copy records carry a second NUL-delimited original path;
+ * that continuation is skipped so it can never be treated as a status row.
+ */
+function untrackedPathsFromNulStatus(
+  statusText: string,
+): readonly string[] | null {
+  if (statusText === '') return [];
+  if (!statusText.endsWith('\0')) return null;
+  const fields = statusText.split('\0');
+  fields.pop();
+  const paths: string[] = [];
+  for (let index = 0; index < fields.length; index += 1) {
+    const entry = fields[index];
+    if (entry === undefined || entry.length < 3 || entry[2] !== ' ') {
+      return null;
+    }
+    const code = entry.slice(0, 2);
+    const path = entry.slice(3);
+    if (path.length === 0) return null;
+    if (code === '??') paths.push(path);
+    if (code[0] === 'R' || code[0] === 'C') {
+      const continuation = fields[index + 1];
+      if (continuation === undefined || continuation.length === 0) return null;
+      index += 1;
+    }
+  }
+  return paths;
+}
 export async function snapshotRepository(
   workspace: ContinuityWorkspace,
   repository: DiscoveredRepository,
   index: number,
+  assignedId?: string,
 ): Promise<RepositorySnapshot> {
   const status = await runGit({
     cwd: repository.root,
     args: [
       'status',
       '--porcelain=v1',
+      '-z',
       '--untracked-files=all',
       '--',
       '.',
@@ -123,6 +192,8 @@ export async function snapshotRepository(
   const dirty = status.ok ? statusText.trim().length > 0 : repository.git.dirty;
   let captureStatus: 'complete' | 'partial' | 'unknown' =
     status.ok && diff.ok ? 'complete' : 'unknown';
+  const untracked = status.ok ? untrackedPathsFromNulStatus(statusText) : null;
+  if (status.ok && untracked === null) captureStatus = 'partial';
   let patchBytes: Buffer | null = null;
   if (dirty === true && status.ok && diff.ok) {
     const statusBytes = Buffer.from(statusText, 'utf8');
@@ -139,11 +210,7 @@ export async function snapshotRepository(
     if (total > CONTINUITY_PAYLOAD_MAX_BYTES) {
       captureStatus = 'partial';
     }
-    const untracked = statusText
-      .split('\n')
-      .filter((line) => line.startsWith('?? '))
-      .map((line) => line.slice(3));
-    for (const path of untracked) {
+    for (const path of untracked ?? []) {
       if (total > CONTINUITY_PAYLOAD_MAX_BYTES) break;
       const absolute = join(repository.root, path);
       if (!isPathInside(repository.root, absolute)) {
@@ -205,7 +272,7 @@ export async function snapshotRepository(
     workspace.machine?.checkoutId ?? sha256Digest(repository.root);
   return {
     record: {
-      repoId: repoId(repository, index),
+      repoId: assignedId ?? repoId(repository, index),
       checkoutId,
       root: repository.root,
       head: repository.git.head,

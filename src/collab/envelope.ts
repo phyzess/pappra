@@ -187,8 +187,19 @@ export function buildMessage(input: MessageInput, { clock = Date.now() } = {}) {
   return message;
 }
 
+/**
+ * Message ids are single path segments: a letter or digit followed by letters,
+ * digits, dot, dash or underscore, bounded at 128 characters. Anything else
+ * (`..`, separators, control characters) is rejected before any path is built.
+ */
+const SAFE_MESSAGE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+
+export function isSafeMessageId(value: unknown): value is string {
+  return typeof value === 'string' && SAFE_MESSAGE_ID.test(value);
+}
+
 export function messageFile(taskRoot: string, messageId: string): string {
-  if (/[\\/\0]/.test(messageId))
+  if (!isSafeMessageId(messageId))
     throw new Error('Invalid message field: message.message_id');
   return path.join(messagesDir(taskRoot), `${messageId}.json`);
 }

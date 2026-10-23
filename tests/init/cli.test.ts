@@ -15,9 +15,19 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { getPackageInfo } from '../../src/index.js';
+import { applyInitPlan, planWorkspaceInit } from '../../src/app/init.js';
+import { describeInitRuntimeOperation } from '../../src/cli/commands/init.js';
+import { installRuntime, runtimePaths } from '../../src/install/runtime.js';
 import { baseInitChoices } from './fixtures.js';
 import { createRuntimeTarball } from '../install/fixtures.js';
-import { createRepository } from '../workspace/fixtures.js';
+import {
+  baseMachineConfig,
+  baseWorkspaceConfig,
+  createRepository,
+  snapshotTree,
+  writeMachineConfig,
+  writeWorkspaceConfig,
+} from '../workspace/fixtures.js';
 
 const root = dirname(
   fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
@@ -55,8 +65,9 @@ function runtimeEnv(temporary: string): NodeJS.ProcessEnv {
   return { PAPPRA_DATA_HOME: join(temporary, 'pappra-data') };
 }
 
-test('init --config plans without writes and --apply applies only config files', () => {
+test('init runtime preview is read-only; --apply ensures and reuses an isolated runtime', async () => {
   const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-cli-'));
+  const dataDir = join(temporary, 'pappra-data');
   try {
     const choices = join(temporary, 'choices.json');
     writeChoices(choices);
@@ -69,6 +80,72 @@ test('init --config plans without writes and --apply applies only config files',
     assert('scope' in plan);
     assert.equal(planned.stderr, '');
     assert.deepEqual(readdirSync(temporary), ['choices.json']);
+    const humanPreview = invoke(['init', '--config', choices], temporary, {
+      PAPPRA_DATA_HOME: dataDir,
+    });
+    assert.equal(humanPreview.status, 0, humanPreview.stderr);
+    assert(humanPreview.stdout.includes('Runtime operation:'));
+    assert(humanPreview.stdout.includes('Default self-package source:'));
+    assert(
+      humanPreview.stdout.includes(
+        runtimePaths(getPackageInfo().version, dataDir).runtimeRoot,
+      ),
+    );
+    assert(humanPreview.stdout.includes('preview does not'));
+    assert.equal(existsSync(dataDir), false);
+    assert.deepEqual(readdirSync(temporary), ['choices.json']);
+
+    const configOnly = invoke(
+      ['init', '--config', choices, '--apply', '--no-runtime', '--json'],
+      temporary,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(configOnly.status, 1, configOnly.stderr);
+    const configOnlyResult = parseJson(configOnly.stdout);
+    assert.equal(configOnlyResult.ok, true);
+    assert.equal(configOnlyResult.initComplete, false);
+    assert.equal(configOnlyResult.runtime, null);
+    assert.equal(existsSync(dataDir), false);
+    const machinePath = join(temporary, '.pappra', 'local', 'machine.json');
+    const machineBeforeRuntime = JSON.parse(readFileSync(machinePath, 'utf8'));
+    assert.equal(machineBeforeRuntime.runtime, null);
+
+    const beforeEmptyPlan = snapshotTree(temporary);
+    const emptyPlanPreview = invoke(
+      ['init', '--config', choices],
+      temporary,
+      runtimeEnv(temporary),
+    );
+    assert.equal(emptyPlanPreview.status, 0, emptyPlanPreview.stderr);
+    assert(emptyPlanPreview.stdout.includes('No file changes are planned.'));
+    assert(emptyPlanPreview.stdout.includes('Runtime operation:'));
+    assert(
+      emptyPlanPreview.stdout.includes(
+        runtimePaths(getPackageInfo().version, dataDir).runtimeRoot,
+      ),
+    );
+    assert.deepEqual(snapshotTree(temporary), beforeEmptyPlan);
+    assert.equal(existsSync(dataDir), false);
+
+    const version = getPackageInfo().version;
+    const localTarball = createRuntimeTarball(temporary, {
+      version,
+      packageName: getPackageInfo().name,
+    });
+    const seededRuntime = await installRuntime({
+      version,
+      source: { kind: 'tarball', path: localTarball },
+      dataDir,
+      packageName: getPackageInfo().name,
+      offline: true,
+    });
+    assert.equal(
+      seededRuntime.ok,
+      true,
+      JSON.stringify(seededRuntime.diagnostics),
+    );
+    assert.equal(seededRuntime.status, 'installed');
+    assert(seededRuntime.manifest !== null);
 
     const applied = invoke(
       ['init', '--config', choices, '--apply', '--json'],
@@ -77,26 +154,19 @@ test('init --config plans without writes and --apply applies only config files',
     );
     assert.equal(applied.status, 0, applied.stderr);
     const apply = parseJson(applied.stdout);
-    assert('ok' in apply && apply.ok === true);
-    assert('apply' in apply);
+    assert.equal(apply.ok, true);
+    assert.equal(apply.initComplete, true);
     const applyValue = apply.apply;
     assert(typeof applyValue === 'object' && applyValue !== null);
-    assert('initComplete' in apply && apply.initComplete === true);
-    assert(
-      'status' in applyValue &&
-        applyValue.status === 'external-actions-pending',
+    assert.equal(
+      (applyValue as Record<string, unknown>).status,
+      'external-actions-pending',
     );
     const runtimeValue = apply.runtime;
     assert(typeof runtimeValue === 'object' && runtimeValue !== null);
-    assert.equal((runtimeValue as Record<string, unknown>).status, 'installed');
-    assert.equal(
-      existsSync(join(temporary, '.pappra', 'workspace.json')),
-      true,
-    );
-    assert.equal(
-      existsSync(join(temporary, '.pappra', 'local', 'machine.json')),
-      true,
-    );
+    assert.equal((runtimeValue as Record<string, unknown>).status, 'reused');
+    const machine = JSON.parse(readFileSync(machinePath, 'utf8'));
+    assert.equal(machine.runtime.executable, seededRuntime.manifest.executable);
 
     const repeated = invoke(
       ['init', '--config', choices, '--apply', '--json'],
@@ -105,33 +175,96 @@ test('init --config plans without writes and --apply applies only config files',
     );
     assert.equal(repeated.status, 0, repeated.stderr);
     const repeat = parseJson(repeated.stdout);
-    assert('apply' in repeat);
+    assert.equal(repeat.initComplete, true);
     const repeatApply = repeat.apply;
     assert(typeof repeatApply === 'object' && repeatApply !== null);
     assert.equal((repeatApply as Record<string, unknown>).status, 'no-changes');
-
-    const machinePath = join(temporary, '.pappra', 'local', 'machine.json');
-    const machine = JSON.parse(readFileSync(machinePath, 'utf8'));
-    machine.runtime = {
-      version: getPackageInfo().version,
-      executable: process.execPath,
-      verifiedAt: '2026-10-17T00:00:00.000Z',
-    };
-    writeFileSync(machinePath, `${JSON.stringify(machine, null, 2)}\n`);
-    const settled = invoke(
-      ['init', '--config', choices, '--apply', '--json'],
+    const repeatedRuntime = repeat.runtime;
+    assert(typeof repeatedRuntime === 'object' && repeatedRuntime !== null);
+    assert.equal((repeatedRuntime as Record<string, unknown>).status, 'reused');
+    const beforeHumanApply = snapshotTree(temporary);
+    const humanApply = invoke(
+      ['init', '--config', choices, '--apply'],
       temporary,
       runtimeEnv(temporary),
     );
-    assert.equal(settled.status, 0, settled.stderr);
-    const settledJson = parseJson(settled.stdout);
-    assert('apply' in settledJson);
-    const settledApply = settledJson.apply;
+    assert.equal(humanApply.status, 0, humanApply.stderr);
+    assert(humanApply.stdout.includes('Runtime operation result: reused'));
+    assert(
+      humanApply.stdout.includes(
+        'Existing runtime was verified, reused and bound',
+      ),
+    );
+    assert(
+      humanApply.stdout.includes(
+        'No knowledge documents are registered by init.',
+      ),
+    );
+    assert.deepEqual(snapshotTree(temporary), beforeHumanApply);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('init --no-runtime reports no-changes and exit 0 once a matching runtime is bound', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-cli-no-runtime-'));
+  try {
+    const workspace = join(temporary, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    createRepository(workspace);
+    const choices = join(temporary, 'choices.json');
+    writeChoices(choices);
+    const environment = runtimeEnv(temporary);
+
+    const pending = invoke(
+      ['init', '--config', choices, '--apply', '--no-runtime', '--json'],
+      workspace,
+      environment,
+    );
+    assert.equal(pending.status, 1, `${pending.stdout}\n${pending.stderr}`);
+    const pendingValue = parseJson(pending.stdout);
+    assert.equal(pendingValue.ok, true);
+    assert.equal(pendingValue.initComplete, false);
+    const pendingApply = pendingValue.apply;
+    assert(typeof pendingApply === 'object' && pendingApply !== null);
+    assert.equal(
+      (pendingApply as Record<string, unknown>).status,
+      'external-actions-pending',
+    );
+
+    writeMachineConfig(
+      workspace,
+      baseMachineConfig(workspace, {
+        runtime: {
+          version: getPackageInfo().version,
+          executable: process.execPath,
+          verifiedAt: '2026-10-17T00:00:00.000Z',
+        },
+      }),
+    );
+    const before = snapshotTree(workspace);
+    const settled = invoke(
+      ['init', '--config', choices, '--apply', '--no-runtime', '--json'],
+      workspace,
+      environment,
+    );
+    assert.equal(settled.status, 0, `${settled.stdout}\n${settled.stderr}`);
+    const settledValue = parseJson(settled.stdout);
+    assert.equal(settledValue.ok, true);
+    assert.equal(settledValue.initComplete, false);
+    assert.equal(settledValue.runtime, null);
+    const settledApply = settledValue.apply;
     assert(typeof settledApply === 'object' && settledApply !== null);
     assert.equal(
       (settledApply as Record<string, unknown>).status,
       'no-changes',
     );
+    assert.deepEqual(
+      (settledApply as Record<string, unknown>).appliedFiles,
+      [],
+    );
+    assert.deepEqual(snapshotTree(workspace), before);
+    assert.equal(existsSync(join(temporary, 'pappra-data')), false);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
@@ -168,6 +301,695 @@ test('init help is available without opening the wizard', () => {
   }
 });
 
+test('runtime operation description distinguishes default, tarball, version and no-runtime modes', async () => {
+  const temporary = mkdtempSync(
+    join(tmpdir(), 'pappra-init-runtime-description-'),
+  );
+  try {
+    const version = getPackageInfo().version;
+    const prepared = await planWorkspaceInit({
+      root: temporary,
+      choices: baseInitChoices(),
+      runtimeVersion: version,
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const dataDir = join(temporary, 'isolated-data');
+    const options = {
+      cwd: temporary,
+      configPath: null,
+      apply: false,
+      json: false,
+    };
+    const defaultOperation = describeInitRuntimeOperation(
+      options,
+      prepared.bundle,
+      dataDir,
+    );
+    assert.equal(defaultOperation.mode, 'default-self');
+    assert.equal(defaultOperation.runtimeRequested, true);
+    assert.equal(defaultOperation.targetVersion, version);
+    assert.equal(
+      defaultOperation.runtimeRoot,
+      runtimePaths(version, dataDir).runtimeRoot,
+    );
+    assert(defaultOperation.source?.includes(getPackageInfo().name));
+    assert(defaultOperation.source?.includes(getPackageInfo().version));
+    assert(
+      defaultOperation.previewLines.join('\n').includes('cannot promise reuse'),
+    );
+    assert(
+      defaultOperation.confirmationMessage.includes(
+        'verify/reuse a runtime for the workspace target',
+      ),
+    );
+    assert(defaultOperation.confirmationMessage.includes('or install'));
+
+    const olderVersion = '0.0.7';
+    const preparedOlder = await planWorkspaceInit({
+      root: temporary,
+      choices: baseInitChoices(),
+      runtimeVersion: olderVersion,
+    });
+    assert.equal(preparedOlder.ok, true);
+    if (!preparedOlder.ok) return;
+    const olderOperation = describeInitRuntimeOperation(
+      options,
+      preparedOlder.bundle,
+      dataDir,
+    );
+    assert.equal(olderOperation.targetVersion, olderVersion);
+    const olderPreview = olderOperation.previewLines.join('\n');
+    assert(
+      olderPreview.includes(
+        'A verified runtime for this workspace target may still be reused.',
+      ),
+    );
+    assert(
+      olderPreview.includes(
+        'If no verified runtime can be reused, the current package source cannot satisfy this target and runtime setup will fail after config apply.',
+      ),
+    );
+    assert(!olderPreview.includes('will be rejected after config apply'));
+    assert(
+      olderOperation.confirmationMessage.includes(
+        'first verify/reuse a runtime for the workspace target',
+      ),
+    );
+    assert(
+      olderOperation.confirmationMessage.includes(
+        'If no verified target runtime is reusable, the current package cannot satisfy this target',
+      ),
+    );
+    assert(
+      !olderOperation.confirmationMessage.includes(
+        'the runtime request will fail after config apply',
+      ),
+    );
+
+    const tarballPath = join(temporary, 'runtime.tgz');
+    const tarballOperation = describeInitRuntimeOperation(
+      {
+        ...options,
+        installRuntime: true,
+        runtimeTarball: 'runtime.tgz',
+      },
+      prepared.bundle,
+      dataDir,
+    );
+    assert.equal(tarballOperation.mode, 'tarball');
+    assert(tarballOperation.source?.includes(tarballPath));
+    assert(tarballOperation.previewLines.join('\n').includes('network access'));
+
+    const versionOperation = describeInitRuntimeOperation(
+      { ...options, installRuntime: true, runtimeVersion: version },
+      prepared.bundle,
+      dataDir,
+    );
+    assert.equal(versionOperation.mode, 'version');
+    assert.equal(
+      versionOperation.source,
+      `${getPackageInfo().name}@${version}`,
+    );
+    assert.equal(
+      versionOperation.runtimeRoot,
+      runtimePaths(version, dataDir).runtimeRoot,
+    );
+
+    const mismatchedVersion = describeInitRuntimeOperation(
+      { ...options, installRuntime: true, runtimeVersion: olderVersion },
+      prepared.bundle,
+      dataDir,
+    );
+    assert(
+      mismatchedVersion.previewLines
+        .join('\n')
+        .includes('the runtime request will be rejected before installation'),
+    );
+    assert(
+      mismatchedVersion.confirmationMessage.includes(
+        'will fail before installation',
+      ),
+    );
+
+    const disabledOperation = describeInitRuntimeOperation(
+      { ...options, noRuntime: true },
+      prepared.bundle,
+      dataDir,
+    );
+    assert.equal(disabledOperation.mode, 'disabled');
+    assert.equal(disabledOperation.runtimeRequested, false);
+    assert.equal(disabledOperation.source, null);
+    assert.equal(disabledOperation.runtimeRoot, null);
+    assert(
+      disabledOperation.previewLines
+        .join('\n')
+        .includes(
+          'No runtime installation, verification or binding operation will run',
+        ),
+    );
+    assert(
+      disabledOperation.confirmationMessage.includes(
+        'No runtime operation will run (--no-runtime)',
+      ),
+    );
+    assert.equal(existsSync(dataDir), false);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('default init conditionally previews and reuses a verified older target runtime', async () => {
+  const temporary = mkdtempSync(
+    join(tmpdir(), 'pappra-init-older-runtime-reuse-'),
+  );
+  const workspace = join(temporary, 'workspace');
+  const dataDir = join(temporary, 'data');
+  const olderVersion = '0.0.7';
+  const executionMarker = join(temporary, 'runtime-executed.txt');
+  const previousNpmCache = process.env.npm_config_cache;
+  const previousNpmOffline = process.env.npm_config_offline;
+  try {
+    createRepository(workspace);
+    const choices = baseInitChoices({
+      name: 'older runtime target',
+      repositories: [],
+      hosts: [],
+    });
+    const prepared = await planWorkspaceInit({
+      root: workspace,
+      choices,
+      runtimeVersion: olderVersion,
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const configured = await applyInitPlan(prepared.bundle);
+    assert.equal(configured.ok, true, JSON.stringify(configured));
+    const choicesPath = join(temporary, 'choices.json');
+    writeFileSync(choicesPath, `${JSON.stringify(choices, null, 2)}\n`);
+    process.env.npm_config_cache = join(temporary, 'npm-cache');
+    process.env.npm_config_offline = 'true';
+
+    const tarball = createRuntimeTarball(join(temporary, 'offline-package'), {
+      version: olderVersion,
+      packageName: getPackageInfo().name,
+      executionMarkerPath: executionMarker,
+    });
+    const seededRuntime = await installRuntime({
+      version: olderVersion,
+      source: { kind: 'tarball', path: tarball },
+      dataDir,
+      packageName: getPackageInfo().name,
+      offline: true,
+    });
+    assert.equal(
+      seededRuntime.ok,
+      true,
+      JSON.stringify(seededRuntime.diagnostics),
+    );
+    assert.equal(seededRuntime.status, 'installed');
+    assert(seededRuntime.manifest !== null);
+    rmSync(executionMarker, { force: true });
+
+    const environment = {
+      PAPPRA_DATA_HOME: dataDir,
+      npm_config_cache: process.env.npm_config_cache,
+      npm_config_offline: 'true',
+    };
+    const workspaceBeforePreview = snapshotTree(workspace);
+    const dataBeforePreview = snapshotTree(dataDir);
+    const preview = invoke(
+      ['init', '--config', choicesPath],
+      workspace,
+      environment,
+    );
+    assert.equal(preview.status, 0, preview.stderr);
+    assert(preview.stdout.includes('Default self-package source:'));
+    assert(
+      preview.stdout.includes(
+        'A verified runtime for this workspace target may still be reused.',
+      ),
+    );
+    assert(
+      preview.stdout.includes(
+        'If no verified runtime can be reused, the current package source cannot satisfy this target',
+      ),
+    );
+    assert(!preview.stdout.includes('will be rejected after config apply'));
+    assert.equal(existsSync(executionMarker), false);
+    assert.deepEqual(snapshotTree(workspace), workspaceBeforePreview);
+    assert.deepEqual(snapshotTree(dataDir), dataBeforePreview);
+
+    const applied = invoke(
+      ['init', '--config', choicesPath, '--apply', '--json'],
+      workspace,
+      environment,
+    );
+    assert.equal(applied.status, 0, `${applied.stdout}\n${applied.stderr}`);
+    const result = parseJson(applied.stdout);
+    assert.equal(result.ok, true);
+    assert.equal(result.initComplete, true);
+    const runtime = result.runtime;
+    assert(typeof runtime === 'object' && runtime !== null);
+    assert.equal((runtime as Record<string, unknown>).status, 'reused');
+    assert.equal((runtime as Record<string, unknown>).version, olderVersion);
+    const machine = JSON.parse(
+      readFileSync(join(workspace, '.pappra', 'local', 'machine.json'), 'utf8'),
+    );
+    assert.equal(machine.runtime.version, olderVersion);
+    assert.equal(machine.runtime.executable, seededRuntime.manifest.executable);
+    assert.equal(readFileSync(executionMarker, 'utf8'), 'executed');
+  } finally {
+    if (previousNpmCache === undefined) delete process.env.npm_config_cache;
+    else process.env.npm_config_cache = previousNpmCache;
+    if (previousNpmOffline === undefined) delete process.env.npm_config_offline;
+    else process.env.npm_config_offline = previousNpmOffline;
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('default init fails only when an older target has no verified runtime to reuse', async () => {
+  const temporary = mkdtempSync(
+    join(tmpdir(), 'pappra-init-older-runtime-missing-'),
+  );
+  const workspace = join(temporary, 'workspace');
+  const dataDir = join(temporary, 'data');
+  const olderVersion = '0.0.7';
+  try {
+    createRepository(workspace);
+    const choices = baseInitChoices({
+      name: 'older runtime target',
+      repositories: [],
+      hosts: [],
+    });
+    const prepared = await planWorkspaceInit({
+      root: workspace,
+      choices,
+      runtimeVersion: olderVersion,
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const configured = await applyInitPlan(prepared.bundle);
+    assert.equal(configured.ok, true, JSON.stringify(configured));
+    const choicesPath = join(temporary, 'choices.json');
+    writeFileSync(choicesPath, `${JSON.stringify(choices, null, 2)}\n`);
+    const environment = {
+      PAPPRA_DATA_HOME: dataDir,
+      npm_config_cache: join(temporary, 'npm-cache'),
+      npm_config_offline: 'true',
+    };
+    const workspaceBefore = snapshotTree(workspace);
+
+    const preview = invoke(
+      ['init', '--config', choicesPath],
+      workspace,
+      environment,
+    );
+    assert.equal(preview.status, 0, preview.stderr);
+    assert(
+      preview.stdout.includes(
+        'A verified runtime for this workspace target may still be reused.',
+      ),
+    );
+    assert(
+      preview.stdout.includes(
+        'If no verified runtime can be reused, the current package source cannot satisfy this target',
+      ),
+    );
+    assert(
+      !preview.stdout.includes('the default runtime request will be rejected'),
+    );
+    assert.equal(existsSync(dataDir), false);
+    assert.deepEqual(snapshotTree(workspace), workspaceBefore);
+
+    const applied = invoke(
+      ['init', '--config', choicesPath, '--apply', '--json'],
+      workspace,
+      environment,
+    );
+    assert.equal(applied.status, 1, applied.stderr);
+    const result = parseJson(applied.stdout);
+    assert.equal(result.ok, false);
+    assert.equal(result.initComplete, false);
+    const apply = result.apply;
+    assert(typeof apply === 'object' && apply !== null);
+    assert.equal((apply as Record<string, unknown>).ok, true);
+    const runtime = result.runtime;
+    assert(typeof runtime === 'object' && runtime !== null);
+    assert.equal((runtime as Record<string, unknown>).status, 'failed');
+    const diagnostics = (runtime as Record<string, unknown>).diagnostics;
+    assert(Array.isArray(diagnostics));
+    assert(
+      diagnostics.some((diagnostic) =>
+        String((diagnostic as Record<string, unknown>).message).includes(
+          'does not match',
+        ),
+      ),
+    );
+    assert.equal(
+      JSON.parse(
+        readFileSync(join(workspace, '.pappra', 'workspace.json'), 'utf8'),
+      ).runtimeVersion,
+      olderVersion,
+    );
+    assert.equal(
+      JSON.parse(
+        readFileSync(
+          join(workspace, '.pappra', 'local', 'machine.json'),
+          'utf8',
+        ),
+      ).runtime,
+      null,
+    );
+    const runtimeRoot = runtimePaths(olderVersion, dataDir).runtimeRoot;
+    assert.equal(existsSync(runtimeRoot), false);
+    assert.equal(existsSync(join(runtimeRoot, 'install-manifest.json')), false);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('explicit runtime-version mismatch still rejects before runtime installation', async () => {
+  const temporary = mkdtempSync(
+    join(tmpdir(), 'pappra-init-explicit-version-mismatch-'),
+  );
+  const workspace = join(temporary, 'workspace');
+  const dataDir = join(temporary, 'data');
+  try {
+    createRepository(workspace);
+    const targetVersion = getPackageInfo().version;
+    const choices = baseInitChoices({
+      name: 'current runtime target',
+      repositories: [],
+      hosts: [],
+    });
+    const prepared = await planWorkspaceInit({
+      root: workspace,
+      choices,
+      runtimeVersion: targetVersion,
+    });
+    assert.equal(prepared.ok, true);
+    if (!prepared.ok) return;
+    const configured = await applyInitPlan(prepared.bundle);
+    assert.equal(configured.ok, true, JSON.stringify(configured));
+    const choicesPath = join(temporary, 'choices.json');
+    writeFileSync(choicesPath, `${JSON.stringify(choices, null, 2)}\n`);
+
+    const result = invoke(
+      [
+        'init',
+        '--config',
+        choicesPath,
+        '--install-runtime',
+        '--runtime-version',
+        '0.0.7',
+        '--apply',
+        '--json',
+      ],
+      workspace,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(result.status, 1, result.stderr);
+    const value = parseJson(result.stdout);
+    assert.equal(value.ok, false);
+    assert.equal(value.initComplete, false);
+    const runtime = value.runtime;
+    assert.equal(runtime, null);
+    assert(
+      (value.diagnostics as readonly Record<string, unknown>[]).some((entry) =>
+        String(entry.message).includes(
+          `Runtime version 0.0.7 does not match workspace target ${targetVersion}.`,
+        ),
+      ),
+    );
+    assert.equal(existsSync(dataDir), false);
+    const machine = JSON.parse(
+      readFileSync(join(workspace, '.pappra', 'local', 'machine.json'), 'utf8'),
+    );
+    assert.equal(machine.runtime, null);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('init --no-runtime previews and applies configuration without runtime work', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-no-runtime-'));
+  const dataDir = join(temporary, 'pappra-data');
+  try {
+    const choices = join(temporary, 'choices.json');
+    writeChoices(choices);
+    const preview = invoke(
+      ['init', '--config', choices, '--no-runtime'],
+      temporary,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(preview.status, 0, preview.stderr);
+    assert(
+      preview.stdout.includes(
+        'No runtime installation, verification or binding operation will run',
+      ),
+    );
+    assert.equal(existsSync(dataDir), false);
+    assert.equal(
+      existsSync(join(temporary, '.pappra', 'workspace.json')),
+      false,
+    );
+
+    const applied = invoke(
+      ['init', '--config', choices, '--apply', '--no-runtime', '--json'],
+      temporary,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(applied.status, 1, applied.stderr);
+    const result = parseJson(applied.stdout);
+    assert.equal(result.ok, true);
+    assert.equal(result.initComplete, false);
+    assert.equal(result.runtime, null);
+    assert(
+      Array.isArray(result.nextActions) &&
+        result.nextActions.some((action) =>
+          String(action).includes('intentionally deferred by --no-runtime'),
+        ),
+    );
+    const machine = JSON.parse(
+      readFileSync(join(temporary, '.pappra', 'local', 'machine.json'), 'utf8'),
+    );
+    assert.equal(machine.runtime, null);
+    assert.equal(existsSync(dataDir), false);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('default init preserves applied configuration and reports runtime lock residuals', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-runtime-locked-'));
+  const workspace = join(temporary, 'workspace');
+  const dataDir = join(temporary, 'data');
+  try {
+    createRepository(workspace);
+    const version = getPackageInfo().version;
+    const runtimeRoot = runtimePaths(version, dataDir).runtimeRoot;
+    const lockPath = runtimePaths(version, dataDir).lockPath;
+    mkdirSync(dirname(lockPath), { recursive: true });
+    writeFileSync(lockPath, 'temporary runtime-lock fixture\n');
+    const userDataBefore = snapshotTree(dataDir);
+    const choices = join(temporary, 'choices.json');
+    writeChoices(choices);
+
+    const result = invoke(
+      ['init', '--config', choices, '--apply', '--json'],
+      workspace,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const value = parseJson(result.stdout);
+    assert.equal(value.ok, false);
+    assert.equal(value.initComplete, false);
+    const apply = value.apply;
+    assert(typeof apply === 'object' && apply !== null);
+    assert.equal((apply as Record<string, unknown>).ok, true);
+    assert.deepEqual((apply as Record<string, unknown>).appliedFiles, [
+      '.pappra/workspace.json',
+      '.pappra/local/machine.json',
+    ]);
+    const runtime = value.runtime;
+    assert(typeof runtime === 'object' && runtime !== null);
+    assert.equal((runtime as Record<string, unknown>).status, 'locked');
+    assert.deepEqual((runtime as Record<string, unknown>).residualPaths, [
+      lockPath,
+    ]);
+    const machine = JSON.parse(
+      readFileSync(join(workspace, '.pappra', 'local', 'machine.json'), 'utf8'),
+    );
+    assert.equal(machine.runtime, null);
+    assert.equal(
+      JSON.parse(
+        readFileSync(join(workspace, '.pappra', 'workspace.json'), 'utf8'),
+      ).name,
+      'fixture workspace',
+    );
+    assert.equal(existsSync(runtimeRoot), false);
+    assert.deepEqual(snapshotTree(dataDir), userDataBefore);
+
+    const beforeHumanFailure = snapshotTree(workspace);
+    const humanFailure = invoke(
+      ['init', '--config', choices, '--apply'],
+      workspace,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(humanFailure.status, 1, humanFailure.stderr);
+    assert(humanFailure.stdout.includes('Runtime operation result: locked'));
+    assert(
+      humanFailure.stdout.includes('Existing workspace configuration reused.'),
+    );
+    assert(humanFailure.stderr.includes(`Runtime residual paths: ${lockPath}`));
+    assert(
+      humanFailure.stderr.includes(
+        'workspace configuration state reported above remains in place',
+      ),
+    );
+    assert.deepEqual(snapshotTree(workspace), beforeHumanFailure);
+    assert.deepEqual(snapshotTree(dataDir), userDataBefore);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('default init preserves applied configuration when a corrupt runtime blocks completion', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-runtime-corrupt-'));
+  const workspace = join(temporary, 'workspace');
+  const dataDir = join(temporary, 'data');
+  try {
+    createRepository(workspace);
+    const version = getPackageInfo().version;
+    const runtimeRoot = runtimePaths(version, dataDir).runtimeRoot;
+    mkdirSync(runtimeRoot, { recursive: true });
+    const sentinel = join(runtimeRoot, 'partial-state.txt');
+    writeFileSync(sentinel, 'preserve the corrupt runtime directory');
+    const userDataBefore = snapshotTree(dataDir);
+    const choices = join(temporary, 'choices.json');
+    writeChoices(choices);
+
+    const result = invoke(
+      ['init', '--config', choices, '--apply', '--json'],
+      workspace,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const value = parseJson(result.stdout);
+    assert.equal(value.ok, false);
+    assert.equal(value.initComplete, false);
+    const apply = value.apply;
+    assert(typeof apply === 'object' && apply !== null);
+    assert.equal((apply as Record<string, unknown>).ok, true);
+    assert.deepEqual((apply as Record<string, unknown>).appliedFiles, [
+      '.pappra/workspace.json',
+      '.pappra/local/machine.json',
+    ]);
+    const runtime = value.runtime;
+    assert(typeof runtime === 'object' && runtime !== null);
+    assert.equal((runtime as Record<string, unknown>).status, 'corrupt');
+    const appliedWorkspace = JSON.parse(
+      readFileSync(join(workspace, '.pappra', 'workspace.json'), 'utf8'),
+    );
+    assert.equal(appliedWorkspace.name, 'fixture workspace');
+    const machine = JSON.parse(
+      readFileSync(join(workspace, '.pappra', 'local', 'machine.json'), 'utf8'),
+    );
+    assert.equal(machine.runtime, null);
+    assert.equal(
+      readFileSync(sentinel, 'utf8'),
+      'preserve the corrupt runtime directory',
+    );
+    assert.equal(existsSync(join(runtimeRoot, 'install-manifest.json')), false);
+    assert.deepEqual(snapshotTree(dataDir), userDataBefore);
+    const beforeHumanFailure = snapshotTree(workspace);
+    const humanFailure = invoke(
+      ['init', '--config', choices, '--apply'],
+      workspace,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(humanFailure.status, 1, humanFailure.stderr);
+    assert(humanFailure.stdout.includes('Runtime operation result: corrupt'));
+    assert(
+      humanFailure.stdout.includes('Existing workspace configuration reused.'),
+    );
+    assert(
+      humanFailure.stderr.includes(
+        'configuration state reported above remains in place',
+      ),
+    );
+    assert.deepEqual(snapshotTree(workspace), beforeHumanFailure);
+    assert.deepEqual(snapshotTree(dataDir), userDataBefore);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('default runtime does not trust a bound regular executable when the runtime manifest is corrupt', () => {
+  const temporary = mkdtempSync(
+    join(tmpdir(), 'pappra-init-runtime-unverified-'),
+  );
+  const workspace = join(temporary, 'workspace');
+  const dataDir = join(temporary, 'data');
+  try {
+    createRepository(workspace);
+    const version = getPackageInfo().version;
+    writeWorkspaceConfig(
+      workspace,
+      baseWorkspaceConfig({
+        name: 'existing',
+        runtimeVersion: version,
+        repositories: [{ id: 'app', path: '.', access: 'write' }],
+      }),
+    );
+    const runtimeRoot = runtimePaths(version, dataDir).runtimeRoot;
+    mkdirSync(runtimeRoot, { recursive: true });
+    const sentinel = join(runtimeRoot, 'partial-state.txt');
+    writeFileSync(sentinel, 'preserve the corrupt runtime directory');
+    const userDataBefore = snapshotTree(dataDir);
+    const machinePath = writeMachineConfig(
+      workspace,
+      baseMachineConfig(workspace, {
+        runtime: {
+          version,
+          executable: process.execPath,
+          verifiedAt: '2026-10-17T00:00:00.000Z',
+        },
+      }),
+    );
+    const machineBefore = readFileSync(machinePath, 'utf8');
+    const choices = join(temporary, 'choices.json');
+    writeChoices(choices);
+
+    const result = invoke(
+      ['init', '--config', choices, '--apply', '--json'],
+      workspace,
+      { PAPPRA_DATA_HOME: dataDir },
+    );
+    assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+    const value = parseJson(result.stdout);
+    assert.equal(value.ok, false);
+    assert.equal(value.initComplete, false);
+    const apply = value.apply;
+    assert(typeof apply === 'object' && apply !== null);
+    assert.equal((apply as Record<string, unknown>).ok, true);
+    assert.equal((apply as Record<string, unknown>).status, 'no-changes');
+    const runtime = value.runtime;
+    assert(typeof runtime === 'object' && runtime !== null);
+    assert.equal((runtime as Record<string, unknown>).status, 'corrupt');
+    assert.equal(readFileSync(machinePath, 'utf8'), machineBefore);
+    assert.equal(
+      readFileSync(sentinel, 'utf8'),
+      'preserve the corrupt runtime directory',
+    );
+    assert.equal(existsSync(join(runtimeRoot, 'install-manifest.json')), false);
+    assert.deepEqual(snapshotTree(dataDir), userDataBefore);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test('installs a verified local runtime and records it in machine.json', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-cli-runtime-'));
   const dataDir = join(temporary, 'data');
@@ -197,7 +1019,7 @@ test('installs a verified local runtime and records it in machine.json', () => {
         '--json',
       ],
       temporary,
-      { PAPPRA_DATA_HOME: dataDir },
+      { PAPPRA_DATA_HOME: dataDir, npm_config_offline: 'true' },
     );
     assert.equal(
       result.status,
@@ -220,11 +1042,36 @@ ${result.stderr}`,
       true,
     );
     assert.equal(readFileSync(businessPackage, 'utf8'), businessBefore);
+    const beforeHumanRepeat = snapshotTree(temporary);
+    const humanRepeat = invoke(
+      [
+        'init',
+        '--config',
+        choices,
+        '--apply',
+        '--install-runtime',
+        '--runtime-tarball',
+        tarball,
+      ],
+      temporary,
+      { PAPPRA_DATA_HOME: dataDir, npm_config_offline: 'true' },
+    );
+    assert.equal(humanRepeat.status, 0, humanRepeat.stderr);
+    assert(
+      humanRepeat.stdout.includes(
+        `Explicit tarball source: tarball ${tarball}`,
+      ),
+    );
+    assert(
+      humanRepeat.stdout.includes(runtimePaths(version, dataDir).runtimeRoot),
+    );
+    assert(humanRepeat.stdout.includes('Runtime operation result: reused'));
+    assert.deepEqual(snapshotTree(temporary), beforeHumanRepeat);
 
     const repeated = invoke(
       ['init', '--config', choices, '--apply', '--json'],
       temporary,
-      { PAPPRA_DATA_HOME: dataDir },
+      { PAPPRA_DATA_HOME: dataDir, npm_config_offline: 'true' },
     );
     assert.equal(repeated.status, 0, repeated.stderr);
     const repeatedValue = parseJson(repeated.stdout);
@@ -388,19 +1235,22 @@ test('init --print-choices prints a round-trippable choices document', () => {
     const choicesPath = join(temporary, 'choices.json');
     writeFileSync(choicesPath, printed.stdout);
 
+    const dataDir = join(temporary, 'pappra-data');
     const applied = invoke(
-      ['init', '--config', choicesPath, '--apply', '--json'],
+      ['init', '--config', choicesPath, '--apply', '--no-runtime', '--json'],
       temporary,
-      { PATH: isolated.path, ...runtimeEnv(temporary) },
+      { PATH: isolated.path, PAPPRA_DATA_HOME: dataDir },
     );
-    assert.equal(applied.status, 0, applied.stderr);
-    assert.equal(parseJson(applied.stdout).initComplete, true);
+    assert.equal(applied.status, 1, applied.stderr);
     const appliedValue = parseJson(applied.stdout);
+    assert.equal(appliedValue.ok, true);
+    assert.equal(appliedValue.initComplete, false);
+    assert.equal(appliedValue.runtime, null);
+    assert.equal(existsSync(dataDir), false);
     assert.equal(
       (appliedValue.apply as Record<string, unknown>).status,
       'external-actions-pending',
     );
-
     const wrapped = invoke(['init', '--print-choices', '--json'], temporary, {
       PATH: isolated.path,
     });
@@ -422,13 +1272,20 @@ test('init --yes applies derived selections without a TTY', () => {
   const temporary = isolatedRepository();
   const isolated = deterministicPath();
   try {
-    const applied = invoke(['init', '--yes', '--apply', '--json'], temporary, {
-      PATH: isolated.path,
-      ...runtimeEnv(temporary),
-    });
-    assert.equal(applied.status, 0, applied.stderr);
+    const applied = invoke(
+      ['init', '--yes', '--apply', '--no-runtime', '--json'],
+      temporary,
+      {
+        PATH: isolated.path,
+        ...runtimeEnv(temporary),
+      },
+    );
+    assert.equal(applied.status, 1, applied.stderr);
     const value = parseJson(applied.stdout);
     assert.equal(value.ok, true);
+    assert.equal(value.initComplete, false);
+    assert.equal(value.runtime, null);
+    assert.equal(existsSync(join(temporary, 'pappra-data')), false);
     const workspace = JSON.parse(
       readFileSync(join(temporary, '.pappra', 'workspace.json'), 'utf8'),
     ) as Record<string, unknown>;
@@ -453,17 +1310,25 @@ test('init --yes applies derived selections without a TTY', () => {
       readFileSync(join(temporary, '.pappra', 'local', 'machine.json'), 'utf8'),
     ) as Record<string, unknown>;
     assert.deepEqual(machine.selectedHosts, []);
+    assert.equal(machine.runtime, null);
 
-    const repeated = invoke(['init', '--yes', '--apply', '--json'], temporary, {
-      PATH: isolated.path,
-      ...runtimeEnv(temporary),
-    });
-    assert.equal(repeated.status, 0, repeated.stderr);
+    const repeated = invoke(
+      ['init', '--yes', '--apply', '--no-runtime', '--json'],
+      temporary,
+      {
+        PATH: isolated.path,
+        ...runtimeEnv(temporary),
+      },
+    );
+    assert.equal(repeated.status, 1, repeated.stderr);
     const repeatedValue = parseJson(repeated.stdout);
     assert.equal(repeatedValue.ok, true);
+    assert.equal(repeatedValue.initComplete, false);
+    assert.equal(repeatedValue.runtime, null);
+    assert.equal(existsSync(join(temporary, 'pappra-data')), false);
     assert.equal(
       (repeatedValue.apply as Record<string, unknown>).status,
-      'no-changes',
+      'external-actions-pending',
     );
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -501,11 +1366,16 @@ test('init --reconfigure replaces a stale workspace config with a backup', () =>
   const environment = { PATH: isolated.path, ...runtimeEnv(temporary) };
   try {
     const first = invoke(
-      ['init', '--yes', '--apply', '--json'],
+      ['init', '--yes', '--apply', '--no-runtime', '--json'],
       temporary,
       environment,
     );
-    assert.equal(first.status, 0, first.stderr);
+    assert.equal(first.status, 1, first.stderr);
+    const firstValue = parseJson(first.stdout);
+    assert.equal(firstValue.ok, true);
+    assert.equal(firstValue.initComplete, false);
+    assert.equal(firstValue.runtime, null);
+    assert.equal(existsSync(join(temporary, 'pappra-data')), false);
     const workspacePath = join(temporary, '.pappra', 'workspace.json');
     const before = JSON.parse(readFileSync(workspacePath, 'utf8')) as Record<
       string,
@@ -522,14 +1392,45 @@ test('init --reconfigure replaces a stale workspace config with a backup', () =>
     };
     writeFileSync(workspacePath, `${JSON.stringify(edited, null, 2)}\n`);
 
-    const reconfigured = invoke(
-      ['init', '--yes', '--reconfigure', '--apply', '--json'],
+    const printedExisting = invoke(
+      ['init', '--print-choices', '--reconfigure', '--json'],
       temporary,
       environment,
     );
-    assert.equal(reconfigured.status, 0, reconfigured.stderr);
+    assert.equal(printedExisting.status, 0, printedExisting.stderr);
+    const printedValue = parseJson(printedExisting.stdout);
+    assert.equal(printedValue.mode, 'choices');
+    const printedChoices = printedValue.choices as Record<string, unknown>;
+    assert.equal(printedChoices.workspaceId, workspaceId);
+    assert.deepEqual(
+      (printedChoices.knowledge as Record<string, unknown>).sources,
+      [],
+    );
+
+    const nonTty = invoke(
+      ['init', '--reconfigure', '--json'],
+      temporary,
+      environment,
+    );
+    assert.equal(nonTty.status, 1, nonTty.stderr);
+    const nonTtyValue = parseJson(nonTty.stdout);
+    assert.equal(nonTtyValue.status, 'needs_input');
+    assert.match(
+      String(nonTtyValue.nextAction),
+      /--print-choices --reconfigure/,
+    );
+
+    const reconfigured = invoke(
+      ['init', '--yes', '--reconfigure', '--apply', '--no-runtime', '--json'],
+      temporary,
+      environment,
+    );
+    assert.equal(reconfigured.status, 1, reconfigured.stderr);
     const value = parseJson(reconfigured.stdout);
     assert.equal(value.ok, true);
+    assert.equal(value.initComplete, false);
+    assert.equal(value.runtime, null);
+    assert.equal(existsSync(join(temporary, 'pappra-data')), false);
     assert.deepEqual((value.apply as Record<string, unknown>).appliedFiles, [
       '.pappra/workspace.json',
     ]);
@@ -539,10 +1440,7 @@ test('init --reconfigure replaces a stale workspace config with a backup', () =>
     >;
     assert.equal(after.workspaceId, workspaceId);
     assert.equal(after.runtimeVersion, getPackageInfo().version);
-    assert.deepEqual((after.knowledge as Record<string, unknown>).sources, [
-      'AGENTS.md',
-      'docs',
-    ]);
+    assert.deepEqual((after.knowledge as Record<string, unknown>).sources, []);
     assert.equal(
       existsSync(
         join(
@@ -559,18 +1457,68 @@ test('init --reconfigure replaces a stale workspace config with a backup', () =>
     assert.equal(backups.length >= 1, true);
 
     const repeated = invoke(
-      ['init', '--yes', '--reconfigure', '--apply', '--json'],
+      ['init', '--yes', '--reconfigure', '--apply', '--no-runtime', '--json'],
       temporary,
       environment,
     );
-    assert.equal(repeated.status, 0, repeated.stderr);
+    assert.equal(repeated.status, 1, repeated.stderr);
     const repeatedValue = parseJson(repeated.stdout);
+    assert.equal(repeatedValue.ok, true);
+    assert.equal(repeatedValue.initComplete, false);
+    assert.equal(repeatedValue.runtime, null);
+    assert.equal(existsSync(join(temporary, 'pappra-data')), false);
     assert.equal(
       (repeatedValue.apply as Record<string, unknown>).status,
-      'no-changes',
+      'external-actions-pending',
     );
   } finally {
     rmSync(temporary, { recursive: true, force: true });
     rmSync(isolated.directory, { recursive: true, force: true });
+  }
+});
+
+test('init --config inspects explicit undiscovered paths without prompting or writing', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-explicit-config-'));
+  try {
+    const workspace = join(temporary, 'workspace');
+    mkdirSync(workspace, { recursive: true });
+    const repositoryPath = 'projects/one/two/three/explicit-repo';
+    createRepository(join(workspace, repositoryPath));
+    mkdirSync(join(workspace, 'notes', 'empty'), { recursive: true });
+    const choicesPath = join(temporary, 'choices.json');
+    writeFileSync(
+      choicesPath,
+      `${JSON.stringify(
+        baseInitChoices({
+          repositories: [{ path: repositoryPath, access: 'read' }],
+          knowledge: {
+            sources: ['notes/empty'],
+            newDocuments: '.pappra/knowledge',
+            taskVisibility: 'private',
+          },
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+    const before = snapshotTree(workspace);
+
+    const result = invoke(
+      ['init', '--config', choicesPath, '--no-runtime', '--json'],
+      workspace,
+      runtimeEnv(temporary),
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const value = parseJson(result.stdout);
+    assert.equal(value.ok, true);
+    const scope = value.scope as {
+      readonly repositories: readonly { readonly path: string }[];
+      readonly knowledge: { readonly sources: readonly string[] };
+    };
+    assert.equal(scope.repositories[0]?.path, repositoryPath);
+    assert.deepEqual(scope.knowledge.sources, ['notes/empty']);
+    assert.deepEqual(snapshotTree(workspace), before);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
 });

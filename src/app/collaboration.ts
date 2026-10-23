@@ -16,11 +16,14 @@ import {
   reserveLaunch,
   settleLaunch,
   type AdmissionOptions,
+  runnerForHarness,
 } from '../collab/admission.js';
 import type { Assignment } from '../collab/contracts.js';
+import type { CancellationIntentReference, Identity } from '../collab/types.js';
 import { buildMessage, sha256File } from '../collab/envelope.js';
 import { findAttempt } from '../collab/lifecycle.js';
 import { submitMessage } from '../collab/messages.js';
+import { readMessageFromTaskRoot } from './collab-messages.js';
 import { claimResources, releaseClaim } from '../collab/resources.js';
 import { initTask, nowIso, readRecord, taskRootFor } from '../collab/store.js';
 import { observePath, resolveRealpath } from '../infra/fs.js';
@@ -99,7 +102,7 @@ export interface ControllerFinish {
 
 export interface ControllerSession {
   query(): Promise<ControllerObservation>;
-  cancel(): Promise<ControllerCancel>;
+  cancel(intent?: CancellationIntentReference): Promise<ControllerCancel>;
   finish(): Promise<ControllerFinish>;
   dispose?(): Promise<void>;
 }
@@ -920,11 +923,20 @@ export async function prepareCollaboration(
       'Domain root must be absolute.',
     );
   }
-  if (!fs.existsSync(goal.assignee.cwd)) {
+  const runnerName = runnerForHarness(goal.assignee.harness);
+  if (runnerName === null) {
+    return failure(
+      'invalid',
+      'assignee_harness_unsupported',
+      `Assignee harness ${goal.assignee.harness} has no supported runner; the supported harnesses are pi, codex and claude.`,
+    );
+  }
+  const assigneeCwd = await observePath(goal.assignee.cwd).catch(() => null);
+  if (assigneeCwd?.kind !== 'directory') {
     return failure(
       'needs_input',
       'cwd_unavailable',
-      'Assignee cwd does not exist.',
+      'Assignee cwd is not a real existing directory.',
     );
   }
   let taskRoot: string;
@@ -1077,7 +1089,7 @@ export async function prepareCollaboration(
     attempt: goal.attempt,
     objective: goal.objective,
     acceptance: goal.acceptance,
-    roles: ['implementer'],
+    roles: goal.roles,
     coordinator: {
       agent_id: goal.coordinator.agent_id,
       session_id: goal.coordinator.session_id,
@@ -1102,7 +1114,7 @@ export async function prepareCollaboration(
       resource_epoch: resourceEpochs[item.path]!,
     })),
     runner: {
-      name: 'pi-cli',
+      name: runnerName,
       mode: 'native',
       omitted_capabilities: [],
     },
@@ -1236,11 +1248,25 @@ export interface AdmissionResult {
 export async function admitPrepared(
   preparedFile: string,
   capabilitiesFile: string,
-  options: { readonly clock?: number } = {},
+  options: {
+    readonly clock?: number;
+    readonly controllerHarness?: string | null;
+  } = {},
 ): Promise<CollaborationResult<AdmissionResult>> {
   const bundle = preparedBundle(preparedFile);
   if (!bundle.ok) return bundle;
   const { prepared, goal, assignment } = bundle.value;
+  if (
+    typeof options.controllerHarness === 'string' &&
+    assignment.assignee.harness !== options.controllerHarness
+  ) {
+    return failure(
+      'invalid',
+      'controller_harness_mismatch',
+      `This controller launches ${options.controllerHarness} assignments only; the prepared assignment names ${assignment.assignee.harness}.`,
+      'Prepare the goal for the controller-supported harness or choose the matching controller.',
+    );
+  }
   const card = (() => {
     try {
       return JSON.parse(fs.readFileSync(capabilitiesFile, 'utf8')) as unknown;
@@ -1294,6 +1320,8 @@ export interface StartedRun {
   readonly reservationId: string | null;
 }
 
+/** Real controllers are bound to one harness; fixtures are not and stay explicit fixtures. */
+const CONTROLLER_HARNESS: Record<string, string> = { 'pi-rpc': 'pi' };
 export async function startPrepared(
   preparedFile: string,
   options: StartOptions,
@@ -1301,6 +1329,7 @@ export async function startPrepared(
   const clock = options.clock ?? Date.now();
   const admitted = await admitPrepared(preparedFile, options.capabilitiesFile, {
     clock,
+    controllerHarness: CONTROLLER_HARNESS[options.controller.id] ?? null,
   });
   if (!admitted.ok) return admitted;
   const { prepared, goal, assignment } = admitted.value;
@@ -1310,7 +1339,7 @@ export async function startPrepared(
   if (!captured.ok) return captured.failure;
   let token = admitted.value.token;
   let reservationId: string | null = null;
-  if (options.controllerId === 'fixture') {
+  if (options.controller.id === 'fixture') {
     const reservation = reserveLaunch(prepared.task_root, {
       expectRevision: prepared.state_revision,
       clock,
@@ -1774,8 +1803,88 @@ export async function driveRun(
           );
           continue;
         }
+        const intentContentDigest = intent.content_digest;
+        if (intentContentDigest === null) {
+          send(
+            'cancel',
+            command.request_id,
+            'cancel-intent-unverified',
+            'The registered CANCEL has no content digest; native cancellation was not called.',
+            {
+              intent: true,
+              native: {
+                called: false,
+                reason: 'cancel_intent_digest_missing',
+              },
+            },
+          );
+          continue;
+        }
+        const registered = await readMessageFromTaskRoot(
+          started.prepared.task_root,
+          intent.message_id,
+        );
+        const registeredMessage = registered.ok
+          ? registered.value.message
+          : null;
+        const entry = registered.ok ? registered.value.entry : null;
+        const sameIdentity = (
+          actual: Identity | null | undefined,
+          expected: Identity,
+        ) =>
+          actual !== null &&
+          actual !== undefined &&
+          actual.agent_id === expected.agent_id &&
+          actual.session_id === expected.session_id &&
+          (actual.harness ?? null) === (expected.harness ?? null);
+        const intentApplied =
+          registeredMessage !== null &&
+          entry !== null &&
+          intentContentDigest !== null &&
+          registeredMessage.message_id === intent.message_id &&
+          registeredMessage.type === 'CANCEL' &&
+          registeredMessage.task_id === started.prepared.task_id &&
+          registeredMessage.subtask_id === started.prepared.subtask_id &&
+          registeredMessage.attempt === started.prepared.attempt &&
+          registeredMessage.owner_epoch ===
+            started.goal.coordinator.owner_epoch &&
+          registeredMessage.content_digest === intentContentDigest &&
+          sameIdentity(registeredMessage.from, started.goal.coordinator) &&
+          sameIdentity(registeredMessage.to, started.assignment.assignee) &&
+          entry.message_id === intent.message_id &&
+          entry.type === 'CANCEL' &&
+          entry.state === 'applied' &&
+          entry.subtask_id === started.prepared.subtask_id &&
+          entry.attempt === started.prepared.attempt &&
+          entry.owner_epoch === started.goal.coordinator.owner_epoch &&
+          entry.content_digest === intentContentDigest &&
+          sameIdentity(entry.from, started.goal.coordinator) &&
+          sameIdentity(entry.to, started.assignment.assignee);
+        if (!registered.ok || !intentApplied) {
+          send(
+            'cancel',
+            command.request_id,
+            'cancel-intent-unverified',
+            'The registered CANCEL could not be verified as the applied intent for this run; native cancellation was not called.',
+            {
+              intent: true,
+              native: {
+                called: false,
+                reason: registered.ok
+                  ? 'cancel_intent_not_applied'
+                  : registered.code,
+              },
+            },
+          );
+          continue;
+        }
+        const cancellationIntent: CancellationIntentReference = {
+          messageId: intent.message_id,
+          contentDigest: intentContentDigest,
+          fileDigest: registered.value.digest,
+        };
         try {
-          const cancel = await started.session.cancel();
+          const cancel = await started.session.cancel(cancellationIntent);
           send('cancel', command.request_id, 'cancel-requested', null, {
             intent: true,
             native: cancel,
@@ -2063,7 +2172,7 @@ export class PiRpcController implements CollaborationController {
             };
           }
         },
-        cancel: async () => {
+        cancel: async (intent) => {
           const namespaceProblem = liveNamespaceProblem();
           if (namespaceProblem !== null) {
             return {
@@ -2075,7 +2184,9 @@ export class PiRpcController implements CollaborationController {
               },
             };
           }
-          const cancel = await started.session.cancel();
+          const cancel = await started.session.cancel(
+            intent === undefined ? undefined : { intent },
+          );
           const entry =
             cancel !== null && typeof cancel === 'object'
               ? (cancel as Record<string, unknown>)
@@ -2320,3 +2431,40 @@ export function inspectPreparedHistory(
     },
   };
 }
+
+// Read-only work-plan inspection is exposed alongside the collaboration app entry so an
+// installed consumer can evaluate a persisted plan without a second assignment registry.
+export {
+  COLLAB_WORK_PLAN_REPORT_SCHEMA,
+  inspectWorkPlan,
+  type WorkPlanInspectionOptions,
+  type WorkPlanReport,
+  type WorkPlanReportBlocker,
+  type WorkPlanReportDiagnostic,
+  type WorkPlanReportNode,
+  type WorkPlanReportStatus,
+} from './collab-work-plan.js';
+
+// Read-only rollover inspection is exposed alongside the collaboration app entry so an
+// installed consumer can inspect the exact record and linked bundle. There is no apply
+// path here: caller JSON is never accepted as native stop proof.
+export {
+  COLLAB_ROLLOVER_REPORT_SCHEMA,
+  COLLAB_ROLLOVER_REQUEST_SCHEMA,
+  inspectOrPlanRollover,
+  loadRolloverRequest,
+  type RolloverAction,
+  type RolloverBlocker,
+  type RolloverBundleRequest,
+  type RolloverClaimsReport,
+  type RolloverEvidenceRequest,
+  type RolloverFailure,
+  type RolloverIntentRequest,
+  type RolloverNativeReport,
+  type RolloverReport,
+  type RolloverRequest,
+  type RolloverRequestResult,
+  type RolloverResult,
+  type RolloverStepReport,
+  type RolloverStepStatus,
+} from './collab-rollover.js';

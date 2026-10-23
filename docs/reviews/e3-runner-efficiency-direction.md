@@ -1,0 +1,9 @@
+# Test-runner efficiency investigation
+
+The cumulative build/package/consumer evidence is accepted within scope; overall source policy is pending a comment-only repair assigned to the other visible Pi. Preserve the immutable stage and original failing logs. Do not describe the source-policy finding as unrelated legacy code: this module was added by the current work.
+
+Investigate the 360-second runner ceiling, 11 cancelled file entries and 139-case successful follow-up. This is a read-only investigation with temporary evidence only. Use current scripts and existing logs/build outputs; do not run another full suite, rebuild, pack, install, launch models or modify product files. Identify the exact runner cancellation mechanism, default concurrency, any nested per-file build/compiler behavior, and whether repeated compilation or contention can explain the observed critical path. Distinguish measured evidence from estimates; do not sum overlapping tests into a fake speedup or claim a timeout proves flaky product behavior.
+
+Produce the smallest proposed implementation scope and validation that would improve deterministic completion, build reuse or scheduling. Prefer bounded scheduling/shared immutable build reuse over simply raising timeouts. Account for tests needing isolated mutable fixtures and tests already sharing outputs. Do not weaken tests or alter test isolation to claim faster execution. State what additional measurements would actually discriminate explanations.
+
+The other visible Pi owns two new native-event files and a one-comment freeze-file correction; do not touch those or shared dist/.build/dependencies. One proactive pinned REPORT with actual source/log references, findings, proposed exact files and acceptance criteria. No polling, completion timer, hidden worker, native/session/pane/global/model/dependency/commit/publication action. Native rollover remains incomplete regardless of package/test outcomes.

@@ -105,6 +105,13 @@ export type MessageInput = Pick<Message, 'type' | 'task_id' | 'from' | 'to'> &
     >
   >;
 
+/** Reference to a registered/applied cancellation intent; it conveys no native ownership. */
+export interface CancellationIntentReference {
+  readonly messageId: string;
+  readonly contentDigest: string;
+  readonly fileDigest: string;
+}
+
 export interface Transition {
   from: string | null;
   to: string;
@@ -271,6 +278,85 @@ export interface NotificationEntry {
   reason: string | null;
 }
 
+/** Bounded writer-rollover records retained on the task record. */
+
+export interface RolloverClaimReference {
+  claim_id: string;
+  resource_epoch: number;
+}
+
+export interface RolloverBundleReference {
+  ref: string;
+  digest: string;
+}
+
+/** The native session identity of one writer; never inferred from another pointer. */
+export interface RolloverNativeIdentity {
+  agent_id: string | null;
+  runner: string | null;
+  session_id: string | null;
+  run_id: string | null;
+  mission_id: string | null;
+}
+
+/** Explicit captured boundary for post-transfer correlation (message application order). */
+export interface RolloverTransferBoundary {
+  message_count: number;
+  state_revision: number;
+  at: string;
+}
+
+/** Recorded quiescence evidence and the exact inventory it was recorded with. */
+export interface RolloverPreparedStep {
+  evidence_ref: string;
+  inventory: string;
+  at: string;
+}
+
+/**
+ * Immutable intent inputs for one writer rollover. `transfer_boundary` and `old_native` are
+ * completion annotations; the intent inputs themselves are never rewritten.
+ */
+export interface RolloverIntent {
+  schema: string;
+  intent_id: string;
+  generation: number;
+  task_id: string;
+  handoff_id: string;
+  subtask_id: string;
+  attempt: number;
+  input_revision: string;
+  coordinator_epoch: number;
+  from: Identity;
+  to: Identity;
+  claims: RolloverClaimReference[];
+  bundle: RolloverBundleReference;
+  created_at: string;
+  /** Confirmed source native identity pinned at intent creation. */
+  source_native: RolloverNativeIdentity;
+  prepared?: RolloverPreparedStep | null;
+  transfer_boundary?: RolloverTransferBoundary | null;
+  successor_native?: RolloverNativeIdentity | null;
+}
+
+/**
+ * Source-session history marker. It archives the old native identity, never the reassigned
+ * attempt, and never claims that active routing was removed.
+ */
+export interface SuccessionEntry {
+  schema: string;
+  intent_id: string;
+  handoff_id: string;
+  generation: number;
+  old_native: RolloverNativeIdentity;
+  successor_native: RolloverNativeIdentity;
+  archived_at: string;
+  history_retained: true;
+  routing: 'pending';
+  native_archive: 'unavailable';
+  proof: { message_id: string; digest: string };
+}
+
 export interface TaskRecord {
   [key: string]: unknown;
   schema: string;
@@ -297,6 +383,8 @@ export interface TaskRecord {
   notifications?: NotificationEntry[];
   notifications_trimmed?: number;
   launch_reservations?: LaunchReservation[];
+  rollover?: RolloverIntent[];
+  successions?: SuccessionEntry[];
 }
 
 export interface ReservationInput {

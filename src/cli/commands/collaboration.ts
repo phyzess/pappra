@@ -11,11 +11,37 @@ import {
 } from '../../app/collaboration.js';
 import type { CliOutput } from '../output.js';
 
+/** One source of truth for the full collaboration command family in help output. */
+export const collaborationCommandLine =
+  'pappra collab <prepare|run|work-run|query|preflight|plan|bootstrap|rollover|transition|message|capabilities|state|resource|handoff|recovery|recovery-run|binding> [options]';
+
 export const collaborationUsage =
-  'pappra collab <prepare|run|query> [options]\n' +
+  `${collaborationCommandLine}\n` +
   '  prepare --goal <file> --domain-root <dir> [--json]\n' +
   '  run --prepared <file> --capabilities <card> --controller <fixture|pi-rpc>\n' +
+  '  work-run --request <abs work-execution.json> [--apply] [--json]\n' +
+  '    Apply records bounded notification intents; plans write and notify nothing.\n' +
   '  query --prepared <file> [--json]\n' +
+  '  preflight --assignment <file> --capabilities <card> [--max-age-minutes <n>] [--json]\n' +
+  '  plan --task-root <dir> --config <plan.json> [--json]\n' +
+  '  rollover <inspect|plan> --task-root <dir> --request <request.json> [--json]\n' +
+  '  bootstrap <plan|apply> --task-root <abs> --request <abs request.json> [--json]\n' +
+  '    Plan is read-only; apply launches only a visible Pi sibling or verified task-bound reuse.\n' +
+  '    Unknown effects are reconciled, not retried; submission is not acceptance.\n' +
+  '    Rollover remains read-only: no apply, native stop proof, route removal or session archive.\n' +
+  '  transition <plan|apply> --task-root <abs> --request <abs request.json> [--json]\n' +
+  '    Pre-transfer apply requires the opt-in Pi host; first-work and retirement resume from CLI.\n' +
+  '    Unsupported native-quiescence proof blocks before successor launch or claim transfer.\n' +
+  '    Applied ACK and REPORT pointers are required; retirement retains the original transcript.\n' +
+  '  message <send|list|read|notify> --task-root <dir> [options]\n' +
+  '  capabilities derive --harness <pi|codex|claude> --assignment <file> --template <file> --execution <file> [--session <file> | --events <file>] [--json]\n' +
+  '  state <show|doctor|epoch-check> --task-root <dir> [options]\n' +
+  '  resource <list|claim|release> --task-root <dir> [options]\n' +
+  '  handoff <inventory|begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> --task-root <dir> [options]\n' +
+  '  recovery <inspect|reconcile|lock-break> --task-root <dir> [options]\n' +
+  '  recovery-run --request <abs recovery-run.json> [--apply] [--json]\n' +
+  '    Apply requires exact session/cwd/harness/pane and a task-local digest-pinned binding.\n' +
+  '  binding <list|resolve|bind|unbind> [--root <dir>] [options]\n' +
   '  run reads pappra/collaboration-command/1 JSONL from stdin and writes\n' +
   '  pappra/collaboration-event/1 JSONL to stdout.';
 

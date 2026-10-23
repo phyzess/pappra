@@ -28,6 +28,9 @@ export const installLockSchema = z.strictObject({
     'uninstall-workspace-files',
     'remove-runtime',
     'update-machine-runtime',
+    // Local configuration toggle guarded by the same workspace lock; it keeps a
+    // backup and an atomic replacement instead of a managed-file journal.
+    'set-auto-resume',
   ]),
   target: z.string().min(1).max(4096),
   pid: z.number().int().positive(),

@@ -9,6 +9,26 @@ entry imports `./runtime.mjs` next to it, so the package survives a moved
 checkout. Pi 1.3.0 was verified in a real session through the packaged extension
 (`pi install <dir> -l -a` + `pi -p -a`).
 
+`pappra host bundle --host pi --bootstrap-config <abs-file>` is the opt-in successor
+variant: the destination must be new, the private config binds one canonical task root
+and guard pin, and the generated entry installs a default-deny tool gate before any
+config/reader/lifecycle work. Its read-only `bootstrap-status` reports registration,
+never write permission; export does not install, trust, load or transfer.
+
+The bootstrap export relies on a trusted local parent directory with no concurrent
+namespace mutation. It exclusively claims a new destination (existing empty, populated,
+file or symlink targets are left untouched), assembles the payload in a private staging
+directory with identity checks, and on a failure before publication removes only the empty
+claim and stage it created. This is not an OS filesystem fence: portable Node has no
+anchored directory writes or no-replace directory rename, so a same-user process changing
+a path between a check and its use can redirect a write or affect publication/cleanup. The
+private binding is written last, which reduces but does not prevent that check/use race.
+
+Publication is a rename followed by a final inode check, not a transaction: a failure
+during or after publication can return an error after the output directory is visible. A
+non-zero export exit is not proof that no files exist; inspect the destination, never
+blindly delete it, and do not install or trust the output from a failed export.
+
 ## Codex
 
 Codex 0.163.0 loads command hooks only from its user configuration directory.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -149,6 +149,70 @@ test('collab CLI prepares and runs a bounded fixture flow', () => {
     assert(events.some((event) => event.kind === 'query'));
     assert(events.some((event) => event.kind === 'finished'));
     assert.equal(digest.startsWith('sha256:'), true);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('collab CLI refuses inherited runner keys before domain or task writes', () => {
+  const root = makeTempDir('p10-runner-lookup-cli');
+  try {
+    const cwd = join(root, 'workspace');
+    const domainRoot = join(root, 'domain');
+    const goalPath = join(root, 'goal.json');
+    mkdirSync(cwd, { recursive: true });
+    const unsupportedHarnesses = ['constructor', 'toString', '__proto__'];
+
+    for (const [index, harness] of unsupportedHarnesses.entries()) {
+      const goal = {
+        schema: 'pappra/collaboration-goal/1',
+        task_id: `cli-runner-${index}`,
+        subtask_id: 'work',
+        attempt: 1,
+        phase: 'implementation',
+        objective: 'Reject an unsupported runner before preparation writes.',
+        acceptance: ['no domain artifacts'],
+        prompt: 'Fixture only.',
+        coordinator: {
+          agent_id: 'coordinator',
+          session_id: 'coordinator-session',
+          harness: 'codex',
+          owner_epoch: 1,
+        },
+        assignee: {
+          agent_id: 'worker',
+          session_id: 'worker-session',
+          harness,
+          surface: 'cli',
+          cwd,
+          configuration_id: 'fixture-config',
+        },
+        resources: [{ path: cwd, access: 'read' }],
+        required: { skills: [], tools: [] },
+        preferred: { skills: [], tools: [] },
+      };
+      writeFileSync(goalPath, `${JSON.stringify(goal, null, 2)}\n`);
+      const result = spawnSync(
+        process.execPath,
+        [
+          CLI,
+          'collab',
+          'prepare',
+          '--goal',
+          goalPath,
+          '--domain-root',
+          domainRoot,
+          '--json',
+        ],
+        { cwd: root, encoding: 'utf8', timeout: 30_000 },
+      );
+      assert.equal(result.status, 1, result.stderr);
+      const payload = JSON.parse(result.stdout) as {
+        readonly code?: string;
+      };
+      assert.equal(payload.code, 'assignee_harness_unsupported', harness);
+      assert.equal(existsSync(join(domainRoot, 'tasks')), false, harness);
+    }
   } finally {
     cleanup(root);
   }

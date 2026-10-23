@@ -1,5 +1,9 @@
 import type { ChildProcess } from 'node:child_process';
-import type { Identity, MessageInput } from '../../collab/types.js';
+import type {
+  CancellationIntentReference,
+  Identity,
+  MessageInput,
+} from '../../collab/types.js';
 import { errorCode, object, parseJson } from '../../collab/validation.js';
 import { isAssignment } from '../../collab/contracts.js';
 import { isPiRecord, type PiRecord } from './protocol.js';
@@ -101,6 +105,7 @@ import {
 import { describeResource } from '../../collab/canonical.js';
 import { buildMessage, sha256File } from '../../collab/envelope.js';
 import { submitMessage } from '../../collab/messages.js';
+import { readMessageFromTaskRoot } from '../../app/collab-messages.js';
 import { findAttempt } from '../../collab/lifecycle.js';
 import { createNonce, nowIso, readRecord } from '../../collab/store.js';
 
@@ -995,6 +1000,94 @@ export async function startOwnedPiRpc(options: PiOptions) {
     }
   }
 
+  async function verifyCancellationIntent(intent: CancellationIntentReference) {
+    if (
+      intent === null ||
+      typeof intent !== 'object' ||
+      typeof intent.messageId !== 'string' ||
+      intent.messageId.trim() === '' ||
+      typeof intent.contentDigest !== 'string' ||
+      typeof intent.fileDigest !== 'string' ||
+      !/^sha256:[0-9a-f]{64}$/.test(intent.contentDigest) ||
+      !/^sha256:[0-9a-f]{64}$/.test(intent.fileDigest)
+    )
+      throw new PiRpcRefusal('cancel_intent_reference_invalid', 'needs_input');
+
+    assertNamespaceGuard(opts);
+    assertCurrentAuthority({ requireResources: false });
+    const registered = await readMessageFromTaskRoot(
+      opts.taskRoot,
+      intent.messageId,
+    );
+    if (!registered.ok)
+      throw new PiRpcRefusal(
+        'cancel_intent_not_registered',
+        'needs_input',
+        registered.code,
+      );
+    assertNamespaceGuard(opts);
+
+    const { message, entry, digest } = registered.value;
+    const record = readRecord(opts.taskRoot);
+    const attempt = record
+      ? findAttempt(record, opts.assignmentId, opts.attempt)
+      : null;
+    const coordinator = record?.coordinator ?? null;
+    const assignee = attempt?.assignee ?? null;
+    type IntentIdentity = Pick<Identity, 'agent_id' | 'session_id'> & {
+      readonly harness?: string | null;
+    };
+    const sameIdentity = (
+      left: IntentIdentity | null | undefined,
+      right: IntentIdentity | null | undefined,
+    ) =>
+      left !== null &&
+      left !== undefined &&
+      right !== null &&
+      right !== undefined &&
+      left.agent_id === right.agent_id &&
+      left.session_id === right.session_id &&
+      (left.harness ?? null) === (right.harness ?? null);
+
+    if (
+      digest !== intent.fileDigest ||
+      message.message_id !== intent.messageId ||
+      message.content_digest !== intent.contentDigest ||
+      message.type !== 'CANCEL' ||
+      message.task_id !== opts.assignment.task_id ||
+      message.subtask_id !== opts.assignmentId ||
+      message.attempt !== opts.attempt ||
+      message.owner_epoch !== opts.assignment.coordinator.owner_epoch ||
+      message.owner_epoch !== protocol.ownerEpoch ||
+      entry === null ||
+      entry.message_id !== message.message_id ||
+      entry.type !== 'CANCEL' ||
+      entry.state !== 'applied' ||
+      entry.subtask_id !== message.subtask_id ||
+      entry.attempt !== message.attempt ||
+      entry.owner_epoch !== message.owner_epoch ||
+      entry.content_digest !== intent.contentDigest ||
+      !sameIdentity(entry.from, message.from) ||
+      !sameIdentity(entry.to, message.to) ||
+      record === null ||
+      record.task_id !== message.task_id ||
+      coordinator === null ||
+      coordinator.owner_epoch !== message.owner_epoch ||
+      !sameIdentity(coordinator, message.from) ||
+      !sameIdentity(coordinator, protocol.coordinator) ||
+      !sameIdentity(coordinator, opts.assignment.coordinator) ||
+      assignee === null ||
+      !sameIdentity(assignee, message.to) ||
+      !sameIdentity(assignee, opts.assignment.assignee) ||
+      !sameIdentity(assignee, protocol.assignee)
+    )
+      throw new PiRpcRefusal('cancel_intent_mismatch', 'needs_input');
+
+    assertNamespaceGuard(opts);
+    assertCurrentAuthority({ requireResources: false });
+    return { message, fileDigest: digest };
+  }
+
   /**
    * Read `get_state` and bind the exact native session file. The id alone is not enough: the
    * reported file must exist, its header must carry the contracted id and cwd, and once bound it
@@ -1231,11 +1324,29 @@ export async function startOwnedPiRpc(options: PiOptions) {
      * Explicit cancellation of this owned runtime. It never sends a prompt, never sends
      * CANCELLED and never releases claims: a caller must reconcile the stop externally.
      */
-    async cancel({ reason = 'bounded RPC cancellation request' } = {}) {
+    async cancel(
+      options: {
+        readonly reason?: string;
+        readonly intent?: CancellationIntentReference;
+      } = {},
+    ) {
+      const intent = options.intent;
       try {
         assertNamespaceGuard(opts);
-        assertCurrentAuthority({ requireResources: false });
+        let verifiedIntent =
+          intent === undefined ? null : await verifyCancellationIntent(intent);
+        const reason =
+          verifiedIntent &&
+          typeof verifiedIntent.message.body.reason === 'string'
+            ? verifiedIntent.message.body.reason
+            : (options.reason ?? 'bounded RPC cancellation request');
+        if (verifiedIntent === null)
+          assertCurrentAuthority({ requireResources: false });
         const before = await assertIdentity({ requireBinding: true });
+        if (intent !== undefined)
+          verifiedIntent = await verifyCancellationIntent(intent);
+        assertNamespaceGuard(opts);
+        assertCurrentAuthority({ requireResources: false });
         const ordinalBeforeAbort = rpc.recordCount();
         const entry: Record<string, unknown> = {
           at: nowIso(),
@@ -1246,16 +1357,26 @@ export async function startOwnedPiRpc(options: PiOptions) {
           stop_scope:
             'owned RPC child only; a native abort response is not proof that arbitrary descendants stopped',
         };
-        // Recorded immediately, so partial cancellation evidence survives a later failure.
+        // Record cancellation evidence before queue clearing or abort so partial failure remains inspectable.
         proof.cancel = entry;
-        const cancel = protocolMessage({
-          type: 'CANCEL',
-          from: protocol.coordinator,
-          to: protocol.assignee,
-          owner_epoch: protocol.ownerEpoch,
-          body: { reason },
-        });
-        entry.cancel_message_id = cancel.message_id;
+        if (verifiedIntent === null) {
+          const cancel = protocolMessage({
+            type: 'CANCEL',
+            from: protocol.coordinator,
+            to: protocol.assignee,
+            owner_epoch: protocol.ownerEpoch,
+            body: { reason },
+          });
+          entry.cancel_message_id = cancel.message_id;
+        } else {
+          entry.cancel_message_id = verifiedIntent.message.message_id;
+          entry.cancel_intent = {
+            content_digest: verifiedIntent.message.content_digest,
+            file_digest: verifiedIntent.fileDigest,
+          };
+        }
+        assertNamespaceGuard(opts);
+        assertCurrentAuthority({ requireResources: false });
         const clear = await request('clear_queue');
         entry.clear_queue = {
           id: clear.id,

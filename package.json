@@ -27,6 +27,42 @@
       "types": "./dist/collab/admission.d.ts",
       "import": "./dist/collab/admission.js"
     },
+    "./collab/work-plan": {
+      "types": "./dist/collab/work-plan.d.ts",
+      "import": "./dist/collab/work-plan.js"
+    },
+    "./collab/work-plan-inspection": {
+      "types": "./dist/app/collab-work-plan.d.ts",
+      "import": "./dist/app/collab-work-plan.js"
+    },
+    "./collab/work-execution": {
+      "types": "./dist/app/collab-work-execution.d.ts",
+      "import": "./dist/app/collab-work-execution.js"
+    },
+    "./collab/recovery": {
+      "types": "./dist/app/collab-recovery.d.ts",
+      "import": "./dist/app/collab-recovery.js"
+    },
+    "./collab/recovery-projection": {
+      "types": "./dist/app/collab-recovery-projection.d.ts",
+      "import": "./dist/app/collab-recovery-projection.js"
+    },
+    "./collab/recovery-executor": {
+      "types": "./dist/app/collab-recovery-executor.d.ts",
+      "import": "./dist/app/collab-recovery-executor.js"
+    },
+    "./collab/session-transition": {
+      "types": "./dist/app/collab-session-transition.d.ts",
+      "import": "./dist/app/collab-session-transition.js"
+    },
+    "./hosts/pi-recovery": {
+      "types": "./dist/hosts/integration/pi-recovery-extension.d.ts",
+      "import": "./dist/hosts/integration/pi-recovery-extension.js"
+    },
+    "./hosts/pi-session-transition": {
+      "types": "./dist/hosts/integration/pi-session-transition-extension.d.ts",
+      "import": "./dist/hosts/integration/pi-session-transition-extension.js"
+    },
     "./hosts": {
       "types": "./dist/hosts/index.d.ts",
       "import": "./dist/hosts/index.js"

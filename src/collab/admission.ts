@@ -73,11 +73,22 @@ export const TOOL_PROFILES = {
 };
 
 /** The runner an assignment must name for a given harness; the launcher will not substitute one. */
-const RUNNER_FOR_HARNESS: Record<string, string> = {
+const RUNNER_FOR_HARNESS: Readonly<Record<string, string>> = Object.freeze({
   pi: 'pi-cli',
   codex: 'codex-exec',
   claude: 'claude-cli',
-};
+});
+
+/** Returns a runner only for an own supported harness key with a string value. */
+export function runnerForHarness(harness: unknown): string | null {
+  if (
+    typeof harness !== 'string' ||
+    !Object.hasOwn(RUNNER_FOR_HARNESS, harness)
+  )
+    return null;
+  const runner = RUNNER_FOR_HARNESS[harness];
+  return typeof runner === 'string' && runner.length > 0 ? runner : null;
+}
 
 /** Whether the assignment can name the native session before the process starts. Pi and Claude
  *  accept an explicit session id; `codex exec` chooses the thread id itself. */
@@ -136,13 +147,17 @@ export function admitLaunch({
       actual: harness,
     };
   }
-  const expectedRunner =
-    RUNNER_FOR_HARNESS[harness ?? assignment.assignee.harness];
-  if (
-    assignment.runner?.name &&
-    expectedRunner &&
-    assignment.runner.name !== expectedRunner
-  ) {
+  const requestedHarness = harness ?? assignment.assignee.harness;
+  const expectedRunner = runnerForHarness(requestedHarness);
+  if (expectedRunner === null) {
+    return {
+      ok: false as const,
+      reason: 'unsupported_harness',
+      checks,
+      actual: requestedHarness,
+    };
+  }
+  if (assignment.runner.name !== expectedRunner) {
     return {
       ok: false as const,
       reason: 'runner_contract_mismatch',

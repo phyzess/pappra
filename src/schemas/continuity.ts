@@ -6,11 +6,26 @@ export const CHECKPOINT_POINTER_SCHEMA = 'pappra/checkpoint-pointer/1';
 export const RESUME_PACKET_SCHEMA = 'pappra/resume-packet/1';
 
 const digestSchema = z.string().regex(/^sha256:[0-9a-f]{64}$/);
-const taskIdSchema = z
+/**
+ * One task identifier rule for pin records, continuity paths and schemas:
+ * up to 64 characters from letters, digits, dot, dash and underscore, starting
+ * with a letter or digit. Invalid identifiers are rejected before any write.
+ */
+export const TASK_ID_MAX_LENGTH = 64;
+const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+export const taskIdSchema = z
   .string()
   .min(1)
-  .max(64)
-  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+  .max(TASK_ID_MAX_LENGTH)
+  .regex(
+    TASK_ID_PATTERN,
+    'Use a letter or digit followed by letters, digits, dot, underscore or dash.',
+  );
+
+export function isValidTaskId(value: string): boolean {
+  return value.length <= TASK_ID_MAX_LENGTH && TASK_ID_PATTERN.test(value);
+}
 const digestOrNull = digestSchema.nullable();
 const optionalString = z.string().max(4096).nullable();
 

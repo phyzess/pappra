@@ -1,6 +1,6 @@
 ---
 name: pappra
-description: Use Pappra workspace knowledge, checkpoint/resume, and selected-repository code intelligence from any supported coding agent. Use when a task needs durable handoff context, workspace documents, or bounded code navigation.
+description: Use Pappra workspace knowledge, checkpoint/resume, selected-repository code intelligence, and task-scoped cross-harness collaboration from any supported coding agent. Use when a task needs durable handoff context, workspace documents, bounded code navigation, or a visible/direct multi-agent collaboration workflow.
 ---
 
 # Pappra
@@ -20,14 +20,27 @@ index, or new writer.
    the workspace selected by the current root. Never infer a workspace from an
    unrelated session. `pappra docs scan --apply` registers discovered documents;
    `pappra runtime install --apply` keeps a durable copy of this package.
-5. For a new bounded collaboration request, build an explicit
-   `pappra/collaboration-goal/1` from the user's objective and named choices,
-   run `pappra collab prepare --goal <file> --domain-root <dir>`, admit against a fresh capability
-   card, then use `pappra collab run` with the reviewed controller. `--controller
-pi-rpc` launches a real owned Pi session and is verified for Pi 1.3.0. Never
-   turn prose into identity, approval, or capability claims.
+5. For task-scoped collaboration, read `references/environment.md` first to
+   choose direct versus visible Herdr operation, bootstrap or reuse the
+   receiving instance, and bind its routing identity. Then read
+   `references/collaboration.md` and build the shared strict
+   `pappra/collaboration-goal/1` from explicit choices. The installed CLI accepts
+   `pappra collab prepare --goal <file> --domain-root <dir>`; it has no preview
+   mode, so it mutates task state, claims resources and registers the initial
+   ASSIGN once authorized. MCP `collab_prepare` accepts `{ domainRoot, goal }`
+   and rejects the retired flat objective form. Neither prepares a capability
+   card; derive and preflight actual runtime evidence separately, and notify the
+   already-registered ASSIGN rather than sending a duplicate. Visible peers are
+   the default collaboration channel; the owned Pi `pi-rpc` run remains a
+   separate explicit option, and fixtures are explicit only. Never turn prose
+   into identity, approval, or capability claims.
 
 ## One-request collaboration
+
+Visible collaboration uses `references/environment.md` plus the persisted
+message/notify loop in `references/collaboration.md`. The owned `collab run`
+flow described here is the separate Pi RPC option, not a substitute for a
+visible participant.
 
 `pappra collab prepare --goal <file> --domain-root <dir>` requires an explicit
 shared domain. It validates the canonical domain/tasks/task/private namespace
@@ -60,6 +73,14 @@ content instead of overwriting it. A clean transport exit is not task success.
 No approval is auto-answered, no cancel is inferred from an acknowledgement, and no new thread or
 arbitrary PID is adopted. Do not launch a model or real user session without
 the task's explicit authorization.
+
+## Recovery and parallel work
+
+Use `pappra collab work-run --request <abs-request.json>` for a read-only plan and add `--apply` only when the existing assignments, current capability cards, coordinator authority, resource claims and visible participant binding are ready. Work-run notifies only registered participants; it does not create sessions, merge, accept reports, or replay ambiguous delivery.
+
+Use `pappra collab recovery-run --request <abs-request.json>` to inspect one guarded recovery action; add `--apply` only with exact current session/cwd/harness/pane and a digest-pinned task-local binding. Recovery is a bounded single wake, not generic outage recovery: there is no reconnect trigger, hidden worker, approval automation, or replay after an unknown effect.
+
+For an explicitly selected Pi package, `pappra host bundle --host pi --out <new-private-dir> --recovery-config <abs-private-config.json>` exports the recovery extension and its private sibling config. Add `--transition-extension` to export the separate `/collab-transition` command extension. Exports do not install, trust, enable, load, launch, or transfer anything; review and install packages explicitly. Native quiescence and interactive Pi session takeover remain unsupported, and task retirement is not native session archive.
 
 ## Boundaries
 

@@ -195,6 +195,67 @@ const snapshot: Predicate = (value) =>
     released_at: optional(nullable(string)),
     missing: optional((item) => typeof item === 'boolean'),
   });
+const nativeIdentity: Predicate = (value) =>
+  shape(value, {
+    agent_id: nullable(string),
+    runner: nullable(string),
+    session_id: nullable(string),
+    run_id: nullable(string),
+    mission_id: nullable(string),
+  });
+const rolloverClaimReference: Predicate = (value) =>
+  shape(value, { claim_id: string, resource_epoch: number });
+const rolloverBundleReference: Predicate = (value) =>
+  shape(value, { ref: string, digest: string });
+const rolloverBoundary: Predicate = (value) =>
+  shape(value, { message_count: number, state_revision: number, at: string });
+const rolloverIntent: Predicate = (value) =>
+  shape(value, {
+    schema: string,
+    intent_id: string,
+    generation: number,
+    task_id: string,
+    handoff_id: string,
+    subtask_id: string,
+    attempt: number,
+    input_revision: string,
+    coordinator_epoch: number,
+    from: identity,
+    to: identity,
+    claims: array(rolloverClaimReference),
+    bundle: rolloverBundleReference,
+    created_at: string,
+    source_native: nativeIdentity,
+    prepared: optional(
+      nullable((item) =>
+        shape(item, {
+          evidence_ref: string,
+          inventory: string,
+          at: string,
+        }),
+      ),
+    ),
+    transfer_boundary: optional(nullable(rolloverBoundary)),
+    successor_native: optional(nullable(nativeIdentity)),
+  });
+const successionEntry: Predicate = (value) =>
+  shape(value, {
+    schema: string,
+    intent_id: string,
+    handoff_id: string,
+    generation: number,
+    old_native: nativeIdentity,
+    successor_native: nativeIdentity,
+    archived_at: string,
+    history_retained: (item) => item === true,
+    routing: string,
+    native_archive: string,
+    proof: (item) =>
+      shape(item, {
+        message_id: string,
+        digest: string,
+      }),
+  });
 const handoff: Predicate = (value) =>
   shape(value, {
     schema: string,
@@ -297,6 +358,8 @@ export function isTaskRecord(value: unknown): value is TaskRecord {
     notifications: optional(array(notificationEntry)),
     notifications_trimmed: optional(number),
     launch_reservations: optional(array(reservation)),
+    rollover: optional(array(rolloverIntent)),
+    successions: optional(array(successionEntry)),
   });
 }
 

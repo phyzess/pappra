@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path';
 import type { Outcome } from '../schemas/outcome.js';
 import { errorMessage, failed, succeeded } from '../schemas/outcome.js';
 import { diagnosticCodes } from '../schemas/errors.js';
+import { isValidTaskId } from '../schemas/continuity.js';
 import {
   isPathInside,
   resolvePortableRelativePath,
@@ -18,7 +19,7 @@ import {
 } from '../infra/fs.js';
 import { resolveWorkspaceRoot } from '../workspace/resolve.js';
 
-const TASK_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/* The shared task identifier rule lives in schemas/continuity.ts. */
 
 /**
  * Shared bound for private recovery payloads. Capture, durable writes and
@@ -45,7 +46,7 @@ export function continuityTaskPaths(
   root: string,
   taskId: string,
 ): ContinuityTaskPaths {
-  if (!TASK_ID.test(taskId) || taskId.length > 64) {
+  if (!isValidTaskId(taskId)) {
     throw new RangeError(`Invalid task id: ${taskId}`);
   }
   const taskDir = join(root, '.pappra', 'local', 'tasks', taskId);

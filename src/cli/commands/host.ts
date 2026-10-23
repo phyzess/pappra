@@ -1,8 +1,13 @@
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import type { HostName } from '../../schemas/host.js';
 import { HostIntegrationService } from '../../hosts/integration/service.js';
-import { exportHostPluginBundle } from '../../hosts/integration/bundle-export.js';
+import {
+  exportHostPluginBundle,
+  type BootstrapBundleInput,
+} from '../../hosts/integration/bundle-export.js';
+import { readPiBootstrapConfig } from '../../hosts/integration/bootstrap-config.js';
+import { readPiRecoveryConfig } from '../../hosts/integration/pi-recovery-extension.js';
 import {
   applyHostMcp,
   planHostMcp,
@@ -13,16 +18,21 @@ import {
   HOST_SUPPORT,
   isSupportedVersion,
 } from '../../hosts/integration/support.js';
-import { getPackageInfo } from '../../package-info.js';
+import { getPackageInfo, getPackageRoot } from '../../package-info.js';
 import type { CliOutput } from '../output.js';
 
 export const hostUsage =
   'pappra host <detect|describe|plan|install|verify|bundle|mcp> --host <pi|codex|claude>\n' +
   '  [--host-root <dir>] [--host-version <version>] [--out <dir>]\n' +
   '  [--mode project-settings|plugin] [--apply] [--json]\n' +
+  '  bundle --host pi --out <new-private-dir> [--bootstrap-config <abs-file> |\n' +
+  '    --recovery-config <abs-file>] [--transition-extension]\n' +
   '\n' +
   'bundle exports a host-native plugin/package directory and never registers it or\n' +
-  'claims host callability.';
+  'claims host callability. Recovery and transition extensions are opt-in Pi bundle\n' +
+  'artifacts; --recovery-config must pin an exact task-local session and binding.\n' +
+  'Exports do not install, trust, load, launch or transfer; native quiescence and\n' +
+  'interactive session takeover remain unsupported.';
 
 export interface HostCommandOptions {
   readonly cwd: string;
@@ -45,6 +55,12 @@ export interface HostCommandOptions {
   readonly subAction: string | null;
   readonly out: string | null;
   readonly mode: 'project-settings' | 'plugin' | null;
+  /** Explicit private bootstrap binding; Pi bundle exports only. */
+  readonly bootstrapConfig: string | null;
+  /** Explicit validated task/session binding; recovery exports are Pi-only. */
+  readonly recoveryConfig: string | null;
+  /** Opt-in Pi session-transition command extension; it is not native takeover. */
+  readonly transitionExtension: boolean;
   readonly marketplace: boolean;
   readonly scope: 'project' | 'user' | null;
 }
@@ -278,11 +294,110 @@ export async function runHostCommand(
       output.stderr('pappra host bundle requires --out <dir>.\n');
       return 2;
     }
+    if (options.bootstrapConfig !== null) {
+      if (options.host !== 'pi') {
+        output.stderr(
+          'pappra host bundle: --bootstrap-config requires --host pi.\n',
+        );
+        return 2;
+      }
+      if (!isAbsolute(options.bootstrapConfig)) {
+        output.stderr(
+          'pappra host bundle: --bootstrap-config must be an absolute path.\n',
+        );
+        return 2;
+      }
+      if (options.marketplace || options.mode !== null || options.apply) {
+        output.stderr(
+          'pappra host bundle: --bootstrap-config cannot be combined with --marketplace, --mode or --apply.\n',
+        );
+        return 2;
+      }
+    }
     if (!isSupportedVersion(options.host, options.hostVersion)) {
       output.stderr(
         `Host ${options.host} version ${options.hostVersion ?? '(unknown)'} is outside the pinned ${HOST_SUPPORT[options.host].version} support matrix.\n`,
       );
       return 1;
+    }
+    let bootstrap: BootstrapBundleInput | undefined;
+    if (options.bootstrapConfig !== null) {
+      const loaded = readPiBootstrapConfig(options.bootstrapConfig);
+      if (loaded.ok === false) {
+        if (options.json) {
+          output.stdout(
+            `${JSON.stringify({
+              ok: false,
+              command: 'host',
+              action: 'bundle',
+              code: loaded.code,
+              message: loaded.message,
+            })}\n`,
+          );
+        } else {
+          output.stderr(`pappra host bundle: ${loaded.message}\n`);
+        }
+        return 1;
+      }
+      bootstrap = {
+        config: loaded.config,
+        configBytes: loaded.bytes,
+        configDigest: loaded.digest,
+        artifactPath: join(
+          getPackageRoot(),
+          'dist/hosts/integration/pappra-bootstrap-extension.mjs',
+        ),
+      };
+    }
+    let recovery:
+      | { readonly configFile: string; readonly artifactPath: string }
+      | undefined;
+    if (options.recoveryConfig !== null) {
+      if (options.host !== 'pi') {
+        output.stderr(
+          'pappra host bundle: --recovery-config requires --host pi.\n',
+        );
+        return 2;
+      }
+      if (
+        !isAbsolute(options.recoveryConfig) ||
+        options.bootstrapConfig !== null ||
+        options.marketplace ||
+        options.mode !== null ||
+        options.apply
+      ) {
+        output.stderr(
+          'pappra host bundle: --recovery-config requires an absolute path and cannot be combined with --bootstrap-config, --marketplace, --mode or --apply.\n',
+        );
+        return 2;
+      }
+      const loaded = readPiRecoveryConfig(options.recoveryConfig);
+      if (loaded.ok === false) {
+        output.stderr(
+          `pappra host bundle: recovery config validation failed (${loaded.code}).\n`,
+        );
+        return 1;
+      }
+      recovery = {
+        configFile: options.recoveryConfig,
+        artifactPath: join(
+          getPackageRoot(),
+          'dist/hosts/integration/pappra-recovery-extension.mjs',
+        ),
+      };
+    }
+    if (
+      options.transitionExtension &&
+      (options.host !== 'pi' ||
+        options.bootstrapConfig !== null ||
+        options.marketplace ||
+        options.mode !== null ||
+        options.apply)
+    ) {
+      output.stderr(
+        'pappra host bundle: --transition-extension requires a plain Pi bundle and cannot be combined with --bootstrap-config, --marketplace, --mode or --apply.\n',
+      );
+      return 2;
     }
     try {
       const exported = await exportHostPluginBundle({
@@ -291,6 +406,18 @@ export async function runHostCommand(
         outDir: options.out,
         packageVersion: getPackageInfo().version,
         marketplace: options.marketplace,
+        ...(bootstrap === undefined ? {} : { bootstrap }),
+        ...(recovery === undefined ? {} : { recovery }),
+        ...(options.transitionExtension
+          ? {
+              transition: {
+                artifactPath: join(
+                  getPackageRoot(),
+                  'dist/hosts/integration/pappra-session-transition-extension.mjs',
+                ),
+              },
+            }
+          : {}),
       });
       if (options.json) {
         output.stdout(

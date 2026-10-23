@@ -16,6 +16,7 @@ import {
   KnowledgeService,
   type RegisterDocumentInput,
 } from '../../src/knowledge/index.js';
+import { scanDiscoveredDocuments } from '../../src/knowledge/scan.js';
 import { diagnosticCodes } from '../../src/schemas/errors.js';
 import { sha256Digest } from '../../src/infra/fs.js';
 import {
@@ -1230,6 +1231,276 @@ test('cleans an ordinary partial exclusive write and reports no residual', async
       existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
       false,
     );
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('scan reports missing sources and keeps private registrations discoverable', async () => {
+  const root = makeWorkspace(
+    {
+      knowledge: {
+        sources: ['docs', 'missing'],
+        newDocuments: 'knowledge',
+        taskVisibility: 'private',
+      },
+    },
+    'private',
+  );
+  try {
+    writeText(join(root, 'docs', 'a.md'), '# A\n');
+    const before = snapshotTree(root);
+    const plan = await scanDiscoveredDocuments(root, { apply: false });
+    if ('message' in plan) assert.fail(plan.message);
+    assert.equal(plan.ok, false);
+    assert.equal(plan.candidates.length, 1);
+    assert.equal(plan.candidates[0]?.visibility, 'private');
+    assert.equal(
+      plan.diagnostics.some(
+        (entry) => entry.code === diagnosticCodes.knowledgeSourceMissing,
+      ),
+      true,
+    );
+    assert.equal(
+      plan.nextActions.some((action) =>
+        action.includes('pappra docs list --include-private'),
+      ),
+      true,
+    );
+    assert.deepEqual(snapshotTree(root), before);
+
+    const applied = await scanDiscoveredDocuments(root, { apply: true });
+    if ('message' in applied) assert.fail(applied.message);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.registered.length, 1);
+    assert.equal(applied.skipped, 0);
+    assert.equal(
+      applied.diagnostics.some(
+        (entry) => entry.code === diagnosticCodes.knowledgeSourceMissing,
+      ),
+      true,
+    );
+    assert.equal(
+      applied.nextActions.some((action) =>
+        action.includes('pappra docs list --include-private'),
+      ),
+      true,
+    );
+
+    const service = new KnowledgeService(root);
+    const hidden = await service.list();
+    assert.equal(hidden.records.length, 0);
+    const visible = await service.list({ includePrivate: true });
+    assert.equal(visible.records.length, 1);
+    const documentId = visible.records[0]?.documentId;
+
+    const repeated = await scanDiscoveredDocuments(root, { apply: true });
+    if ('message' in repeated) assert.fail(repeated.message);
+    assert.equal(repeated.ok, false);
+    assert.equal(repeated.registered.length, 0);
+    assert.equal(repeated.candidates.length, 0);
+    assert.equal(
+      (await service.list({ includePrivate: true })).records[0]?.documentId,
+      documentId,
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('scan reports truncated discovery as incomplete coverage', async () => {
+  const root = makeWorkspace(
+    {
+      knowledge: {
+        sources: ['docs'],
+        newDocuments: 'knowledge',
+        taskVisibility: 'private',
+      },
+    },
+    'private',
+  );
+  try {
+    for (let index = 0; index < 205; index += 1) {
+      writeText(join(root, 'docs', `doc-${index}.md`), `# Doc ${index}\n`);
+    }
+    const plan = await scanDiscoveredDocuments(root, { apply: false });
+    if ('message' in plan) assert.fail(plan.message);
+    assert.equal(plan.ok, false);
+    assert.equal(plan.candidates.length > 0, true);
+    assert.equal(
+      plan.diagnostics.some(
+        (entry) => entry.code === diagnosticCodes.discoveryLimitReached,
+      ),
+      true,
+    );
+    assert.equal(
+      plan.diagnostics.some((entry) =>
+        entry.message.includes('truncated; scan coverage is incomplete'),
+      ),
+      true,
+    );
+    assert.equal(
+      plan.nextActions.some((action) =>
+        action.includes('rerun the scan for complete coverage'),
+      ),
+      true,
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('scan refuses an invalid catalog without replacing it or registering', async () => {
+  const root = makeWorkspace(
+    {
+      knowledge: {
+        sources: ['docs'],
+        newDocuments: 'knowledge',
+        taskVisibility: 'private',
+      },
+    },
+    'private',
+  );
+  try {
+    writeText(join(root, 'docs', 'a.md'), '# A\n');
+    const catalogDir = join(root, '.pappra', 'local', 'knowledge');
+    mkdirSync(catalogDir, { recursive: true });
+    const catalogPath = join(catalogDir, 'catalog.json');
+    writeFileSync(catalogPath, '{not-json\n');
+    const before = readFileSync(catalogPath);
+    const plan = await scanDiscoveredDocuments(root, { apply: false });
+    if ('message' in plan) assert.fail(plan.message);
+    assert.equal(plan.ok, false);
+    assert.equal(plan.candidates.length, 0);
+    assert.equal(plan.registered.length, 0);
+    assert.equal(
+      plan.diagnostics.some((entry) => entry.severity === 'error'),
+      true,
+    );
+    assert.deepEqual(readFileSync(catalogPath), before);
+
+    const applied = await scanDiscoveredDocuments(root, { apply: true });
+    if ('message' in applied) assert.fail(applied.message);
+    assert.equal(applied.ok, false);
+    assert.equal(applied.candidates.length, 0);
+    assert.equal(applied.registered.length, 0);
+    assert.deepEqual(readFileSync(catalogPath), before);
+    assert.equal(
+      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      false,
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('scan deduplicates archived locations without changing records or catalog', async () => {
+  const root = makeWorkspace(
+    {
+      knowledge: {
+        sources: ['docs'],
+        newDocuments: 'knowledge',
+        taskVisibility: 'private',
+      },
+    },
+    'private',
+  );
+  try {
+    writeText(join(root, 'docs', 'private-archived.md'), '# Private\n');
+    writeText(join(root, 'docs', 'shared-archived.md'), '# Shared\n');
+    const service = new KnowledgeService(root);
+    const privateRecord = await service.register({
+      location: { kind: 'workspace', path: 'docs/private-archived.md' },
+      kind: 'decision',
+      maturity: 'reviewed',
+      owner: 'agent',
+      visibility: 'private',
+    });
+    const sharedRecord = await service.register({
+      location: { kind: 'workspace', path: 'docs/shared-archived.md' },
+      kind: 'research',
+      maturity: 'draft',
+      owner: 'human',
+      visibility: 'shareable',
+    });
+    const privateId = privateRecord.record!.documentId;
+    const sharedId = sharedRecord.record!.documentId;
+    const archivedPrivate = await service.archive(privateId);
+    const archivedShared = await service.archive(sharedId);
+    assert.equal(
+      archivedPrivate.ok,
+      true,
+      archivedPrivate.diagnostics[0]?.message,
+    );
+    assert.equal(
+      archivedShared.ok,
+      true,
+      archivedShared.diagnostics[0]?.message,
+    );
+    const catalogPath = join(
+      root,
+      '.pappra',
+      'local',
+      'knowledge',
+      'catalog.json',
+    );
+    const catalogBytes = readFileSync(catalogPath);
+
+    const plan = await scanDiscoveredDocuments(root, { apply: false });
+    if ('message' in plan) assert.fail(plan.message);
+    assert.equal(plan.ok, true);
+    assert.equal(plan.candidates.length, 0);
+    assert.equal(plan.registered.length, 0);
+    assert.equal(
+      plan.diagnostics.some(
+        (entry) => entry.code === diagnosticCodes.document_already_registered,
+      ),
+      false,
+    );
+    assert.deepEqual(readFileSync(catalogPath), catalogBytes);
+
+    const applied = await scanDiscoveredDocuments(root, { apply: true });
+    if ('message' in applied) assert.fail(applied.message);
+    assert.equal(applied.ok, true);
+    assert.equal(applied.candidates.length, 0);
+    assert.equal(applied.registered.length, 0);
+    assert.deepEqual(readFileSync(catalogPath), catalogBytes);
+
+    const archivedList = await service.list({
+      includePrivate: true,
+      includeArchived: true,
+    });
+    const preservedPrivate = archivedList.records.find(
+      (record) => record.documentId === privateId,
+    );
+    const preservedShared = archivedList.records.find(
+      (record) => record.documentId === sharedId,
+    );
+    assert.equal(preservedPrivate?.lifecycle, 'archived');
+    assert.equal(preservedPrivate?.maturity, 'reviewed');
+    assert.equal(preservedPrivate?.kind, 'decision');
+    assert.equal(preservedPrivate?.owner, 'agent');
+    assert.equal(preservedShared?.lifecycle, 'archived');
+    assert.equal(preservedShared?.maturity, 'draft');
+    assert.equal(preservedShared?.kind, 'research');
+    assert.equal(preservedShared?.owner, 'human');
+
+    writeText(
+      join(root, 'docs', 'private-archived.md'),
+      '# Changed archived content\n',
+    );
+    const changed = await scanDiscoveredDocuments(root, { apply: true });
+    if ('message' in changed) assert.fail(changed.message);
+    assert.equal(changed.ok, true);
+    assert.equal(changed.candidates.length, 0);
+    assert.equal(changed.registered.length, 0);
+    assert.equal(
+      changed.diagnostics.some(
+        (entry) => entry.code === diagnosticCodes.document_already_registered,
+      ),
+      false,
+    );
+    assert.deepEqual(readFileSync(catalogPath), catalogBytes);
   } finally {
     cleanup(root);
   }

@@ -15,14 +15,15 @@ import { getPackageInfo } from '../package-info.js';
 import { scanDiscoveredDocuments } from '../knowledge/scan.js';
 import { installRuntime } from '../install/runtime.js';
 import { bindAndRecordRuntime, ensureDefaultRuntime } from '../app/init.js';
-import { prepareFromObjective } from '../app/collab-from.js';
 import {
   FixtureController,
   PiRpcController,
   finishStarted,
+  prepareCollaboration,
   startPrepared,
   submitResultReport,
 } from '../app/collaboration.js';
+import { collaborationGoalSchema } from '../schemas/collaboration.js';
 
 export const MCP_SERVER_NAME = 'pappra';
 
@@ -508,52 +509,37 @@ export function createPappraMcpServer(
     {
       title: 'Prepare a bounded collaboration',
       description:
-        'Builds a collaboration goal and a declared capability card from an objective and explicit resources, then claims them. A declared card cannot authorize a work launch.',
-      inputSchema: {
+        'Prepares a bounded collaboration from an explicit shared pappra/collaboration-goal/1 document plus a shared domain root, then claims its resources. Identities, configuration, cwd, roles and capabilities are never inferred. No capability card is generated: derive and preflight actual runtime evidence separately before collab_start. The legacy flat objective form is unsupported.',
+      inputSchema: z.strictObject({
         domainRoot: z.string().min(1).max(4096),
-        objective: z.string().min(1).max(4000),
-        task: z.string().min(1).max(128),
-        acceptance: z.array(z.string().min(1).max(1000)).min(1).max(32),
-        resources: z
-          .array(
-            z.object({
-              path: z.string().min(1).max(4096),
-              access: z.enum(['read', 'write']),
-            }),
-          )
-          .min(1)
-          .max(32),
-        coordinatorSession: z.string().min(1).max(256),
-        assigneeSession: z.string().min(1).max(256),
-        harness: z.enum(['pi', 'codex', 'claude']).optional(),
-        subtaskId: z.string().min(1).max(128).optional(),
-        attempt: z.number().int().min(1).max(1000).optional(),
-        phase: z
-          .enum(['discovery', 'implementation', 'review', 'handoff', 'fix'])
-          .optional(),
-        prompt: z.string().min(1).max(20000).optional(),
-      },
+        goal: collaborationGoalSchema,
+      }),
       annotations: { readOnlyHint: false },
     },
     async (args) =>
       errorResult(async () => {
-        const result = await prepareFromObjective({
+        const result = await prepareCollaboration(args.goal, {
           domainRoot: args.domainRoot,
-          objective: args.objective,
-          taskId: args.task,
-          acceptance: args.acceptance,
-          resources: args.resources,
-          coordinatorSession: args.coordinatorSession,
-          assigneeSession: args.assigneeSession,
-          ...(args.harness === undefined ? {} : { harness: args.harness }),
-          ...(args.subtaskId === undefined
-            ? {}
-            : { subtaskId: args.subtaskId }),
-          ...(args.attempt === undefined ? {} : { attempt: args.attempt }),
-          ...(args.phase === undefined ? {} : { phase: args.phase }),
-          ...(args.prompt === undefined ? {} : { prompt: args.prompt }),
         });
-        return result as unknown as ToolPayload;
+        if (!result.ok) {
+          return {
+            ok: false,
+            status: result.status,
+            code: result.code,
+            message: result.message,
+            nextAction: result.nextAction,
+            diagnostics: result.diagnostics,
+          };
+        }
+        return {
+          ok: true,
+          prepared: result.value.prepared,
+          goal: result.value.goal,
+          notes: [
+            'No capability card is generated and no observation timestamp is manufactured. Supply actual capability evidence: derive a runtime card with pappra collab capabilities derive from the receiving session, check it with pappra collab preflight, then call collab_start with confirm: true.',
+            'The removed cardPath/card outputs were declared-only evidence and never authorized a launch.',
+          ],
+        };
       }),
   );
 
@@ -562,7 +548,7 @@ export function createPappraMcpServer(
     {
       title: 'Start one admitted collaboration launch',
       description:
-        'Performs one admitted launch with an explicit controller and returns the report. Requires confirm: true and a runtime capability card; a declared card is refused by admission.',
+        'Performs one admitted launch with an explicit controller and returns the report. Requires confirm: true and a runtime capability card; a declared card is refused by admission. Controllers: fixture | pi-rpc; pi-rpc only launches assignments whose assignee harness is pi.',
       inputSchema: {
         prepared: z.string().min(1).max(4096),
         capabilities: z.string().min(1).max(4096),

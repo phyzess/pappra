@@ -63,6 +63,44 @@ test('help advertises the implemented init command', () => {
   assert.match(value.usage, /pappra init/);
 });
 
+test('help exposes the full collaboration family and truthful MCP tool gates', () => {
+  const global = invoke(['--help', '--json']);
+  assert.equal(global.status, 0, global.stderr);
+  const usage = (JSON.parse(global.stdout) as { usage: string }).usage;
+  for (const action of [
+    'prepare',
+    'run',
+    'query',
+    'preflight',
+    'message',
+    'capabilities',
+    'state',
+    'resource',
+    'handoff',
+    'recovery',
+    'binding',
+  ])
+    assert.match(usage, new RegExp(`collab[^\\n]*${action}`), action);
+  assert.match(usage, /pappra task <pin\|unpin\|show>/);
+
+  const mcp = invoke(['mcp', '--help']);
+  assert.equal(mcp.status, 0, mcp.stderr);
+  assert.match(mcp.stdout, /Read-only tools:/);
+  assert.match(mcp.stdout, /Gated write tools:/);
+  for (const tool of [
+    'checkpoint',
+    'docs_scan',
+    'code_prepare',
+    'runtime_install',
+    'collab_prepare',
+    'collab_start',
+  ])
+    assert.match(mcp.stdout, new RegExp(tool), tool);
+  assert.match(mcp.stdout, /apply: true/);
+  assert.match(mcp.stdout, /confirm: true/);
+  assert.doesNotMatch(mcp.stdout, /exposes\nread-only tools \(/);
+});
+
 test('host describe and plan expose typed output without writing', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'pappra-cli-host-'));
   const hostRoot = join(temporary, 'host with spaces Ω');

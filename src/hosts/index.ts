@@ -17,6 +17,8 @@ export {
   type HostHookOptions,
   type NativeHookMapping,
 } from './integration/hook.js';
+export * as piRecovery from './integration/pi-recovery-extension.js';
+export * as piSessionTransition from './integration/pi-session-transition-extension.js';
 export {
   createPiExtension,
   type PiExtensionLike,

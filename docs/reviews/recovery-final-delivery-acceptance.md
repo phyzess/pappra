@@ -1,0 +1,9 @@
+# Recovery final delivery scoped acceptance
+
+Accepted independently for the current eight-file snapshot in `msg-recovery-final-delivery-report` (SHA-256 `b5f5ae87be69efeb78a0caef789945bab1bf745eb79bccab460944c766e3c7c7`). Report/output/source digests match. Private strict compilation and 60 relevant tests pass in `/private/tmp/recovery-final-review.riSRKM`: 25 executor/public-CLI tests, 17 actual-shape host/controller tests and 18 retained projection tests.
+
+The final missing-evidence bypass is closed. Production apply requires exact expected session/cwd/harness/pane/target, task-local canonical binding reference/digest and current actor membership; the Herdr controller refuses absent expected evidence or final authority guard. Current binding and authority are checked again after live lookup and before each retry. Existing cause dedup, per-attempt journal, unknown-effect non-replay, cancellation/approval gating, no-follow sidecar updates, coordinator-versus-writer review identity, cause-aware callback progression and installed Pi session-manager shapes remain covered. Public recovery-run route/help and malformed-request handling pass.
+
+Acceptance covers the guarded supported one-shot recovery path and its public entry, not every network outage, prompt consumption/completion, exactly-once execution across crashes, native session takeover/archive or installed-package/live-network support. Full/package/install/live validation remains at integration. Registration of the concurrent work-run handler is present in the shared router but does not independently accept that separate worker's dispatch repair or apply path.
+
+Proceed to a fresh OpenRouter integration session. Preserve accepted engine source and exact current interfaces; independent parallel-work repair and final consolidated acceptance remain required. No repeated full campaign was run for this review.

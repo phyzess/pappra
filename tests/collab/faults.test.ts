@@ -365,3 +365,86 @@ test('honors one explicit shared domain across distinct workspaces', async () =>
     cleanup(second.root);
   }
 });
+
+test('composed Pi cancellation reuses driver intent once', async () => {
+  const box = setup('composed-cancel');
+  const oldPath = process.env.PATH;
+  const oldAssistant = process.env['FAKE_PI_ASSISTANT'];
+  const bin = join(box.root, 'bin');
+  const trace = join(box.root, 'fake-pi-cancel.log');
+  fs.mkdirSync(bin);
+  const fake = fileURLToPath(new URL('../hosts/fake-pi.js', import.meta.url));
+  const wrapper = `#!${process.execPath}
+import fs from 'node:fs';
+fs.appendFileSync(${JSON.stringify(trace)}, JSON.stringify({ argv: process.argv.slice(2) }) + '\\n');
+process.stdin.on('data', (chunk) => fs.appendFileSync(${JSON.stringify(trace)}, chunk));
+await import(${JSON.stringify(`file://${fake}`)});
+`;
+  fs.writeFileSync(join(bin, 'pi'), wrapper, { mode: 0o755 });
+  process.env.PATH = `${bin}:${oldPath ?? ''}`;
+  delete process.env['FAKE_PI_ASSISTANT'];
+  try {
+    const prepared = await prepare(box);
+    const started = await startPrepared(
+      join(prepared.prepared.prepared_dir, 'prepared.json'),
+      {
+        capabilitiesFile: box.cardFile,
+        controller: new PiRpcController(),
+        controllerId: 'pi-rpc',
+      },
+    );
+    assert.equal(started.ok, true);
+    if (!started.ok) return;
+    const events: Record<string, unknown>[] = [];
+    const result = await driveRun(
+      started.value,
+      (async function* () {
+        yield {
+          schema: 'pappra/collaboration-command/1',
+          action: 'cancel',
+          request_id: 'composed-cancel-1',
+        };
+      })(),
+      (event) => events.push(event as unknown as Record<string, unknown>),
+    );
+    assert.equal(result.ok, false);
+    const record = readRecord(prepared.prepared.task_root);
+    const cancels = (record?.messages ?? []).filter(
+      (message) => message.type === 'CANCEL',
+    );
+    const cancelUncertainty = (record?.uncertainty ?? []).filter(
+      (entry) => entry.kind === 'cancel_unconfirmed',
+    );
+    const cancelEvent = events.find((event) => event.kind === 'cancel');
+    const eventData = cancelEvent?.data as Record<string, unknown> | undefined;
+    const native = eventData?.native as Record<string, unknown> | undefined;
+    const stopEvidence = native?.stop_evidence as
+      Record<string, unknown> | undefined;
+    const requests = fs.readFileSync(trace, 'utf8');
+    const count = (type: string) =>
+      requests.match(new RegExp(`"type":"${type}"`, 'g'))?.length ?? 0;
+    assert.equal(
+      cancels.length,
+      1,
+      JSON.stringify({
+        cancel_ids: cancels.map((message) => message.message_id),
+        uncertainty_count: (record?.uncertainty ?? []).filter(
+          (entry) => entry.kind === 'cancel_unconfirmed',
+        ).length,
+        native_cancel_message_id: stopEvidence?.cancel_message_id ?? null,
+        clear_queue_count: count('clear_queue'),
+        abort_count: count('abort'),
+      }),
+    );
+    assert.equal(cancelUncertainty.length, 1);
+    assert.equal(stopEvidence?.cancel_message_id, cancels[0]?.message_id);
+    assert.equal(count('clear_queue'), 1);
+    assert.equal(count('abort'), 1);
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH;
+    else process.env.PATH = oldPath;
+    if (oldAssistant === undefined) delete process.env['FAKE_PI_ASSISTANT'];
+    else process.env['FAKE_PI_ASSISTANT'] = oldAssistant;
+    cleanup(box.root);
+  }
+});

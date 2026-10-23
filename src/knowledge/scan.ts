@@ -1,5 +1,7 @@
 import { discoverWorkspace } from '../workspace/discover.js';
+import { createDiagnostic } from '../schemas/diagnostics.js';
 import type { Diagnostic } from '../schemas/diagnostics.js';
+import { diagnosticCodes } from '../schemas/errors.js';
 import type { DocumentKind } from '../schemas/document.js';
 import { KnowledgeService } from './index.js';
 
@@ -34,6 +36,29 @@ export function classifyScannedDocumentKind(path: string): DocumentKind {
   return 'architecture';
 }
 
+function scanResult(
+  root: string,
+  mode: 'plan' | 'apply',
+  candidates: readonly DocumentScanCandidate[],
+  registered: readonly unknown[],
+  skipped: number,
+  diagnostics: readonly Diagnostic[],
+  nextActions: readonly string[],
+  ok = !diagnostics.some((entry) => entry.severity === 'error'),
+): DocumentScanResult {
+  return {
+    ok,
+    schema: 'pappra/docs-scan/1',
+    mode,
+    workspaceRoot: root,
+    candidates,
+    registered,
+    skipped,
+    nextActions,
+    diagnostics,
+  };
+}
+
 /**
  * Registers documents discovered under the configured knowledge sources.
  * Without apply this is read-only and reports the candidates.
@@ -44,15 +69,54 @@ export async function scanDiscoveredDocuments(
 ): Promise<DocumentScanFailure> {
   const discovery = await discoverWorkspace(root);
   const config = discovery.config;
+  const diagnostics: Diagnostic[] = [...discovery.diagnostics];
+  if (discovery.truncated) {
+    diagnostics.push(
+      createDiagnostic({
+        code: diagnosticCodes.discoveryLimitReached,
+        severity: 'warning',
+        message:
+          'Knowledge source discovery was truncated; scan coverage is incomplete.',
+        source: root,
+        pointer: null,
+        hint: 'Reduce the configured sources or their size, then rerun the scan for complete coverage.',
+      }),
+    );
+  }
   if (config === null) {
-    return {
-      ok: false,
-      message:
-        'docs scan requires a valid .pappra/workspace.json; run pappra init first.',
-    };
+    return scanResult(
+      root,
+      options.apply ? 'apply' : 'plan',
+      [],
+      [],
+      0,
+      diagnostics,
+      [
+        'Run pappra init or repair .pappra/workspace.json before scanning knowledge sources.',
+      ],
+      false,
+    );
   }
   const service = new KnowledgeService(root);
-  const listed = await service.list({ includePrivate: true });
+  const listed = await service.list({
+    includePrivate: true,
+    includeArchived: true,
+  });
+  diagnostics.push(...listed.diagnostics);
+  if (!listed.ok) {
+    return scanResult(
+      root,
+      options.apply ? 'apply' : 'plan',
+      [],
+      [],
+      0,
+      diagnostics,
+      [
+        'Repair the knowledge catalog diagnostics before scanning; no registration was attempted.',
+      ],
+      false,
+    );
+  }
   const registered = new Set(
     listed.records.flatMap((record) =>
       record.location.kind === 'workspace' ? [record.location.path] : [],
@@ -79,21 +143,38 @@ export async function scanDiscoveredDocuments(
       visibility,
     });
   }
-  const diagnostics: Diagnostic[] = [...listed.diagnostics];
+  const incomplete =
+    discovery.truncated ||
+    diagnostics.some((entry) => entry.severity === 'error');
+  const privateCommand =
+    visibility === 'private' ? 'pappra docs list --include-private' : null;
   if (!options.apply) {
-    return {
-      ok: true,
-      schema: 'pappra/docs-scan/1',
-      mode: 'plan',
-      workspaceRoot: root,
+    const nextActions: string[] = [];
+    if (candidates.length > 0) {
+      nextActions.push(
+        'Rerun with --apply to register these documents in the knowledge catalog.',
+      );
+    }
+    if (incomplete || discovery.truncated) {
+      nextActions.push(
+        'Correct the reported knowledge-source diagnostics, then rerun the scan for complete coverage.',
+      );
+    }
+    if (privateCommand !== null) {
+      nextActions.push(
+        `After applying, review private documents with: ${privateCommand}.`,
+      );
+    }
+    return scanResult(
+      root,
+      'plan',
       candidates,
-      registered: [],
-      skipped: candidates.length,
-      nextActions: [
-        'Rerun with apply: true to register these documents in the knowledge catalog.',
-      ],
+      [],
+      candidates.length,
       diagnostics,
-    };
+      nextActions,
+      !incomplete,
+    );
   }
   const registeredNow: unknown[] = [];
   for (const candidate of candidates) {
@@ -107,15 +188,29 @@ export async function scanDiscoveredDocuments(
     diagnostics.push(...result.diagnostics);
     if (result.ok) registeredNow.push(result.record);
   }
-  return {
-    ok: diagnostics.every((entry) => entry.severity !== 'error'),
-    schema: 'pappra/docs-scan/1',
-    mode: 'apply',
-    workspaceRoot: root,
+  const nextActions: string[] = [];
+  if (
+    incomplete ||
+    discovery.truncated ||
+    registeredNow.length < candidates.length
+  ) {
+    nextActions.push(
+      'Coverage was incomplete or some registrations failed; correct the diagnostics and rerun the scan.',
+    );
+  }
+  if (privateCommand !== null) {
+    nextActions.push(
+      `Review registered private documents with: ${privateCommand}.`,
+    );
+  }
+  return scanResult(
+    root,
+    'apply',
     candidates,
-    registered: registeredNow,
-    skipped: candidates.length - registeredNow.length,
-    nextActions: [],
+    registeredNow,
+    candidates.length - registeredNow.length,
     diagnostics,
-  };
+    nextActions,
+    !incomplete && !diagnostics.some((entry) => entry.severity === 'error'),
+  );
 }

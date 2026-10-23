@@ -6,6 +6,7 @@ import {
   setAutoResume,
   unpinTask,
 } from '../../app/task-pin.js';
+import { loadWorkspaceConfig } from '../../workspace/config.js';
 import type { CliOutput } from '../output.js';
 
 export const taskUsage =
@@ -42,12 +43,25 @@ export async function runTaskCommand(
 ): Promise<number> {
   const resolution = await resolveWorkspaceRoot({ startPath: options.cwd });
   const root = resolution.root;
-  if (root === null) {
+  const mutating = options.action === 'pin' || options.action === 'unpin';
+  if (root === null || (mutating && resolution.state !== 'registered')) {
     return failure(
       output,
       options,
-      'task requires a registered Pappra workspace above the current directory.',
+      `task requires a registered Pappra workspace above the current directory (found: ${resolution.state}).`,
     );
+  }
+  if (mutating) {
+    // An incomplete or unsafe registration can still report a root; mutations
+    // also require configuration this version can read.
+    const config = await loadWorkspaceConfig(root);
+    if (!config.ok) {
+      return failure(
+        output,
+        options,
+        `workspace configuration is not usable: ${config.message}`,
+      );
+    }
   }
   if (options.action === 'pin') {
     if (options.taskId === null) {
@@ -60,7 +74,11 @@ export async function runTaskCommand(
     if (options.autoResume) {
       const switched = await setAutoResume(root, true);
       if ('message' in switched) {
-        return failure(output, options, switched.message);
+        return failure(
+          output,
+          options,
+          `task ${pinned.taskId} is pinned, but autoResume was not enabled: ${switched.message}`,
+        );
       }
     }
     const report = {
@@ -77,7 +95,10 @@ export async function runTaskCommand(
     return 0;
   }
   if (options.action === 'unpin') {
-    await unpinTask(root);
+    const unpinned = await unpinTask(root);
+    if ('message' in unpinned) {
+      return failure(output, options, unpinned.message);
+    }
     const report = { ok: true, action: 'unpin' };
     output.stdout(
       options.json

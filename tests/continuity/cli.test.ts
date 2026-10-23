@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -181,6 +189,169 @@ test('stale resume exits nonzero and reports stale verification', async () => {
     const packet = parse(result.stdout);
     assert.equal(packet.verificationStatus, 'stale');
     assert.equal(packet.executionAllowed, false);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('task CLI enforces the shared 64-character id rule before writes', async () => {
+  const root = makeTempDir('task-cli-id-rule');
+  const home = mkdtempSync(join(tmpdir(), 'task-cli-home-'));
+  try {
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    const pinFile = join(root, '.pappra', 'local', 'current-task');
+    const long = invoke(['task', 'pin', 'a'.repeat(65), '--json'], root, home);
+    assert.equal(long.status, 2, long.stderr);
+    assert.equal(existsSync(pinFile), false);
+    assert.match(String(parse(long.stdout).message), /64 characters/);
+    const accepted = invoke(
+      ['task', 'pin', 'a'.repeat(64), '--json'],
+      root,
+      home,
+    );
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(parse(accepted.stdout).task, 'a'.repeat(64));
+    assert.equal(existsSync(pinFile), true);
+    const checkpoint64 = invoke(
+      [
+        'checkpoint',
+        '--task',
+        'a'.repeat(64),
+        '--objective',
+        '64-character task',
+        '--acceptance',
+        'Exit zero',
+        '--author-session',
+        'session-a',
+        '--context-completeness',
+        'complete',
+        '--json',
+      ],
+      root,
+      home,
+    );
+    assert.equal(checkpoint64.status, 0, checkpoint64.stderr);
+    assert.equal(parse(checkpoint64.stdout).status, 'saved');
+    const resume64 = invoke(['resume', 'a'.repeat(64), '--json'], root, home);
+    const resume64Value = parse(resume64.stdout);
+    assert.equal(resume64Value.taskId, 'a'.repeat(64));
+    const checkpoint = invoke(
+      [
+        'checkpoint',
+        '--task',
+        'a'.repeat(65),
+        '--objective',
+        'too long',
+        '--json',
+      ],
+      root,
+      home,
+    );
+    assert.notEqual(checkpoint.status, 0, checkpoint.stderr);
+    assert.equal(
+      existsSync(join(root, '.pappra', 'local', 'tasks', 'a'.repeat(65))),
+      false,
+    );
+    const resume = invoke(['resume', 'a'.repeat(65), '--json'], root, home);
+    assert.notEqual(resume.status, 0, resume.stderr);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('task CLI refuses an incomplete inner registration without writing outward', async () => {
+  const root = makeTempDir('task-cli-inner');
+  const home = mkdtempSync(join(tmpdir(), 'task-cli-home-'));
+  try {
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    const inner = join(root, 'inner');
+    mkdirSync(join(inner, '.pappra'), { recursive: true });
+    const result = invoke(['task', 'pin', 'T-INNER', '--json'], inner, home);
+    assert.equal(result.status, 2, result.stderr);
+    assert.match(String(parse(result.stdout).message), /found: incomplete/);
+    assert.equal(
+      existsSync(join(root, '.pappra', 'local', 'current-task')),
+      false,
+    );
+    assert.equal(existsSync(join(inner, '.pappra', 'local')), false);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('task CLI reports partial pin success when autoResume cannot be enabled', async () => {
+  const root = makeTempDir('task-cli-partial');
+  const home = mkdtempSync(join(tmpdir(), 'task-cli-home-'));
+  try {
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    mkdirSync(join(root, '.pappra', 'local'), { recursive: true });
+    const lockPath = join(root, '.pappra', 'local', 'apply.lock');
+    writeFileSync(
+      lockPath,
+      `${JSON.stringify({
+        schema: 'pappra/install-lock/1',
+        token: 'foreign',
+        operation: 'set-auto-resume',
+        target: '.pappra/workspace.json',
+        pid: process.pid,
+        createdAt: new Date().toISOString(),
+      })}\n`,
+    );
+    const before = readFileSync(join(root, '.pappra', 'workspace.json'));
+    const result = invoke(
+      ['task', 'pin', 'T-PARTIAL', '--auto-resume', '--json'],
+      root,
+      home,
+    );
+    assert.equal(result.status, 2, result.stderr);
+    const payload = parse(result.stdout);
+    assert.equal(payload.code, 'task_invalid');
+    assert.match(
+      String(payload.message),
+      /is pinned, but autoResume was not enabled/,
+    );
+    assert.equal(
+      existsSync(join(root, '.pappra', 'local', 'current-task')),
+      true,
+    );
+    assert.deepEqual(
+      readFileSync(join(root, '.pappra', 'workspace.json')),
+      before,
+    );
+    assert.equal(existsSync(lockPath), true);
+    const show = invoke(['task', 'show', '--json'], root, home);
+    assert.equal(show.status, 0, show.stderr);
+    assert.equal(parse(show.stdout).autoResume, false);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('task CLI refuses redirected private state and reports unpin failure', async () => {
+  const root = makeTempDir('task-cli-redirect');
+  const home = mkdtempSync(join(tmpdir(), 'task-cli-home-'));
+  try {
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    const outside = join(root, 'outside');
+    mkdirSync(outside);
+    symlinkSync(outside, join(root, '.pappra', 'local'), 'dir');
+    const pin = invoke(['task', 'pin', 'T-REDIRECT', '--json'], root, home);
+    assert.equal(pin.status, 2, pin.stderr);
+    assert.deepEqual(
+      readFileSync(join(root, '.pappra', 'workspace.json'), 'utf8').length > 0,
+      true,
+    );
+    assert.deepEqual(existsSync(join(outside, 'current-task')), false);
+    const unpin = invoke(['task', 'unpin', '--json'], root, home);
+    assert.equal(unpin.status, 2, unpin.stderr);
+    assert.match(
+      String(parse(unpin.stdout).message),
+      /symlink|redirected|real directory|not a directory|resolves outside/i,
+    );
   } finally {
     cleanup(root);
     rmSync(home, { recursive: true, force: true });

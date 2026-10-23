@@ -122,6 +122,78 @@ The hook command uses `"${CLAUDE_PLUGIN_ROOT}/hooks/pappra-hook.mjs"` (double-qu
 validator rejects the unquoted form). `PostCompact` was not exercised from a non-interactive
 session, so only startup is verified for this host.
 
+## Pi bootstrap bundle (opt-in, unverified load)
+
+```sh
+pappra host bundle --host pi --host-version 1.3.0 --out .plugin/pi-bootstrap \
+  --bootstrap-config /abs/private/pi-bootstrap.json --json
+```
+
+This variant exports a new private directory (`0700`; `extensions/pappra-bootstrap/bootstrap.json`
+is `0600`) whose Pi entry registers the accepted default-deny successor gate from an explicit,
+trusted local task binding. The destination must not already exist; the flag is Pi-only and
+bundle-only, and ordinary Pi bundles are unchanged without it.
+
+The config is data, not a published asset and not model input:
+
+```json
+{
+  "schema": "pappra/pi-bootstrap-config/1",
+  "domainRoot": "/abs/canonical/domain",
+  "taskId": "example",
+  "guard": {
+    "taskId": "example",
+    "intentId": "intent-1",
+    "handoffId": "handoff-1",
+    "generation": 1,
+    "subtaskId": "work",
+    "attempt": 1,
+    "inputRevision": "sha256:...",
+    "coordinatorEpoch": 1,
+    "successor": { "agentId": "agent", "sessionId": "session", "harness": "pi" },
+    "claims": [{ "claimId": "claim-1", "originalResourceEpoch": 1 }]
+  }
+}
+```
+
+Validation is a bounded 64 KiB no-follow read with exact keys, canonical existing domain/task
+directories, the short task-id pattern, guard limits and a unique claim set; it creates nothing
+and exports a pre-transfer record as valid (exporting a guard is not writing). On load, the entry
+installs a default-deny `tool_call` handler before config/reader/lifecycle initialization; any
+failure keeps denial active and exposes a read-only `bootstrap-status` command instead of
+throwing into loader fallthrough. `bootstrap-status` reports **registration**, never permission
+(`write_permitted: not-asserted`); the accepted guard still decides per call, and a total host
+loader/trust failure is not enforced gating. The export does not install, trust, launch,
+transfer or archive anything, and this page has **not** verified a native load of the bootstrap
+artifact.
+
+### Portable export boundary
+
+The bootstrap export keeps a directory bundle and uses only portable Node primitives. Its
+supported guarantee is a **trusted local parent without concurrent namespace mutation**:
+
+- an exclusive claim rejects any existing destination (empty, populated, file or symlink) and
+  leaves it untouched;
+- the payload is assembled in a private sibling staging directory and written there, with the
+  private binding written last;
+- device/inode and realpath identity checks reject observed staging or claim drift, and a failure
+  **before publication** removes only the empty claim and the staging directory that this call
+  created;
+- export never installs, registers, trusts or grants write authority.
+
+Publication is a rename followed by a final inode check, so it is **not a transaction**. A failure
+during or after publication can return an error after the output directory has become visible.
+Treat a failed CLI exit as *not* proof that no files exist: inspect the reported destination and
+its identity, never blindly delete or recursively clean a path, and do not install or trust the
+output merely because the export reported a failure.
+
+This is **not** an OS filesystem fence. Portable Node on this platform exposes no `openat`,
+`renameat2`/`RENAME_NOREPLACE` or `/dev/fd` directory anchoring, so a same-user process that
+changes the output root or a nested path between a check and its use can still redirect a write or
+affect publication and cleanup. Writing the private binding last reduces exposure but cannot
+prevent a substitution injected exactly at that write. A stronger hostile-filesystem guarantee is
+deferred, not claimed; use the export in a parent directory nothing else mutates concurrently.
+
 ## Current gating
 
 Plugin hooks are verified for Pi 1.3.0 and Claude Code 2.1.292 (startup), and proven
