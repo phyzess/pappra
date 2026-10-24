@@ -58,6 +58,7 @@ test('help advertises the implemented init command', () => {
     'code',
     'host',
     'collab',
+    'session',
   ]);
   assert('usage' in value && typeof value.usage === 'string');
   assert.match(value.usage, /pappra init/);

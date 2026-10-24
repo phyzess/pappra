@@ -1085,7 +1085,6 @@ export interface WorkExecutionHerdrAdapterOptions {
 export function createHerdrWorkExecutionAdapter(
   options: WorkExecutionHerdrAdapterOptions = {},
 ): WorkExecutionAdapter {
-  const transport = options.transport ?? createHerdrTransport();
   return {
     preflight: async (request) =>
       asObservation(
@@ -1096,15 +1095,24 @@ export function createHerdrWorkExecutionAdapter(
           apply: false,
           retry: false,
           callerPane: request.callerPane,
-          transport,
+          transport:
+            options.transport ??
+            createHerdrTransport({ taskRoot: request.taskRoot }),
         }),
       ),
     dispatch: async (request) => {
+      const transport =
+        options.transport ??
+        createHerdrTransport({ taskRoot: request.taskRoot });
       const guardedTransport: HerdrTransport = {
         id: `${transport.id}:work-execution-guard`,
         verifyCaller: (callerOptions) => transport.verifyCaller(callerOptions),
         list: () => transport.list(),
-        prompt: async (agent, promptText): Promise<HerdrPromptResult> => {
+        prompt: async (
+          agent,
+          promptText,
+          registered,
+        ): Promise<HerdrPromptResult> => {
           if (!request.finalAuthorityCheck)
             return {
               status: 'blocked',
@@ -1125,7 +1133,7 @@ export function createHerdrWorkExecutionAdapter(
               status: 'blocked',
               detail: `Final work authority check refused the prompt: ${authority.reason}`,
             };
-          return transport.prompt(agent, promptText);
+          return transport.prompt(agent, promptText, registered);
         },
       };
       return asObservation(

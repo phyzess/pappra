@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { readManagedSourceAssignment } from './managed-pi-source-admission.js';
 import { hasPendingCancellation } from '../collab/admission.js';
 import { canonicalJson } from '../collab/envelope.js';
 import { findAttempt } from '../collab/lifecycle.js';
@@ -35,6 +36,7 @@ import {
 } from './collab-bootstrap.js';
 import {
   reportedSessionIdentity,
+  createHerdrTransport,
   type HerdrListResult,
 } from './collab-notify.js';
 import {
@@ -64,6 +66,7 @@ import {
 import { routeExclusionFor, validateSuccession } from './collab-route.js';
 import { isTaskRecord } from '../collab/validation.js';
 
+import { isTrustedManagedPiScopedProof } from './managed-pi-transition-host.js';
 export const COLLAB_SESSION_TRANSITION_REQUEST_SCHEMA =
   'pappra/collaboration-session-transition-request/1';
 export const COLLAB_SESSION_TRANSITION_REPORT_SCHEMA =
@@ -127,8 +130,31 @@ export type SessionTransitionStage =
   | 'task_retired'
   | 'unknown';
 
+export const MANAGED_PI_EXECUTION_SCOPE_SCHEMA =
+  'pappra/managed-pi-execution-scope/1';
+export const MANAGED_PI_SCOPED_PROOF_ADAPTER_ID =
+  'pappra/managed-pi-session-transition-host/2';
+export const MANAGED_PI_SCOPED_RECEIPT_SCHEMA =
+  'pappra/session-transition-quiescence-receipt/2';
+
+export interface ManagedPiExecutionScope {
+  readonly schema: typeof MANAGED_PI_EXECUTION_SCOPE_SCHEMA;
+  readonly task_id: string;
+  readonly task_root: string;
+  readonly session_id: string;
+  readonly cwd: string;
+  readonly subtask_id: string;
+  readonly attempt: number;
+  readonly owner_epoch: number;
+  readonly claim_epochs: readonly {
+    readonly claim_id: string;
+    readonly resource_epoch: number;
+  }[];
+}
+
 export interface SessionTransitionRequest {
   readonly schema: typeof COLLAB_SESSION_TRANSITION_REQUEST_SCHEMA;
+  readonly managed_execution_scope?: ManagedPiExecutionScope;
   readonly task_root: string;
   readonly transition_id: string;
   readonly intent: RolloverIntentRequest;
@@ -162,7 +188,9 @@ export type SessionTransitionRequestResult =
     };
 
 export interface SessionTransitionQuiescenceProof {
-  readonly adapter_id: 'pappra/pi-session-transition-host/1';
+  readonly adapter_id:
+    | 'pappra/pi-session-transition-host/1'
+    | typeof MANAGED_PI_SCOPED_PROOF_ADAPTER_ID;
   readonly session_id: string;
   readonly cwd: string;
   readonly observed_at: string;
@@ -170,11 +198,27 @@ export interface SessionTransitionQuiescenceProof {
   readonly evidence_ref: string;
   readonly freeze_token: FreezeToken;
   readonly inventory: rollover.RolloverInventory;
+  readonly scope?: 'pinned_pi_1_4_owned_runtime';
+  readonly execution_scope?: ManagedPiExecutionScope;
+  readonly execution_scope_digest?: string;
+  readonly excluded_scope?: readonly [
+    'arbitrary_external_writers',
+    'unowned_processes_and_descendants',
+  ];
+  readonly runtime_quiescent?: boolean;
+  readonly runtime_blockers?: readonly string[];
+  readonly controller_sequence?: number;
+  readonly controller_head_digest?: string;
+  readonly controller_journal_healthy?: boolean;
 }
 
 export interface SessionTransitionQuiescenceReceipt {
-  readonly schema: 'pappra/session-transition-quiescence-receipt/1';
-  readonly adapter_id: 'pappra/pi-session-transition-host/1';
+  readonly schema:
+    | 'pappra/session-transition-quiescence-receipt/1'
+    | typeof MANAGED_PI_SCOPED_RECEIPT_SCHEMA;
+  readonly adapter_id:
+    | 'pappra/pi-session-transition-host/1'
+    | typeof MANAGED_PI_SCOPED_PROOF_ADAPTER_ID;
   readonly session_id: string;
   readonly cwd: string;
   readonly observed_at: string;
@@ -182,6 +226,7 @@ export interface SessionTransitionQuiescenceReceipt {
   readonly evidence_ref: string;
   readonly freeze_token: FreezeToken;
   readonly inventory_digest: string;
+  readonly execution_scope_digest?: string;
 }
 
 export interface SessionTransitionHostObservation {
@@ -422,6 +467,9 @@ function immutableDigest(request: SessionTransitionRequest): string {
       bundle: request.bundle,
       bootstrap_request: request.bootstrap_request,
       archive_mode: request.archive_mode,
+      ...(request.managed_execution_scope === undefined
+        ? {}
+        : { managed_execution_scope: request.managed_execution_scope }),
     }),
   );
 }
@@ -512,6 +560,67 @@ function parseIntent(value: unknown): RolloverIntentRequest | null {
   };
 }
 
+function parseManagedPiExecutionScope(
+  value: unknown,
+): ManagedPiExecutionScope | null {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, [
+      'schema',
+      'task_id',
+      'task_root',
+      'session_id',
+      'cwd',
+      'subtask_id',
+      'attempt',
+      'owner_epoch',
+      'claim_epochs',
+    ]) ||
+    value['schema'] !== MANAGED_PI_EXECUTION_SCOPE_SCHEMA ||
+    !isSafeId(value['task_id']) ||
+    !isText(value['task_root'], 4096) ||
+    !path.isAbsolute(value['task_root']) ||
+    !isText(value['session_id'], 256) ||
+    !isText(value['cwd'], 4096) ||
+    !path.isAbsolute(value['cwd']) ||
+    !isSafeId(value['subtask_id']) ||
+    !isPositiveInt(value['attempt']) ||
+    !isPositiveInt(value['owner_epoch']) ||
+    !Array.isArray(value['claim_epochs']) ||
+    value['claim_epochs'].length === 0 ||
+    value['claim_epochs'].length > 64
+  )
+    return null;
+  const claim_epochs: { claim_id: string; resource_epoch: number }[] = [];
+  const seen = new Set<string>();
+  for (const raw of value['claim_epochs']) {
+    if (
+      !isRecord(raw) ||
+      !hasOnlyKeys(raw, ['claim_id', 'resource_epoch']) ||
+      !isSafeId(raw['claim_id']) ||
+      !isPositiveInt(raw['resource_epoch']) ||
+      seen.has(raw['claim_id'])
+    )
+      return null;
+    seen.add(raw['claim_id']);
+    claim_epochs.push({
+      claim_id: raw['claim_id'],
+      resource_epoch: raw['resource_epoch'],
+    });
+  }
+  return {
+    schema: MANAGED_PI_EXECUTION_SCOPE_SCHEMA,
+    task_id: value['task_id'],
+    task_root: value['task_root'],
+    session_id: value['session_id'],
+    cwd: value['cwd'],
+    subtask_id: value['subtask_id'],
+    attempt: value['attempt'],
+    owner_epoch: value['owner_epoch'],
+    claim_epochs,
+  };
+}
+
 export function validateSessionTransitionRequest(
   value: unknown,
 ):
@@ -528,6 +637,7 @@ export function validateSessionTransitionRequest(
       'bootstrap_request',
       'evidence',
       'archive_mode',
+      'managed_execution_scope',
     ])
   )
     return {
@@ -625,6 +735,32 @@ export function validateSessionTransitionRequest(
       message:
         'Only the reversible task-retirement marker is supported; native archive is unavailable.',
     };
+  const scopeValue = value['managed_execution_scope'];
+  const managedExecutionScope =
+    scopeValue === undefined ? null : parseManagedPiExecutionScope(scopeValue);
+  if (
+    scopeValue !== undefined &&
+    (managedExecutionScope === null ||
+      managedExecutionScope.task_id !== path.basename(value['task_root']) ||
+      !safePathEqual(managedExecutionScope.task_root, value['task_root']) ||
+      managedExecutionScope.session_id !== intent.from.session_id ||
+      !safePathEqual(managedExecutionScope.cwd, intent.from.cwd ?? '') ||
+      managedExecutionScope.subtask_id !== intent.subtask_id ||
+      managedExecutionScope.attempt !== intent.attempt ||
+      managedExecutionScope.owner_epoch !== intent.coordinator_epoch ||
+      managedExecutionScope.claim_epochs.length !== intent.claims.length ||
+      managedExecutionScope.claim_epochs.some(
+        (pin, index) =>
+          pin.claim_id !== intent.claims[index]?.claim_id ||
+          pin.resource_epoch !== intent.claims[index]?.resource_epoch,
+      ))
+  )
+    return {
+      ok: false,
+      code: 'managed_execution_scope_mismatch',
+      message:
+        'Managed execution scope must exactly match task, source session, attempt, owner epoch and claim pins.',
+    };
   return {
     ok: true,
     request: {
@@ -647,6 +783,9 @@ export function validateSessionTransitionRequest(
         first_work_report_id: typeof report === 'string' ? report : null,
       },
       archive_mode: 'task-retirement',
+      ...(managedExecutionScope === null
+        ? {}
+        : { managed_execution_scope: managedExecutionScope }),
     },
   };
 }
@@ -872,9 +1011,15 @@ function parseQuiescenceReceipt(
 ): SessionTransitionQuiescenceReceipt | null {
   if (!isRecord(value) || !isRecord(value['freeze_token'])) return null;
   const token = value['freeze_token'];
+  const legacy =
+    value['schema'] === 'pappra/session-transition-quiescence-receipt/1' &&
+    value['adapter_id'] === 'pappra/pi-session-transition-host/1';
+  const scoped =
+    value['schema'] === MANAGED_PI_SCOPED_RECEIPT_SCHEMA &&
+    value['adapter_id'] === MANAGED_PI_SCOPED_PROOF_ADAPTER_ID &&
+    isDigest(value['execution_scope_digest']);
   if (
-    value['schema'] !== 'pappra/session-transition-quiescence-receipt/1' ||
-    value['adapter_id'] !== 'pappra/pi-session-transition-host/1' ||
+    (!legacy && !scoped) ||
     !isText(value['session_id'], 256) ||
     !isText(value['cwd'], 4096) ||
     !path.isAbsolute(value['cwd']) ||
@@ -892,8 +1037,10 @@ function parseQuiescenceReceipt(
   )
     return null;
   return {
-    schema: value['schema'],
-    adapter_id: value['adapter_id'],
+    schema: value['schema'] as SessionTransitionQuiescenceReceipt['schema'],
+    adapter_id: value[
+      'adapter_id'
+    ] as SessionTransitionQuiescenceReceipt['adapter_id'],
     session_id: value['session_id'],
     cwd: value['cwd'],
     observed_at: value['observed_at'],
@@ -906,6 +1053,9 @@ function parseQuiescenceReceipt(
       generation: token['generation'],
     },
     inventory_digest: value['inventory_digest'],
+    ...(scoped
+      ? { execution_scope_digest: value['execution_scope_digest'] as string }
+      : {}),
   };
 }
 
@@ -1162,15 +1312,94 @@ function currentStateDrift(
   }
   return null;
 }
+function managedExecutionScopeDrift(
+  request: SessionTransitionRequest,
+  record: TaskRecord,
+): { readonly code: string; readonly message: string } | null {
+  const scope = request.managed_execution_scope;
+  if (scope === undefined) return null;
+  if (
+    scope.schema !== MANAGED_PI_EXECUTION_SCOPE_SCHEMA ||
+    scope.task_id !== record.task_id ||
+    !safePathEqual(scope.task_root, record.task_root) ||
+    scope.session_id !== request.intent.from.session_id ||
+    !safePathEqual(scope.cwd, request.intent.from.cwd ?? '') ||
+    scope.subtask_id !== request.intent.subtask_id ||
+    scope.attempt !== request.intent.attempt ||
+    scope.owner_epoch !== request.intent.coordinator_epoch ||
+    record.coordinator?.owner_epoch !== scope.owner_epoch
+  )
+    return {
+      code: 'managed_execution_scope_mismatch',
+      message: 'The scoped SDK binding no longer matches the task/source pins.',
+    };
+  const attempt = findAttempt(record, scope.subtask_id, scope.attempt);
+  const latestAttempt = (record.attempts ?? [])
+    .filter((candidate) => candidate.subtask_id === scope.subtask_id)
+    .reduce((latest, candidate) => Math.max(latest, candidate.attempt), 0);
+  if (
+    attempt === null ||
+    latestAttempt !== scope.attempt ||
+    !['assigned', 'accepted', 'running'].includes(attempt.state) ||
+    attempt.owner_epoch !== scope.owner_epoch ||
+    attempt.assignee.harness !== 'pi' ||
+    attempt.assignee.agent_id !== request.intent.from.agent_id ||
+    attempt.assignee.session_id !== scope.session_id ||
+    (attempt.assignee.cwd !== undefined &&
+      !safePathEqual(attempt.assignee.cwd, scope.cwd))
+  )
+    return {
+      code: 'managed_execution_scope_attempt_stale',
+      message: 'The scoped source attempt or owner epoch changed.',
+    };
+  if (
+    scope.claim_epochs.length === 0 ||
+    scope.claim_epochs.length !== request.intent.claims.length
+  )
+    return {
+      code: 'managed_execution_scope_claims_invalid',
+      message: 'The scope must pin every transition claim.',
+    };
+  for (let index = 0; index < scope.claim_epochs.length; index++) {
+    const pin = scope.claim_epochs[index]!;
+    const intentPin = request.intent.claims[index];
+    const claim = (record.claims ?? []).find(
+      (entry) => entry.claim_id === pin.claim_id,
+    );
+    if (
+      pin.resource_epoch <= 0 ||
+      pin.claim_id !== intentPin?.claim_id ||
+      pin.resource_epoch !== intentPin?.resource_epoch ||
+      claim === undefined ||
+      claim.released_at !== null ||
+      (claim.resource_epoch ?? 0) !== pin.resource_epoch ||
+      claim.holder.agent_id !== request.intent.from.agent_id ||
+      claim.holder.session_id !== scope.session_id ||
+      claim.holder.harness !== 'pi'
+    )
+      return {
+        code: 'managed_execution_scope_claim_stale',
+        message: `Scoped claim ${pin.claim_id} is missing, released, reassigned, or at a different epoch.`,
+      };
+  }
+  return null;
+}
 
 function exactQuiescenceReceipt(
   request: SessionTransitionRequest,
   receipt: SessionTransitionQuiescenceReceipt | undefined,
 ): receipt is SessionTransitionQuiescenceReceipt {
+  const scoped = request.managed_execution_scope;
+  const expectedScopeDigest =
+    scoped === undefined ? null : digestText(canonicalJson(scoped));
   return (
     receipt !== undefined &&
-    receipt.schema === 'pappra/session-transition-quiescence-receipt/1' &&
-    receipt.adapter_id === 'pappra/pi-session-transition-host/1' &&
+    (scoped === undefined
+      ? receipt.schema === 'pappra/session-transition-quiescence-receipt/1' &&
+        receipt.adapter_id === 'pappra/pi-session-transition-host/1'
+      : receipt.schema === MANAGED_PI_SCOPED_RECEIPT_SCHEMA &&
+        receipt.adapter_id === MANAGED_PI_SCOPED_PROOF_ADAPTER_ID &&
+        receipt.execution_scope_digest === expectedScopeDigest) &&
     receipt.session_id === request.intent.from.session_id &&
     safePathEqual(receipt.cwd, request.intent.from.cwd ?? '') &&
     isText(receipt.evidence_ref, 4096) &&
@@ -1783,8 +2012,23 @@ function validatePreflight(context: TransitionContext, now: number) {
       code: 'assignment_missing',
       message: 'Current attempt has no assignment reference.',
     };
+  let assignmentFile: string;
+  try {
+    assignmentFile = readManagedSourceAssignment(
+      context.task.record,
+      attempt,
+      context.request.intent.from,
+    ).file;
+  } catch {
+    return {
+      ok: false as const,
+      code: 'source_admission_unverified',
+      message:
+        'The source assignment does not match its immutable admission lineage.',
+    };
+  }
   const result = runCollaborationPreflight({
-    assignmentFile: attempt.assignment_ref,
+    assignmentFile,
     capabilitiesFile: context.bootstrap.request.admission.capability_card_ref,
     maxAgeMinutes: 30,
     now,
@@ -1953,7 +2197,7 @@ function intentTransaction(
           return { ok: false as const, reason: 'abort_requested' };
         const drift = sourceStateFailure(record, context.request);
         if (drift !== null) return { ok: false as const, reason: drift.code };
-        const existing = getIntent(record, context.request.transition_id);
+        const existing = getIntent(record, context.request.intent.intent_id);
         if (existing !== null) {
           if (
             !sameIntentRequest(
@@ -2405,7 +2649,7 @@ export async function planSessionTransition(
     );
   const existingIntent = getIntent(
     refreshed.value.record,
-    request.transition_id,
+    request.intent.intent_id,
   );
   const handoff = getHandoff(refreshed.value.record, request.intent.handoff_id);
   const drift = currentStateDrift(
@@ -2462,6 +2706,22 @@ export async function applySessionTransition(
     context.value.task.record,
     request.intent.handoff_id,
   );
+  if (existingHandoff?.state !== 'completed') {
+    const scopeDrift = managedExecutionScopeDrift(
+      request,
+      context.value.task.record,
+    );
+    if (scopeDrift !== null)
+      return failureReport(
+        'apply',
+        request,
+        'needs_input',
+        scopeDrift.code,
+        scopeDrift.message,
+        'Rebind only after the authoritative task, attempt, owner epoch and claim pins are reconciled; no transition effect was attempted.',
+        context.value.task,
+      );
+  }
   if (existingHandoff?.state === 'completed') {
     const drift = currentStateDrift(
       context.value.task.record,
@@ -2502,7 +2762,7 @@ export async function applySessionTransition(
   if (dependencies.host === undefined) {
     const currentIntent = getIntent(
       context.value.task.record,
-      request.transition_id,
+      request.intent.intent_id,
     );
     return failureReport(
       'apply',
@@ -2577,7 +2837,10 @@ export async function applySessionTransition(
       context.value.task,
       { host: { id: dependencies.host.id, ...hostBefore } },
     );
-  const existing = getIntent(context.value.task.record, request.transition_id);
+  const existing = getIntent(
+    context.value.task.record,
+    request.intent.intent_id,
+  );
   const blockingDrift = rolloverResult.value.drift.find(
     (item) => !(existing === null && item.code === 'unknown_handoff'),
   );
@@ -2635,7 +2898,7 @@ export async function applySessionTransition(
     );
   const currentIntent = getIntent(
     currentTask.value.record,
-    request.transition_id,
+    request.intent.intent_id,
   );
   if (
     currentIntent === null ||
@@ -3067,9 +3330,34 @@ function proofSupportFailure(
   const inventory = inventoryValue;
   const age = now - Date.parse(String(proof['observed_at'] ?? ''));
   const tokenSnapshot = tokenSnapshotValue;
+  const managedScope = request.managed_execution_scope;
+  const scopedProofMatches =
+    managedScope === undefined
+      ? proof['adapter_id'] === 'pappra/pi-session-transition-host/1'
+      : isTrustedManagedPiScopedProof(rawProof) &&
+        proof['adapter_id'] === MANAGED_PI_SCOPED_PROOF_ADAPTER_ID &&
+        proof['scope'] === 'pinned_pi_1_4_owned_runtime' &&
+        isRecord(proof['execution_scope']) &&
+        canonicalJson(proof['execution_scope']) ===
+          canonicalJson(managedScope) &&
+        proof['execution_scope_digest'] ===
+          digestText(canonicalJson(managedScope)) &&
+        Array.isArray(proof['excluded_scope']) &&
+        proof['excluded_scope'].length === 2 &&
+        proof['excluded_scope'][0] === 'arbitrary_external_writers' &&
+        proof['excluded_scope'][1] === 'unowned_processes_and_descendants' &&
+        proof['runtime_quiescent'] === true &&
+        Array.isArray(proof['runtime_blockers']) &&
+        proof['runtime_blockers'].length === 0 &&
+        proof['controller_journal_healthy'] === true &&
+        isNonNegativeInt(proof['controller_sequence']) &&
+        isDigest(proof['controller_head_digest']) &&
+        isNonNegativeInt(proof['sequence']) &&
+        (proof['sequence'] as number) >=
+          (proof['controller_sequence'] as number);
   if (
     !isRecord(tokenSnapshot) ||
-    proof['adapter_id'] !== 'pappra/pi-session-transition-host/1' ||
+    !scopedProofMatches ||
     proof['session_id'] !== request.intent.from.session_id ||
     proof['cwd'] !== request.intent.from.cwd ||
     !isText(proof['observed_at'], 64) ||
@@ -3163,8 +3451,11 @@ function quiescenceReceipt(
   proof: SessionTransitionQuiescenceProof,
   inventoryDigest: string,
 ): SessionTransitionQuiescenceReceipt {
+  const scoped = proof.adapter_id === MANAGED_PI_SCOPED_PROOF_ADAPTER_ID;
   return {
-    schema: 'pappra/session-transition-quiescence-receipt/1',
+    schema: scoped
+      ? MANAGED_PI_SCOPED_RECEIPT_SCHEMA
+      : 'pappra/session-transition-quiescence-receipt/1',
     adapter_id: proof.adapter_id,
     session_id: proof.session_id,
     cwd: proof.cwd,
@@ -3173,6 +3464,9 @@ function quiescenceReceipt(
     evidence_ref: proof.evidence_ref,
     freeze_token: { ...proof.freeze_token },
     inventory_digest: inventoryDigest,
+    ...(scoped && proof.execution_scope_digest !== undefined
+      ? { execution_scope_digest: proof.execution_scope_digest }
+      : {}),
   };
 }
 
@@ -3251,6 +3545,20 @@ async function freezeAndPrepare(
         identityIssue.nextAction,
         currentTask,
         { host: { id: host.id, ...observation } },
+      ),
+    };
+  const scopeDrift = managedExecutionScopeDrift(request, currentTask.record);
+  if (scopeDrift !== null)
+    return {
+      ok: false,
+      report: failureReport(
+        'apply',
+        request,
+        'needs_input',
+        scopeDrift.code,
+        scopeDrift.message,
+        'Reconcile the current task/attempt/claim pins before source freeze; no new effect was attempted.',
+        currentTask,
       ),
     };
   if (observation.proof_support !== 'available')
@@ -3974,11 +4282,17 @@ function validateSuccessorBinding(
     reservation.attempt !== request.intent.attempt ||
     reservation.requested_session_id !== request.intent.to.session_id ||
     !sameHarnessIdentity(reservation.holder, request.intent.from) ||
-    reservation.released_at !== null ||
+    typeof reservation.released_at !== 'string' ||
+    !Number.isFinite(Date.parse(reservation.released_at)) ||
     reservation.phase !== 'completed' ||
     !['submitted', 'already_recorded'].includes(String(reservation.outcome)) ||
     data['request_id'] !== context.bootstrap.request.request_id ||
+    data['request_digest'] !== context.bootstrap.digest ||
     data['request_file'] !== context.bootstrap.file ||
+    data['config_digest'] !==
+      context.bootstrap.request.bootstrap.config_digest ||
+    data['bundle_manifest_digest'] !==
+      context.bootstrap.request.bootstrap.bundle_digest ||
     data['target_choice'] !== 'sibling' ||
     data['participant_agent_id'] !== request.intent.to.agent_id ||
     data['participant_session_id'] !== request.intent.to.session_id ||
@@ -4676,12 +4990,13 @@ async function ensureTaskRetirementMarker(
 
 function herdrOpsFor(
   dependencies: SessionTransitionDependencies,
+  taskRoot: string,
 ): HerdrBootstrapOps {
   if (dependencies.herdr !== undefined) return dependencies.herdr;
   const bootstrap = dependencies.bootstrapDependencies;
   if (bootstrap?.ops !== undefined) return bootstrap.ops;
   return bootstrap?.transport === undefined
-    ? createHerdrBootstrapOps()
+    ? createHerdrBootstrapOps({ transport: createHerdrTransport({ taskRoot }) })
     : createHerdrBootstrapOps({ transport: bootstrap.transport });
 }
 
@@ -4985,7 +5300,7 @@ async function applyConfirmedTransfer(
       task,
       { bootstrap: bootstrapReport },
     );
-  const herdr = herdrOpsFor(dependencies);
+  const herdr = herdrOpsFor(dependencies, task.taskRoot);
   let listed: HerdrListResult;
   try {
     listed = await herdr.listAgents();

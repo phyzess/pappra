@@ -16,6 +16,8 @@ import { isPathInside } from '../schemas/paths.js';
 import { observePath, resolveRealpath } from '../infra/fs.js';
 import { errorMessage } from '../schemas/outcome.js';
 import { routeExclusionFor } from './collab-route.js';
+import { resolveTaskManagedPi } from './managed-pi-native-observation.js';
+import { requestManagedPiControl } from '../hosts/pi/managed-session.js';
 import {
   assertMessageTaskCurrent,
   deliveryPathFor,
@@ -44,6 +46,7 @@ const PROMPT_TIMEOUT_MS = 20_000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
 
 export interface HerdrAgentObservation {
+  readonly nativeIdentityProvenance?: 'owned-pi-sdk-control';
   readonly name: string | null;
   readonly harness: string;
   readonly paneId: string | null;
@@ -57,6 +60,7 @@ export interface HerdrAgentObservation {
 }
 
 export interface HerdrCallerObservation {
+  readonly nativeIdentityProvenance?: 'owned-pi-sdk-control';
   readonly paneId: string;
   readonly workspaceId: string | null;
   readonly tabId: string | null;
@@ -102,7 +106,16 @@ export interface HerdrTransport {
     readonly paneId?: string;
   }): Promise<HerdrCallerResult>;
   list(): Promise<HerdrListResult>;
-  prompt(agent: string, text: string): Promise<HerdrPromptResult>;
+  prompt(
+    agent: string,
+    text: string,
+    registered?: {
+      readonly taskRoot: string;
+      readonly messageId: string;
+      readonly digest: string;
+      readonly sessionId: string;
+    },
+  ): Promise<HerdrPromptResult>;
 }
 
 export interface CommandResult {
@@ -302,10 +315,33 @@ export function createHerdrTransport(
   options: {
     readonly env?: NodeJS.ProcessEnv;
     readonly run?: CommandRunner;
+    readonly taskRoot?: string;
   } = {},
 ): HerdrTransport {
   const env = options.env ?? process.env;
   const run = options.run ?? runCommand;
+  const nativeCaller = async (
+    caller: HerdrCallerObservation,
+  ): Promise<HerdrCallerObservation> => {
+    if (
+      !options.taskRoot ||
+      caller.sessionValue !== null ||
+      (caller.harness !== null && caller.harness !== 'pi')
+    )
+      return caller;
+    const observed = await resolveTaskManagedPi(options.taskRoot, caller, {
+      run,
+    });
+    return observed
+      ? {
+          ...caller,
+          harness: 'pi',
+          sessionKind: 'id',
+          sessionValue: observed.sessionId,
+          nativeIdentityProvenance: observed.provenance,
+        }
+      : caller;
+  };
   const bin =
     typeof env['HERDR_BIN_PATH'] === 'string' &&
     env['HERDR_BIN_PATH'].trim() !== ''
@@ -384,7 +420,7 @@ export function createHerdrTransport(
             detail: `Herdr reported pane ${caller.paneId} instead of the requested ${explicit}`,
           };
         }
-        return { ok: true, caller };
+        return { ok: true, caller: await nativeCaller(caller) };
       }
       const envPane = env['HERDR_PANE_ID'];
       if (typeof envPane !== 'string' || envPane.trim() === '') {
@@ -467,7 +503,7 @@ export function createHerdrTransport(
           detail: `HERDR_WORKSPACE_ID ${envWorkspace} does not match the resolved caller workspace`,
         };
       }
-      return { ok: true, caller };
+      return { ok: true, caller: await nativeCaller(caller) };
     },
     async list() {
       const result = await run(bin, ['agent', 'list'], LIST_TIMEOUT_MS);
@@ -520,9 +556,83 @@ export function createHerdrTransport(
           focused: item['focused'] === true,
         });
       }
+      if (options.taskRoot) {
+        for (let index = 0; index < observations.length; index++) {
+          const entry = observations[index]!;
+          if (entry.harness !== 'pi' || entry.sessionValue !== null) continue;
+          const observed = await resolveTaskManagedPi(options.taskRoot, entry, {
+            run,
+          });
+          if (observed)
+            observations[index] = {
+              ...entry,
+              sessionKind: 'id',
+              sessionValue: observed.sessionId,
+              nativeIdentityProvenance: observed.provenance,
+            };
+        }
+      }
       return { ok: true, agents: observations };
     },
-    async prompt(agent, text) {
+    async prompt(agent, text, registered) {
+      if (options.taskRoot && registered) {
+        const listed = await this.list();
+        if (!listed.ok)
+          return {
+            status: 'refused',
+            detail: 'Cannot revalidate native delivery target.',
+          };
+        const matches = listed.agents.filter((entry) => entry.name === agent);
+        if (matches.length !== 1)
+          return {
+            status: 'refused',
+            detail: 'Native delivery target is ambiguous or absent.',
+          };
+        const target = matches[0]!;
+        if (target.nativeIdentityProvenance === 'owned-pi-sdk-control') {
+          const owned = await resolveTaskManagedPi(options.taskRoot, target, {
+            run,
+          });
+          if (
+            !owned ||
+            registered.taskRoot !== options.taskRoot ||
+            owned.sessionId !== registered.sessionId
+          )
+            return {
+              status: 'refused',
+              detail: 'Owned native delivery identity changed.',
+            };
+          try {
+            const response = await requestManagedPiControl(
+              owned.descriptorFile,
+              'deliver',
+              {
+                task_root: registered.taskRoot,
+                message_id: registered.messageId,
+                digest: registered.digest,
+                expected_session_id: registered.sessionId,
+              },
+            );
+            return response.ok === true
+              ? {
+                  status: 'submitted',
+                  detail:
+                    'Registered pointer admitted by the owned native SDK; model completion is unobserved.',
+                }
+              : {
+                  status: 'refused',
+                  detail:
+                    'Owned native controller refused registered delivery.',
+                };
+          } catch {
+            return {
+              status: 'unknown',
+              detail:
+                'Owned native delivery returned no terminal admission result.',
+            };
+          }
+        }
+      }
       const result = await run(
         bin,
         ['agent', 'prompt', agent, text],
@@ -1240,7 +1350,7 @@ export async function notifyRegisteredMessage(
     };
   }
 
-  const transport = options.transport ?? createHerdrTransport();
+  const transport = options.transport ?? createHerdrTransport({ taskRoot });
   const verifiedCaller = await transport.verifyCaller(
     options.callerPane === undefined || options.callerPane === null
       ? {}
@@ -1477,7 +1587,12 @@ export async function notifyRegisteredMessage(
   });
   let result: HerdrPromptResult;
   try {
-    result = await transport.prompt(participant.herdr_agent, text);
+    result = await transport.prompt(participant.herdr_agent, text, {
+      taskRoot,
+      messageId: message.message_id,
+      digest,
+      sessionId: message.to.session_id,
+    });
   } catch (error) {
     result = {
       status: 'unknown',

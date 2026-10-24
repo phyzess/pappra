@@ -10,9 +10,11 @@ import {
 import type { CliOutput } from '../output.js';
 
 export const collaborationCapabilitiesUsage =
-  'pappra collab capabilities derive --harness <pi|codex|claude> --assignment <abs assignment.json> --template <abs card.declared.json> --execution <abs execution.json> [--session <abs pi-session.jsonl> | --events <abs events.jsonl>] [--json]\n\n' +
+  'pappra collab capabilities derive --harness <pi|codex|claude> --assignment <abs assignment.json> --template <abs card.declared.json> [--execution <abs execution.json> | --live] [--session <abs pi-session.jsonl> | --events <abs events.jsonl>] [--json]\n\n' +
   'Read-only native capability evidence: Pi requires --session, Codex and Claude\n' +
-  'require --events. A derived card is a claim derived from the supplied evidence;\n' +
+  'require --events. Pi --live derives a settled saved-session snapshot without\n' +
+  'an execution receipt; it does not prove live ownership, queue or approvals.\n' +
+  'A derived card is a claim derived from the supplied evidence;\n' +
   'nothing is written, launched, authenticated or dispatched. Exit 0 derived,\n' +
   '1 needs_input, 2 invalid.';
 
@@ -24,6 +26,7 @@ export interface CollaborationCapabilitiesOptions {
   readonly sessionFile: string | null;
   readonly eventsFile: string | null;
   readonly json: boolean;
+  readonly live?: boolean;
 }
 
 interface InvalidCapabilitiesResult {
@@ -111,7 +114,7 @@ export function runCollaborationCapabilitiesCommand(
   const missing = [
     ['--assignment', options.assignmentFile],
     ['--template', options.templateFile],
-    ['--execution', options.executionFile],
+    ...(!options.live ? [['--execution', options.executionFile]] : []),
   ]
     .filter(([, value]) => value === null)
     .map(([flag]) => flag);
@@ -120,6 +123,13 @@ export function runCollaborationCapabilitiesCommand(
       output,
       options,
       invalid(harness, [`missing required option(s): ${missing.join(', ')}.`]),
+    );
+  }
+  if (options.live && (harness !== 'pi' || options.executionFile !== null)) {
+    return emitInvalid(
+      output,
+      options,
+      invalid(harness, ['--live requires Pi and excludes --execution.']),
     );
   }
   if (harness === 'pi') {
@@ -180,6 +190,7 @@ export function runCollaborationCapabilitiesCommand(
     executionFile: options.executionFile!,
     sessionFile: options.sessionFile,
     eventsFile: options.eventsFile,
+    live: options.live ?? false,
   };
   const result = deriveCapabilityCard(deriveOptions);
   if (options.json) {

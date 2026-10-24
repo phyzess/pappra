@@ -20,6 +20,9 @@ assert('schema' in manifest && manifest.schema === 'pappra/assets/1');
 for (const [subpath, required] of [
   ['collab', ['store', 'resources', 'messages', 'handoff']],
   ['collab/admission', ['admitLaunch', 'reserveLaunch', 'settleLaunch']],
+  ['collab/role-plan', ['expandRolePlan', 'aggregateRolePlan']],
+  ['hosts/pi-managed', ['startManagedPiSession', 'requestManagedPiControl']],
+  ['hosts/pi-managed-sdk', ['startManagedPiSdkSession']],
   [
     'collaboration',
     [

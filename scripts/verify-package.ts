@@ -56,6 +56,9 @@ try {
   for (const file of [
     'dist/collab/work-plan.js',
     'dist/app/collab-work-plan.js',
+    'dist/app/collab-role-plan.js',
+    'dist/hosts/pi/managed-session.js',
+    'dist/hosts/pi/managed-session-extension.js',
     'dist/app/collab-work-execution.js',
     'dist/app/collab-recovery.js',
     'dist/app/collab-recovery-projection.js',
@@ -674,18 +677,19 @@ try {
   const sourcePackageBytes = readFileSync(
     join(selectedRealProject, 'package.json'),
   );
-  const runSelectedProject = (args: readonly string[]) =>
+  const runSelectedProject = (args: readonly string[], timeoutMs = 90_000) =>
     spawnSync(process.execPath, [installedCli, ...args], {
       cwd: selectedProjectWorkspace,
       encoding: 'utf8',
       shell: false,
-      timeout: 90_000,
+      timeout: timeoutMs,
       env: selectedProjectEnv,
     });
   const runSelectedProjectOk = (
     args: readonly string[],
+    timeoutMs = 90_000,
   ): Record<string, unknown> => {
-    const result = runSelectedProject(args);
+    const result = runSelectedProject(args, timeoutMs);
     if (result.error) throw result.error;
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
     return parseInstalled(result.stdout);
@@ -780,12 +784,11 @@ try {
   assert.equal(projectResume.schema, 'pappra/resume-packet/1');
   assert.equal(projectResume.executionAllowed, false);
   assert.equal(projectResume.contextCompleteness, 'complete');
-  const projectRuntime = runSelectedProjectOk([
-    'runtime',
-    'install',
-    '--apply',
-    '--json',
-  ]);
+  // Let npm's existing 120-second install deadline produce its own diagnostic.
+  const projectRuntime = runSelectedProjectOk(
+    ['runtime', 'install', '--apply', '--json'],
+    150_000,
+  );
   assert.equal(projectRuntime.ok, true);
   runSelectedProjectOk(['runtime', 'status', '--json']);
   assert.deepEqual(

@@ -305,6 +305,7 @@ interface ReservationFile {
   readonly key: string;
   readonly cause: RecoveryCause;
   readonly reserved_at: number;
+  owner_pid?: number;
   journal: JournalEntry[];
   final?: ReservationFinal;
 }
@@ -549,6 +550,11 @@ function parseReservation(raw: string): ReservationFile | null {
   if (file.schema !== RESERVATION_SCHEMA) return null;
   if (typeof file.key !== 'string') return null;
   if (typeof file.reserved_at !== 'number') return null;
+  if (
+    file.owner_pid !== undefined &&
+    (!Number.isSafeInteger(file.owner_pid) || Number(file.owner_pid) <= 0)
+  )
+    return null;
   if (!isCause(file.cause)) return null;
   if (!Array.isArray(file.journal) || !file.journal.every(isJournalEntry))
     return null;
@@ -630,6 +636,7 @@ function createReservationExclusive(
   try {
     const stat = fs.fstatSync(fd);
     fs.writeSync(fd, body);
+    fs.ftruncateSync(fd, Buffer.byteLength(body));
     fs.fsyncSync(fd);
     return { ok: true, id: { dev: stat.dev, ino: stat.ino } };
   } catch {
@@ -666,6 +673,7 @@ function safeUpdate(
     if (!stat.isFile() || stat.dev !== fileId.dev || stat.ino !== fileId.ino)
       return false;
     fs.writeSync(fd, body);
+    fs.ftruncateSync(fd, Buffer.byteLength(body));
     fs.fsyncSync(fd);
     return true;
   } catch {
@@ -933,8 +941,9 @@ async function runRecovery(
     );
   const file = path.join(sidecar.dir, `${key}.json`);
 
-  const firstBody = `${JSON.stringify({ schema: RESERVATION_SCHEMA, key, cause, reserved_at: now(), journal: [] } satisfies ReservationFile, null, 2)}\n`;
+  const firstBody = `${JSON.stringify({ schema: RESERVATION_SCHEMA, key, cause, reserved_at: now(), owner_pid: process.pid, journal: [] } satisfies ReservationFile, null, 2)}\n`;
   const create = createReservationExclusive(file, sidecar, firstBody);
+  let resumed: { reservation: ReservationFile; id: InodeId } | null = null;
   if (!create.ok) {
     if (create.reason === 'unsafe')
       return blocked(
@@ -973,26 +982,73 @@ async function runRecovery(
         ],
         limits: [...BASE_LIMITS, ...projection.limits],
       });
-    return unknownState(
-      action,
-      cause,
-      key,
-      file,
-      'a reservation exists with an in-flight intent and no final outcome; the prior effect is an actionable unknown. Not replaying; resolve via supported observation.',
-      projection,
-    );
+    const previousPid = existing.owner_pid;
+    let previousExited = false;
+    if (previousPid !== undefined) {
+      try {
+        process.kill(previousPid, 0);
+      } catch (error) {
+        previousExited = (error as NodeJS.ErrnoException).code === 'ESRCH';
+      }
+    }
+    const noEffect =
+      existing.key === key &&
+      existing.journal.length > 0 &&
+      existing.journal.length <= maxRetries &&
+      existing.journal.every(
+        (entry, index) =>
+          entry.seq === index &&
+          entry.outcome_at !== null &&
+          entry.observation === 'none' &&
+          (entry.disposition === 'failed' ||
+            entry.disposition === 'unavailable'),
+      );
+    if (previousExited && noEffect) {
+      // Each persisted retry boundary has one exclusive successor. A crash after
+      // this claim remains ambiguous; the same boundary is never claimed twice.
+      const claim = createReservationExclusive(
+        `${file}.resume-${existing.journal.length}.lock`,
+        sidecar,
+        `${JSON.stringify({ owner_pid: process.pid, prior_owner_pid: previousPid, key })}\n`,
+      );
+      if (claim.ok) {
+        const stat = fs.lstatSync(file);
+        if (stat.isFile() && !stat.isSymbolicLink()) {
+          const current = readReservation(file, sidecar);
+          if (current && serialize(current) === serialize(existing)) {
+            existing.owner_pid = process.pid;
+            const id = { dev: stat.dev, ino: stat.ino };
+            if (safeUpdate(file, id, sidecar, serialize(existing)))
+              resumed = { reservation: existing, id };
+          }
+        }
+      }
+    }
+    if (!resumed)
+      return unknownState(
+        action,
+        cause,
+        key,
+        file,
+        'a reservation exists with an in-flight intent and no final outcome; the prior effect is an actionable unknown. Not replaying; resolve via supported observation.',
+        projection,
+      );
   }
-  const fileId = create.id;
-  const reservation: ReservationFile = JSON.parse(firstBody) as ReservationFile;
+  const fileId = resumed ? resumed.id : create.ok ? create.id : null;
+  if (!fileId) throw new Error('recovery_reservation_identity_missing');
+  const reservation: ReservationFile = resumed
+    ? resumed.reservation
+    : (JSON.parse(firstBody) as ReservationFile);
+  const reservationCreated = resumed === null;
 
   // Per-attempt dispatch loop: fresh authority + sidecar/live-target revalidation before every attempt.
-  let retries = 0;
+  let retries = resumed ? reservation.journal.length : 0;
   let last: RecoveryControllerResult = {
     disposition: 'unknown',
     detail: 'no attempt made',
     observation: 'unknown',
   };
-  for (let attempt = 0; ; attempt += 1) {
+  for (let attempt = resumed ? reservation.journal.length : 0; ; attempt += 1) {
     if (attempt > 0) await sleep(Math.min(2000, 100 * 2 ** (attempt - 1)));
 
     const recheckBlock = await revalidateBeforeAttempt(
@@ -1014,6 +1070,7 @@ async function runRecovery(
         recheckBlock,
         projection,
         key,
+        reservationCreated,
       );
 
     const entry: JournalEntry = {
@@ -1030,7 +1087,7 @@ async function runRecovery(
         cause,
         'the reservation file was redirected or replaced before dispatch; refusing to write or wake.',
         projection,
-        { key, path: file, created: true },
+        { key, path: file, created: reservationCreated },
       );
 
     const target: RecoveryContinuationTarget = {
@@ -1098,7 +1155,12 @@ async function runRecovery(
         status: outcomePersisted ? status : 'unknown',
         action,
         cause,
-        reservation: { key, path: file, created: true, outcome: status },
+        reservation: {
+          key,
+          path: file,
+          created: reservationCreated,
+          outcome: status,
+        },
         performed: last,
         retries,
         notes,
@@ -1115,7 +1177,12 @@ async function runRecovery(
         status: 'unknown',
         action,
         cause,
-        reservation: { key, path: file, created: true, outcome: 'unknown' },
+        reservation: {
+          key,
+          path: file,
+          created: reservationCreated,
+          outcome: 'unknown',
+        },
         performed: last,
         retries,
         notes,
@@ -1231,6 +1298,7 @@ function blockedAfterReserve(
   note: string,
   projection: RecoveryProjection,
   key: string,
+  created: boolean,
 ): RecoveryExecutionResult {
   reservation.final = {
     status: 'blocked',
@@ -1242,7 +1310,7 @@ function blockedAfterReserve(
   return blocked(action, cause, note, projection, {
     key,
     path: file,
-    created: true,
+    created,
   });
 }
 

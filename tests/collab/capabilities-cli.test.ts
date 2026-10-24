@@ -78,6 +78,27 @@ function snapshot(fixture: CapabilitiesFixture): string[] {
   );
 }
 
+test('Pi --live derives directly from a saved interactive session and rejects incompatible modes', () => {
+  const fixture = makeCapabilitiesFixture('pi-live-cli', { harness: 'pi' });
+  try {
+    const args = argsFor(fixture);
+    const executionIndex = args.indexOf('--execution');
+    args.splice(executionIndex, 2, '--live');
+    const before = snapshot(fixture);
+    const result = run(args, fixture.cwd);
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    const parsed = JSON.parse(result.stdout) as Record<string, unknown>;
+    assert.equal(parsed.status, 'derived');
+    assert.deepEqual(snapshot(fixture), before);
+    for (const extra of [['--execution', fixture.executionFile], ['--live']]) {
+      const invalid = run([...args, ...extra], fixture.cwd);
+      assert.equal(invalid.status, 2, invalid.stdout + invalid.stderr);
+    }
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
 for (const harness of ['pi', 'codex', 'claude'] as FixtureHarness[]) {
   test(`installed ${harness} derivation is read-only from an unrelated cwd`, () => {
     const fixture = makeCapabilitiesFixture(`c3-cli-${harness}`, { harness });

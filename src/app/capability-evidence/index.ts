@@ -20,7 +20,8 @@ export interface DeriveCapabilitiesOptions {
   readonly harness: EvidenceHarness;
   readonly assignmentFile: string;
   readonly templateFile: string;
-  readonly executionFile: string;
+  readonly executionFile?: string | null;
+  readonly live?: boolean;
   readonly sessionFile?: string | null;
   readonly eventsFile?: string | null;
 }
@@ -89,6 +90,12 @@ function invalid(
 export function deriveCapabilityCard(
   options: DeriveCapabilitiesOptions,
 ): CapabilityEvidenceResult {
+  if (options.live && options.harness !== 'pi')
+    return invalid(options.harness, ['live_only_supported_for_pi']);
+  if (options.live && options.executionFile)
+    return invalid(options.harness, ['live_execution_conflict']);
+  if (!options.live && !options.executionFile)
+    return invalid(options.harness, ['execution_required']);
   const assignment = readConfiguration(options.assignmentFile, 'assignment');
   if (!assignment.ok) return invalid(options.harness, [assignment.error]);
   const template = readConfiguration(options.templateFile, 'template');
@@ -102,7 +109,8 @@ export function deriveCapabilityCard(
       assignment: assignment.value as Assignment,
       template: template.value as CapabilityCard,
       sessionFile: options.sessionFile,
-      executionFile: options.executionFile,
+      executionFile: options.executionFile ?? null,
+      live: options.live ?? false,
     });
   } else if (options.harness === 'codex') {
     if (!options.eventsFile)
@@ -111,7 +119,7 @@ export function deriveCapabilityCard(
       assignment: assignment.value as Assignment,
       template: template.value as CapabilityCard,
       eventsFile: options.eventsFile,
-      executionFile: options.executionFile,
+      executionFile: options.executionFile!,
     });
   } else {
     if (!options.eventsFile)
@@ -120,7 +128,7 @@ export function deriveCapabilityCard(
       assignment: assignment.value as Assignment,
       template: template.value as CapabilityCard,
       eventsFile: options.eventsFile,
-      executionFile: options.executionFile,
+      executionFile: options.executionFile!,
     });
   }
 

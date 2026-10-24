@@ -110,6 +110,19 @@ requires an explicit controller. `--controller pi-rpc` is the host-directs/Pi-ex
 path, verified end to end against Pi 1.3.0; see [Pi RPC collaboration](docs/pi-rpc.md).
 They are not needed for the core workflow above.
 
+For a fresh controller-owned visible Pi TUI, use `pappra session plan` then
+`pappra session start --config <absolute-file>`. The controller preserves normal
+Pi configuration, selects an explicit OpenRouter model, journals terminal input
+and exposes a private status/fence/stop endpoint. See
+[managed Pi sessions](docs/managed-pi-session.md). Opt-in SDK mode pins Pi 1.4.0
+and observes native queues and dialogs within its owned runtime. External writers
+and unowned descendants remain outside that proof. Threshold-driven checkpoint
+and bundle capture are available through [automatic handoff](docs/automatic-handoff.md);
+ownership transfer still requires the existing supported transition contract.
+[Role plans](docs/collaboration-role-plan.md) support an optional planner before
+independent writers and a final reviewer; [event orchestration](docs/collaboration-role-orchestration.md)
+dispatches ready assignments and aggregates authoritative results.
+
 ## What it manages
 
 - **Workspace configuration:** `.pappra/workspace.json` and checkout-local `.pappra/local/machine.json`.

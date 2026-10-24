@@ -580,3 +580,93 @@ test('treats non-regular .json journal candidates as unreadable and never follow
     cleanup(root);
   }
 });
+
+test('installs self runtimes from local dependencies without registry access', async () => {
+  const root = makeTempDir('runtime-self-cold-cache');
+  const dependencyName = 'pappra-runtime-fixture-dependency';
+  const packageName = 'pappra-runtime-fixture';
+  const packageRoot = join(root, 'self-package');
+  const dependencyRoot = join(packageRoot, 'node_modules', dependencyName);
+  const envKeys = [
+    'HOME',
+    'npm_config_cache',
+    'npm_config_registry',
+    'npm_config_fetch_retries',
+    'npm_config_fetch_timeout',
+  ];
+  const originalEnvironment = new Map(
+    envKeys.map((key) => [key, process.env[key]]),
+  );
+  try {
+    mkdirSync(join(packageRoot, 'dist', 'cli'), { recursive: true });
+    mkdirSync(dependencyRoot, { recursive: true });
+    writeFileSync(
+      join(packageRoot, 'package.json'),
+      `${JSON.stringify(
+        {
+          name: packageName,
+          version,
+          type: 'module',
+          bin: { pappra: 'dist/cli/main.js' },
+          files: ['dist'],
+          dependencies: { [dependencyName]: '1.0.0' },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(
+      join(packageRoot, 'dist', 'cli', 'main.js'),
+      [
+        '#!/usr/bin/env node',
+        `import { marker } from '${dependencyName}';`,
+        `if (marker !== 'bundled') process.exitCode = 1;`,
+        `else process.stdout.write(JSON.stringify({ version: '${version}' }) + '\\n');`,
+        '',
+      ].join('\n'),
+    );
+    writeFileSync(
+      join(dependencyRoot, 'package.json'),
+      `${JSON.stringify({
+        name: dependencyName,
+        version: '1.0.0',
+        type: 'module',
+        exports: './index.js',
+      })}\n`,
+    );
+    writeFileSync(
+      join(dependencyRoot, 'index.js'),
+      "export const marker = 'bundled';\n",
+    );
+
+    process.env['HOME'] = join(root, 'fixture-home');
+    process.env['npm_config_cache'] = join(root, 'empty-npm-cache');
+    process.env['npm_config_registry'] = 'http://127.0.0.1:9/';
+    process.env['npm_config_fetch_retries'] = '0';
+    process.env['npm_config_fetch_timeout'] = '1000';
+    const installed = await installRuntime({
+      version,
+      packageName,
+      source: { kind: 'self', path: packageRoot },
+      dataDir: join(root, 'data'),
+      timeoutMs: 5_000,
+    });
+
+    assert.equal(
+      installed.ok,
+      true,
+      JSON.stringify({
+        diagnostics: installed.diagnostics,
+        journal: installed.journal,
+      }),
+    );
+    assert.equal(installed.status, 'installed');
+    assert.equal(installed.manifest?.source.kind, 'self');
+  } finally {
+    for (const [key, value] of originalEnvironment) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    cleanup(root);
+  }
+});

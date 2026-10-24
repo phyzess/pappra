@@ -4,6 +4,13 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { runCli } from '../../src/cli/run.js';
+import { retireManagedPiSource } from '../../src/app/managed-pi-retirement.js';
+import { prepareManagedPiHandoffReceiver } from '../../src/app/managed-pi-handoff-receiver.js';
+import { watchManagedPiBootstrapAdmission } from '../../src/app/managed-pi-bootstrap-admission.js';
+import { readManagedSourceAssignment } from '../../src/app/managed-pi-source-admission.js';
+import { validateSuccession } from '../../src/app/collab-route.js';
+import { readPiBootstrapConfig } from '../../src/hosts/integration/bootstrap-config.js';
+import type { ManagedPiSdkSessionController } from '../../src/hosts/pi/managed-sdk-session.js';
 import { bindNative } from '../../src/collab/lifecycle.js';
 import {
   buildMessage,
@@ -626,7 +633,7 @@ class FixtureBootstrap implements SessionTransitionBootstrapExecutor {
       requested_session_id: SUCCESSOR.session_id,
       transport: 'herdr',
       reserved_at: new Date().toISOString(),
-      released_at: null,
+      released_at: new Date().toISOString(),
       outcome: 'submitted',
       phase: 'completed',
       bootstrap: {
@@ -796,12 +803,186 @@ function transitionDeps(
   return { host, bootstrap, herdr };
 }
 
+test('transition journal and rollover intent retain distinct identifiers across replay', async () => {
+  const value = await fixture('distinct-transition-intent');
+  try {
+    const host = fakeHost({ cwd: value.cwd, supported: false });
+    const bootstrap = new FixtureBootstrap(value);
+    const request = {
+      ...value.request,
+      transition_id: 'separate-transition-journal',
+    };
+    const deps = transitionDeps(host.host, bootstrap);
+    for (let replay = 0; replay < 2; replay++) {
+      const result = await applySessionTransition(request, deps);
+      assert.equal(
+        result.code,
+        'pi_native_quiescence_proof_unavailable',
+        JSON.stringify(result),
+      );
+      assert.equal(result.stage, 'awaiting_quiescence');
+    }
+    assert.equal(value.load().rollover?.length, 1);
+    assert.equal(value.load().rollover?.[0]?.intent_id, INTENT_ID);
+    assert.equal(
+      (value.load().session_transition_journal as SessionTransitionJournal)
+        .entries[0]?.transition_id,
+      request.transition_id,
+    );
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('managed receiver verifies context before ACK and cannot start work before transfer', async () => {
+  const value = await fixture('managed-context-receiver');
+  try {
+    const host = fakeHost({ cwd: value.cwd, supported: true });
+    const bootstrap = new FixtureBootstrap(value);
+    await applySessionTransition(
+      value.request,
+      transitionDeps(host.host, bootstrap),
+    );
+    await applySessionTransition(
+      value.request,
+      transitionDeps(host.host, bootstrap),
+    );
+    const config = readPiBootstrapConfig(
+      value.bootstrapRequest.bootstrap.config_ref,
+    );
+    assert(config.ok);
+    const referenceFile = join(value.root, 'receiver-context.json');
+    writeJson(referenceFile, {
+      schema: 'pappra/managed-handoff-context/1',
+      task_root: value.taskRoot,
+      transition_id: value.request.transition_id,
+      intent_id: value.request.intent.intent_id,
+      handoff_id: value.request.intent.handoff_id,
+      generation: value.request.intent.generation,
+      bundle: value.request.bundle,
+    });
+    const imports: string[] = [];
+    let prompts = 0;
+    let lifecycleListener: ((event: unknown) => void) | undefined;
+    const runtime = {
+      observe: () => ({
+        native: { sessionId: SUCCESSOR.session_id },
+        cwd: value.cwd,
+      }),
+      importHandoffContext: async (text: string) => {
+        imports.push(text);
+      },
+      subscribe: (listener: (event: unknown) => void) => {
+        lifecycleListener = listener;
+        return () => {
+          lifecycleListener = undefined;
+        };
+      },
+      submitInput: () => {
+        prompts++;
+      },
+    } as unknown as ManagedPiSdkSessionController;
+    const journalPath = join(value.root, 'receiver.jsonl');
+    const receiver = await prepareManagedPiHandoffReceiver(
+      runtime,
+      config.config,
+      referenceFile,
+      journalPath,
+    );
+    try {
+      assert.equal(imports.length, 1);
+      assert.match(imports[0]!, /Next action: Inspect only/);
+      assert.equal(receiver.status().ack_registered, true);
+      assert.equal(receiver.priorSourceRetired(), false);
+      assert.throws(
+        () => receiver.startWork(),
+        /receiver_work_before_transfer/,
+      );
+      assert.equal(prompts, 0);
+      assert.equal(
+        value.load().attempts[0]?.assignee.session_id,
+        SOURCE.session_id,
+      );
+      assert.equal(value.load().claims[0]?.resource_epoch, 1);
+      await assert.rejects(
+        prepareManagedPiHandoffReceiver(
+          runtime,
+          config.config,
+          referenceFile,
+          journalPath,
+        ),
+        /EEXIST/,
+      );
+      assert.equal(
+        imports.length,
+        1,
+        'a reserved native context import is never repeated implicitly',
+      );
+      const ack = value
+        .load()
+        .messages.find((message) => message.type === 'ACK');
+      assert(ack);
+      const transferred = await applySessionTransition(
+        {
+          ...value.request,
+          evidence: {
+            ack_message_id: ack.message_id,
+            first_work_report_id: null,
+          },
+        },
+        transitionDeps(host.host, bootstrap),
+      );
+      assert.equal(
+        transferred.stage,
+        'awaiting_first_work',
+        JSON.stringify(transferred),
+      );
+      receiver.startWork();
+      assert.equal(prompts, 1);
+      lifecycleListener?.({
+        type: 'agent_end',
+        messages: [
+          {
+            role: 'assistant',
+            stopReason: 'stop',
+            content: [{ type: 'text', text: 'First owned work finished.' }],
+          },
+        ],
+      });
+      lifecycleListener?.({ type: 'agent_settled', aborted: false });
+      assert.equal(
+        receiver.status().first_work_observed,
+        true,
+        JSON.stringify(receiver.status()),
+      );
+      const firstWork = value
+        .load()
+        .messages.find((message) => message.type === 'REPORT');
+      assert(firstWork);
+      const reported = JSON.parse(
+        readFileSync(
+          join(value.taskRoot, 'messages', `${firstWork.message_id}.json`),
+          'utf8',
+        ),
+      );
+      assert.equal(reported.body.rollover_intent_id, INTENT_ID);
+      assert.equal(reported.body.phase, 'handoff-first-work');
+      assert.equal(value.load().attempts[0]?.state, 'running');
+    } finally {
+      receiver.close();
+    }
+  } finally {
+    value.cleanup();
+  }
+});
+
 test('plan is read-only and installed Pi evidence blocks before freeze or successor launch', async () => {
   const value = await fixture('pi-unavailable');
   try {
     const host = fakeHost({ cwd: value.cwd, supported: false });
     const bootstrap = new FixtureBootstrap(value);
     const deps = transitionDeps(host.host, bootstrap);
+
     const initial = value.load();
     const plan = await planSessionTransition(value.request, deps);
     assert.equal(plan.status, 'planned', JSON.stringify(plan));
@@ -1015,12 +1196,64 @@ test('authority drift during awaited live successor observation prevents claim t
   }
 });
 
-test('supported test-only adapter orders ACK, claim/route transfer, first work and reversible retirement', async () => {
+test('supported test-only adapter orders ACK, claim/route transfer, first work and reversible retirement', async (t) => {
   const value = await fixture('complete-supported-flow');
   try {
     const host = fakeHost({ cwd: value.cwd, supported: true });
     const bootstrap = new FixtureBootstrap(value);
     const deps = transitionDeps(host.host, bootstrap);
+
+    const nativeFile = join(value.root, 'retirement-source.jsonl');
+    const nativeBytes = `${JSON.stringify({ type: 'session', id: SOURCE.session_id, cwd: value.cwd })}\n`;
+    writeFileSync(nativeFile, nativeBytes, { mode: 0o600 });
+    type RetirementRuntime = Parameters<typeof retireManagedPiSource>[1];
+    let disposed = false;
+    let stops = 0;
+    const nativeSnapshot = () =>
+      ({
+        session: { sessionId: SOURCE.session_id, sessionFile: nativeFile },
+        scopedQuiescent: true,
+      }) as ReturnType<RetirementRuntime['snapshot']>;
+    const runtime: RetirementRuntime = {
+      observe: () => ({
+        native: {
+          harness: 'pi',
+          sessionId: SOURCE.session_id,
+          agentId: SOURCE.agent_id,
+          paneId: null,
+          surface: 'fixture',
+          configurationId: null,
+          modelObservation: {
+            model: 'fixture',
+            provider: 'fixture',
+            reasoning: null,
+          },
+        },
+        cwd: value.cwd,
+        contextPercent: 80,
+      }),
+      snapshot: nativeSnapshot,
+      get isDisposed() {
+        return disposed;
+      },
+      stopOwnedRuntime: async () => {
+        stops++;
+        disposed = true;
+        return {
+          status: 'runtime_disposed',
+          sessionId: SOURCE.session_id,
+          process: { pid: process.pid, exit: 'not_owned' },
+          finalSnapshot: nativeSnapshot(),
+        };
+      },
+    };
+    await assert.rejects(
+      () => retireManagedPiSource(value.request, runtime, deps),
+      /retirement_first_work_gate_unsatisfied/,
+    );
+    assert.equal(stops, 0);
+    assert.equal(host.freezeCalls(), 0);
+    assert.equal(bootstrap.applyCalls, 0);
 
     const prepared = await applySessionTransition(value.request, deps);
     assert.equal(prepared.status, 'progressed', JSON.stringify(prepared));
@@ -1045,6 +1278,67 @@ test('supported test-only adapter orders ACK, claim/route transfer, first work a
     assert.equal(waitingAck.code, null);
     assert.equal(bootstrap.applyCalls, 1);
     assert.equal(value.load().claims?.[0]?.holder.agent_id, SOURCE.agent_id);
+
+    const bootstrapConfig = readPiBootstrapConfig(
+      value.bootstrapRequest.bootstrap.config_ref,
+    );
+    assert(bootstrapConfig.ok);
+    let receiverBinds = 0;
+    const admissionRuntime = {
+      observe: () => ({
+        native: { sessionId: SUCCESSOR.session_id },
+        cwd: value.cwd,
+      }),
+      snapshot: () => ({
+        session: { sessionId: SUCCESSOR.session_id },
+        ingress: { state: 'open', healthy: true },
+        ownedRuntime: {
+          queues: {
+            completeness: 'complete',
+            pendingMessageCount: 0,
+            steering: [],
+            followUp: [],
+            internal: {
+              pendingNextTurn: [],
+              pendingCustom: [],
+              pendingBash: [],
+              deferredSettledActionCount: 0,
+              pendingUserInputs: [],
+              compactionMessages: [],
+              extensionDialogCount: 0,
+              activeSelector: false,
+            },
+          },
+          work: {
+            observation: 'complete',
+            isIdle: true,
+            isStreaming: false,
+            isCompacting: false,
+            isBashRunning: false,
+            hasPendingBashMessages: false,
+            pendingToolCalls: 0,
+          },
+          extensionDialogs: { completeness: 'complete', pending: [] },
+          builtInUiApprovals: { observation: 'complete', uncoveredPaths: [] },
+        },
+      }),
+      inventory: async () => ({
+        completeness: 'complete',
+        inflight: [],
+        pending_approvals: [],
+        pending_messages: [],
+      }),
+      subscribe: () => () => {},
+    } as unknown as ManagedPiSdkSessionController;
+    const receiverAdmission = await watchManagedPiBootstrapAdmission(
+      admissionRuntime,
+      bootstrapConfig.config,
+      async () => {
+        receiverBinds++;
+      },
+    );
+    t.after(() => receiverAdmission.close());
+    assert.equal(receiverAdmission.status().state, 'awaiting_transfer');
 
     const badAck = value.send({
       message_id: 'msg-bad-successor-ack',
@@ -1110,6 +1404,14 @@ test('supported test-only adapter orders ACK, claim/route transfer, first work a
       }),
     );
     assert.equal(transferred.stage, 'awaiting_first_work');
+    await receiverAdmission.refresh();
+    assert.equal(
+      receiverAdmission.status().state,
+      'bound',
+      JSON.stringify(receiverAdmission.status()),
+    );
+    await receiverAdmission.refresh();
+    assert.equal(receiverBinds, 1);
     const transferredJournal = value.load()
       .session_transition_journal as SessionTransitionJournal;
     const transferReceipt =
@@ -1217,6 +1519,93 @@ test('supported test-only adapter orders ACK, claim/route transfer, first work a
     assert.equal(retired.archive?.['original_transcript'], 'retained-in-place');
     assert.equal(retired.archive?.['reversible'], true);
     assert.equal(retired.capabilities.notification_route_exclusion, 'excluded');
+    const admissionRecord = structuredClone(value.load());
+    const activeAttempt = admissionRecord.attempts[0]!;
+    const succession = validateSuccession(
+      admissionRecord,
+      admissionRecord.successions?.[0],
+    );
+    assert(succession.ok);
+    const original = JSON.parse(readFileSync(value.assignmentFile, 'utf8'));
+    const actor = { ...original.assignee, ...SUCCESSOR };
+    const derivedAssignment = {
+      ...original,
+      assignee: actor,
+      resources: original.resources.map(
+        (resource: { resource_epoch: number }) => ({
+          ...resource,
+          resource_epoch: 2,
+        }),
+      ),
+    };
+    const derivedFile = join(value.root, 'successor-source.assignment.json');
+    writeJson(derivedFile, derivedAssignment);
+    const scope = {
+      schema: 'pappra/managed-pi-execution-scope/1',
+      task_id: TASK_ID,
+      task_root: value.taskRoot,
+      session_id: SUCCESSOR.session_id,
+      cwd: value.cwd,
+      subtask_id: SUBTASK_ID,
+      attempt: 1,
+      owner_epoch: 1,
+      claim_epochs: [{ claim_id: value.claimId, resource_epoch: 2 }],
+    };
+    admissionRecord.managed_pi_runtime_registry = [
+      {
+        session_id: SUCCESSOR.session_id,
+        controller_run_id: 'fixture-owned-runtime',
+        scope,
+      },
+    ];
+    admissionRecord.managed_pi_source_admissions = [
+      {
+        schema: 'pappra/managed-source-admission/1',
+        task_id: TASK_ID,
+        subtask_id: SUBTASK_ID,
+        attempt: 1,
+        input_revision: value.inputRevision,
+        owner_epoch: 1,
+        origin_ref: activeAttempt.assignment_ref,
+        origin_digest: activeAttempt.assignment_digest,
+        assignment_ref: derivedFile,
+        assignment_digest: sha256File(derivedFile),
+        actor,
+        scope,
+        controller_run_id: 'fixture-owned-runtime',
+        predecessor_handoff_id: HANDOFF_ID,
+        predecessor_proof_digest: succession.exclusion.proof_digest,
+        claims: admissionRecord.claims.map((claim) => ({
+          claim_id: claim.claim_id,
+          resource_epoch: claim.resource_epoch,
+          path: claim.path,
+          access: claim.access,
+          key: claim.key,
+        })),
+      },
+    ];
+    assert.equal(
+      readManagedSourceAssignment(admissionRecord, activeAttempt).file,
+      derivedFile,
+    );
+    assert.equal(
+      readManagedSourceAssignment(admissionRecord, activeAttempt, SOURCE).file,
+      value.assignmentFile,
+    );
+    assert.equal(
+      activeAttempt.assignment_ref,
+      value.assignmentFile,
+      'the original ASSIGN remains immutable',
+    );
+    writeJson(derivedFile, {
+      ...derivedAssignment,
+      objective: 'Amplified objective',
+    });
+    assert.throws(
+      () => readManagedSourceAssignment(admissionRecord, activeAttempt),
+      /managed_source_assignment_changed/,
+    );
+    writeJson(derivedFile, derivedAssignment);
     const archiveRef = retired.archive?.['ref'];
     assert.equal(typeof archiveRef, 'string');
     assert.equal(
@@ -1225,6 +1614,36 @@ test('supported test-only adapter orders ACK, claim/route transfer, first work a
     );
 
     const archiveStatBefore = readFileSync(archiveRef as string);
+    const retained = await retireManagedPiSource(
+      firstWorkRequest.value.request,
+      runtime,
+      deps,
+    );
+    assert.equal(
+      retained.receipt.status,
+      'runtime_disposed_and_transcript_retained',
+    );
+    assert.equal(retained.receipt.stop.process_exit, 'not_owned');
+    assert.equal(stops, 1);
+    assert.equal(readFileSync(nativeFile, 'utf8'), nativeBytes);
+    assert.equal(
+      readFileSync(
+        join(value.request.bundle.root, retained.receipt.transcript.ref),
+        'utf8',
+      ),
+      nativeBytes,
+    );
+    assert.equal(
+      (
+        await retireManagedPiSource(
+          firstWorkRequest.value.request,
+          runtime,
+          deps,
+        )
+      ).duplicate,
+      true,
+    );
+    assert.equal(stops, 1);
     let stdout = '';
     let stderr = '';
     const cliCode = await runCli(

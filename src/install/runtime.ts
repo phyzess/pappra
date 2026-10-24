@@ -291,8 +291,128 @@ function npmCommand(): {
 
 interface SelfPackageTarball {
   readonly directory: string;
+  readonly packageDirectory: string;
+  readonly dependenciesAvailable: boolean;
   readonly tarball: string;
   readonly digest: string;
+}
+
+function packageDependencyNames(value: unknown): string[] | null {
+  if (value === undefined) return [];
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return null;
+  }
+  const entries = Object.entries(value);
+  if (
+    entries.some(
+      ([name, range]) =>
+        !/^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/.test(name) ||
+        typeof range !== 'string',
+    )
+  ) {
+    return null;
+  }
+  return entries.map(([name]) => name);
+}
+
+async function installedDependencyDirectory(
+  sourcePackageRoot: string,
+  expectedName: string,
+): Promise<string | null> {
+  let current = sourcePackageRoot;
+  while (true) {
+    const candidate = join(current, 'node_modules', ...expectedName.split('/'));
+    const realPath = await resolveRealpath(candidate);
+    if (
+      realPath !== null &&
+      (await observePath(realPath)).kind === 'directory'
+    ) {
+      const manifestRead = await readTextFileBounded(
+        join(realPath, 'package.json'),
+      );
+      if (manifestRead.ok) {
+        try {
+          const decoded: unknown = JSON.parse(manifestRead.value.text);
+          if (
+            typeof decoded === 'object' &&
+            decoded !== null &&
+            'name' in decoded &&
+            decoded.name === expectedName
+          ) {
+            return realPath;
+          }
+        } catch {
+          return null;
+        }
+      }
+    }
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+async function copyInstalledPackageDependencies(
+  sourcePackageRoot: string,
+  targetPackageRoot: string,
+  activeSources = new Set<string>(),
+): Promise<boolean> {
+  const manifestRead = await readTextFileBounded(
+    join(sourcePackageRoot, 'package.json'),
+  );
+  if (!manifestRead.ok) return false;
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(manifestRead.value.text);
+  } catch {
+    return false;
+  }
+  if (typeof decoded !== 'object' || decoded === null) return false;
+  const manifest = decoded as {
+    readonly dependencies?: unknown;
+    readonly optionalDependencies?: unknown;
+  };
+  const dependencies = packageDependencyNames(manifest.dependencies);
+  const optionalDependencies = packageDependencyNames(
+    manifest.optionalDependencies,
+  );
+  if (dependencies === null || optionalDependencies === null) return false;
+  const names = [...new Set([...dependencies, ...optionalDependencies])];
+  if (names.length === 0) return true;
+
+  const realPackageRoot = await resolveRealpath(sourcePackageRoot);
+  if (realPackageRoot === null || activeSources.has(realPackageRoot)) {
+    return true;
+  }
+  const nextActiveSources = new Set(activeSources).add(realPackageRoot);
+  for (const name of names) {
+    const dependencyRoot = await installedDependencyDirectory(
+      realPackageRoot,
+      name,
+    );
+    if (dependencyRoot === null) return false;
+    const destination = join(
+      targetPackageRoot,
+      'node_modules',
+      ...name.split('/'),
+    );
+    await mkdir(dirname(destination), { recursive: true });
+    await cp(dependencyRoot, destination, {
+      recursive: true,
+      dereference: true,
+      force: true,
+    });
+    if (
+      !(await copyInstalledPackageDependencies(
+        dependencyRoot,
+        destination,
+        nextActiveSources,
+      ))
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -323,12 +443,17 @@ async function packSelfPackage(
   const manifest = decoded as {
     readonly name?: unknown;
     readonly version?: unknown;
+    readonly dependencies?: unknown;
+    readonly optionalDependencies?: unknown;
   };
   if (manifest.name !== packageName || manifest.version !== version) {
     throw new Error(
       `Running package ${String(manifest.name)}@${String(manifest.version)} does not match ${packageName}@${version}.`,
     );
   }
+  const dependenciesAvailable =
+    packageDependencyNames(manifest.dependencies) !== null &&
+    packageDependencyNames(manifest.optionalDependencies) !== null;
   const directory = await mkdtemp(join(tmpdir(), 'pappra-self-'));
   // Pack a staging copy: npm refuses to pack reliably from inside a dependency
   // tree (a known "Exit handler never called!" failure on Linux CI).
@@ -350,6 +475,13 @@ async function packSelfPackage(
       dereference: true,
       force: true,
     });
+  }
+  let hasInstalledDependencies = dependenciesAvailable;
+  if (hasInstalledDependencies) {
+    hasInstalledDependencies = await copyInstalledPackageDependencies(
+      packageRoot,
+      staging,
+    );
   }
   const npm = npmCommand();
   const packed = await runCommand(
@@ -389,7 +521,13 @@ async function packSelfPackage(
   }
   const tarball = join(directory, filename);
   const bytes = await readFile(tarball);
-  return { directory, tarball, digest: sha256Digest(bytes) };
+  return {
+    directory,
+    packageDirectory: staging,
+    dependenciesAvailable: hasInstalledDependencies,
+    tarball,
+    digest: sha256Digest(bytes),
+  };
 }
 
 async function readPackageManifest(
@@ -915,32 +1053,44 @@ export async function installRuntime(
       throw new Error(`Cannot update install journal: ${journalFile}`);
     }
 
-    const npm = npmCommand();
-    const installArgs = [
-      ...npm.args,
-      'install',
-      '--prefix',
-      stage,
-      '--ignore-scripts',
-      '--no-audit',
-      '--no-fund',
-      '--no-package-lock',
-      '--save-exact',
-      ...(options.offline === true ? ['--offline'] : []),
-      source.kind === 'tarball' || source.kind === 'self'
-        ? source.kind === 'tarball'
-          ? source.path
-          : source.tarball
-        : `${source.packageName}@${source.version}`,
-    ];
-    const installed = await runCommand(npm.executable, installArgs, {
-      cwd: stage,
-      timeoutMs,
-    });
-    if (installed.timedOut || installed.code !== 0) {
-      throw new Error(
-        `Package manager install failed (${installed.timedOut ? 'timeout' : `exit ${String(installed.code)}`}): ${installed.stderr.slice(0, 1000)}`,
+    // Reuse installed versions when available so self installs do not depend on npm registry/cache.
+    if (
+      options.source.kind === 'self' &&
+      selfPackage?.dependenciesAvailable === true
+    ) {
+      await cp(
+        selfPackage.packageDirectory,
+        join(stage, 'node_modules', ...packageName.split('/')),
+        { recursive: true, dereference: true, force: true },
       );
+    } else {
+      const npm = npmCommand();
+      const installArgs = [
+        ...npm.args,
+        'install',
+        '--prefix',
+        stage,
+        '--ignore-scripts',
+        '--no-audit',
+        '--no-fund',
+        '--no-package-lock',
+        '--save-exact',
+        ...(options.offline === true ? ['--offline'] : []),
+        source.kind === 'tarball' || source.kind === 'self'
+          ? source.kind === 'tarball'
+            ? source.path
+            : source.tarball
+          : `${source.packageName}@${source.version}`,
+      ];
+      const installed = await runCommand(npm.executable, installArgs, {
+        cwd: stage,
+        timeoutMs,
+      });
+      if (installed.timedOut || installed.code !== 0) {
+        throw new Error(
+          `Package manager install failed (${installed.timedOut ? 'timeout' : `exit ${String(installed.code)}`}): ${installed.stderr.slice(0, 1000)}`,
+        );
+      }
     }
     if (selfPackage !== null) {
       await rm(selfPackage.directory, { recursive: true, force: true }).catch(

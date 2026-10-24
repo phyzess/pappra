@@ -31,6 +31,18 @@
       "types": "./dist/collab/work-plan.d.ts",
       "import": "./dist/collab/work-plan.js"
     },
+    "./collab/role-plan": {
+      "types": "./dist/app/collab-role-plan.d.ts",
+      "import": "./dist/app/collab-role-plan.js"
+    },
+    "./collab/role-orchestration": {
+      "types": "./dist/app/collab-role-orchestration.d.ts",
+      "import": "./dist/app/collab-role-orchestration.js"
+    },
+    "./collab/automatic-handoff": {
+      "types": "./dist/app/collab-auto-handoff.d.ts",
+      "import": "./dist/app/collab-auto-handoff.js"
+    },
     "./collab/work-plan-inspection": {
       "types": "./dist/app/collab-work-plan.d.ts",
       "import": "./dist/app/collab-work-plan.js"
@@ -58,6 +70,14 @@
     "./hosts/pi-recovery": {
       "types": "./dist/hosts/integration/pi-recovery-extension.d.ts",
       "import": "./dist/hosts/integration/pi-recovery-extension.js"
+    },
+    "./hosts/pi-managed": {
+      "types": "./dist/hosts/pi/managed-session.d.ts",
+      "import": "./dist/hosts/pi/managed-session.js"
+    },
+    "./hosts/pi-managed-sdk": {
+      "types": "./dist/hosts/pi/managed-sdk-session.d.ts",
+      "import": "./dist/hosts/pi/managed-sdk-session.js"
     },
     "./hosts/pi-session-transition": {
       "types": "./dist/hosts/integration/pi-session-transition-extension.d.ts",

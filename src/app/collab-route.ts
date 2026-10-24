@@ -7,6 +7,7 @@ import type {
 } from '../collab/types.js';
 import { isTaskRecord } from '../collab/validation.js';
 import { findHandoff } from '../collab/handoff.js';
+import { isNativeFirstWorkResult } from '../collab/first-work.js';
 
 /**
  * Pure current-record notify route exclusion.
@@ -319,7 +320,7 @@ export function validateSuccession(
       'succession_result_not_admitted',
       `first-work result is ${result.classification}, not applied`,
     );
-  if (result.status !== 'completed')
+  if (result.status !== 'completed' && !isNativeFirstWorkResult(result, intent))
     return rejected(
       'succession_result_not_completed',
       `first-work result is ${result.status}, not completed`,

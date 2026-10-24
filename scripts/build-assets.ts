@@ -12,6 +12,7 @@ chmodSync(join(projectRoot, 'dist/cli/main.js'), 0o755);
 const hostRuntime = join(projectRoot, 'dist/hosts/integration');
 await build({
   entryPoints: [join(hostRuntime, 'hook-entry.js')],
+  absWorkingDir: projectRoot,
   outfile: join(hostRuntime, 'pappra-hook.mjs'),
   bundle: true,
   platform: 'node',
@@ -23,6 +24,7 @@ await build({
 });
 await build({
   entryPoints: [join(hostRuntime, 'pi-extension-runtime.js')],
+  absWorkingDir: projectRoot,
   outfile: join(hostRuntime, 'pappra-extension-runtime.mjs'),
   bundle: true,
   platform: 'node',
@@ -42,6 +44,7 @@ await build({
 });
 await build({
   entryPoints: [join(hostRuntime, 'pi-bootstrap-extension.js')],
+  absWorkingDir: projectRoot,
   outfile: join(hostRuntime, 'pappra-bootstrap-extension.mjs'),
   bundle: true,
   platform: 'node',
@@ -61,6 +64,7 @@ await build({
 });
 await build({
   entryPoints: [join(hostRuntime, 'pi-recovery-extension.js')],
+  absWorkingDir: projectRoot,
   outfile: join(hostRuntime, 'pappra-recovery-extension.mjs'),
   bundle: true,
   platform: 'node',
@@ -79,6 +83,7 @@ await build({
 });
 await build({
   entryPoints: [join(hostRuntime, 'pi-session-transition-extension.js')],
+  absWorkingDir: projectRoot,
   outfile: join(hostRuntime, 'pappra-session-transition-extension.mjs'),
   bundle: true,
   platform: 'node',

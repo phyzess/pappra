@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import { managedPiSocketPeerPid } from './managed-pi-repair-stop.js';
+import { readBoundedFile } from './bounded-file.js';
+import { getPackageRoot } from '../package-info.js';
 import path from 'node:path';
 import { createHerdrTransport, runHerdrCommand } from './collab-notify.js';
 import type {
@@ -74,6 +78,99 @@ export interface BootstrapStartedAgent {
   readonly argv: readonly string[];
 }
 
+export interface BootstrapManagedSdkLaunchEvidence {
+  readonly runtime: 'sdk';
+  readonly sdkModulePath: string;
+  readonly bootstrapExtensionPath: string;
+  readonly herdrAgentName: string;
+  readonly journalPath: string;
+  readonly sessionId: string;
+  readonly cwd: string;
+  readonly model: { readonly provider: 'openrouter'; readonly id: string };
+  readonly ready: true;
+}
+
+/** SDK-native identity is sourced from authenticated managed control, not Herdr's session report. */
+export interface BootstrapStartedManagedSdk {
+  readonly agentName: string;
+  readonly harness: string;
+  readonly paneId: string;
+  readonly cwd: string;
+  readonly status: string;
+  readonly sessionId: string;
+  readonly identityProvenance: 'owned-pi-sdk-control';
+  readonly controlSchema: 'harness-collab/pi-managed-sdk-session/1';
+  readonly processPid: number;
+  readonly socketPeerPid: number;
+  readonly foregroundProcessPid: number;
+  readonly pane: BootstrapPaneSnapshot;
+  readonly launch: BootstrapManagedSdkLaunchEvidence;
+}
+
+export interface BootstrapManagedSdkStartInput {
+  readonly name: string;
+  readonly paneId: string;
+  readonly workspaceId: string;
+  readonly terminalId: string;
+  readonly cwd: string;
+  readonly sessionId: string;
+  readonly openrouterModel: string;
+  readonly sdkModulePath: string;
+  readonly journalPath: string;
+  readonly controlSocketPath: string;
+  readonly bootstrapExtensionPath: string;
+  readonly configPath: string;
+  readonly configDigest: string;
+  readonly automaticHandoffFile?: string;
+  readonly handoffContextFile?: string;
+  readonly timeoutMs?: number;
+  readonly onReceipt?: BootstrapReceiptWriter;
+}
+
+export type ManagedSdkStartArgs = readonly ['pane', 'run', string, string];
+
+/** Fixed current-package SDK start command; only path arguments are data. */
+export function managedSdkStartArgs(input: {
+  readonly paneId: string;
+  readonly configPath: string;
+}): ManagedSdkStartArgs {
+  if (
+    !path.isAbsolute(input.configPath) ||
+    path.resolve(input.configPath) !== input.configPath
+  )
+    throw new Error('managed_sdk_command_argument_invalid');
+  const quote = (value: string): string => {
+    if (
+      [...value].some((character) => {
+        const code = character.charCodeAt(0);
+        return code === 0 || code === 10 || code === 13;
+      })
+    )
+      throw new Error('managed_sdk_command_argument_invalid');
+    return `'${value.replaceAll("'", "''")}'`;
+  };
+  const command = `^${quote(process.execPath)} ${quote(path.join(getPackageRoot(), 'dist', 'cli', 'main.js'))} session start --config ${quote(input.configPath)}`;
+  return ['pane', 'run', input.paneId, command];
+}
+
+export function acceptedManagedSdkStartReceipt(
+  receipt: BootstrapCommandReceipt,
+  input: { readonly paneId: string; readonly configPath: string },
+): boolean {
+  const expected = managedSdkStartArgs(input);
+  return (
+    receipt.operation === 'managed-sdk.start' &&
+    receipt.spawned &&
+    receipt.code === 0 &&
+    receipt.signal === null &&
+    !receipt.timed_out &&
+    receipt.spawn_error === null &&
+    receipt.argv.length === expected.length + 1 &&
+    receipt.argv[0] === 'herdr' &&
+    expected.every((argument, index) => receipt.argv[index + 1] === argument)
+  );
+}
+
 export type BootstrapOperationResult<T> =
   | {
       readonly ok: true;
@@ -115,9 +212,14 @@ export interface HerdrBootstrapOps {
     readonly paneId: string;
     readonly sessionId: string;
     readonly extensionEntry: string;
+    readonly openrouterModel?: string;
     readonly timeoutMs?: number;
     readonly onReceipt?: BootstrapReceiptWriter;
   }): Promise<BootstrapOperationResult<BootstrapStartedAgent>>;
+  /** Queue a fixed managed-SDK CLI command and await authenticated runtime evidence. */
+  startManagedSdk?(
+    input: BootstrapManagedSdkStartInput,
+  ): Promise<BootstrapOperationResult<BootstrapStartedManagedSdk>>;
   closePane(input: {
     readonly paneId: string;
     readonly timeoutMs?: number;
@@ -403,22 +505,174 @@ async function invoke<T>(input: {
   };
 }
 
+interface ManagedSdkControlObservation {
+  readonly processPid: number;
+  readonly controlSchema: 'harness-collab/pi-managed-sdk-session/1';
+  readonly launch: BootstrapManagedSdkLaunchEvidence;
+}
+
+function parseManagedSdkControlStatus(
+  result: CommandResult,
+): ManagedSdkControlObservation | null {
+  if (
+    !result.spawned ||
+    result.timedOut ||
+    result.signal !== null ||
+    result.code !== 0
+  )
+    return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(result.stdout.trim()) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(value) || value['ok'] !== true) return null;
+  const snapshot = value['snapshot'];
+  const automation = value['automation'];
+  if (!isRecord(snapshot) || !isRecord(automation)) return null;
+  const process = snapshot['process'];
+  const session = snapshot['session'];
+  const ingress = snapshot['ingress'];
+  const launchValue = automation['launch'];
+  if (
+    !isRecord(process) ||
+    !isRecord(session) ||
+    !isRecord(ingress) ||
+    !isRecord(launchValue) ||
+    snapshot['schema'] !== 'harness-collab/pi-managed-sdk-session/1' ||
+    process['exit'] !== 'not_owned' ||
+    typeof process['pid'] !== 'number' ||
+    !Number.isSafeInteger(process['pid']) ||
+    process['pid'] <= 0 ||
+    launchValue['runtime'] !== 'sdk' ||
+    launchValue['ready'] !== true ||
+    typeof launchValue['sdk_module_path'] !== 'string' ||
+    typeof launchValue['bootstrap_extension_path'] !== 'string' ||
+    typeof launchValue['herdr_agent_name'] !== 'string' ||
+    typeof launchValue['journal_path'] !== 'string' ||
+    typeof launchValue['session_id'] !== 'string' ||
+    typeof launchValue['cwd'] !== 'string' ||
+    !isRecord(launchValue['model']) ||
+    launchValue['model']['provider'] !== 'openrouter' ||
+    typeof launchValue['model']['id'] !== 'string' ||
+    session['sessionId'] !== launchValue['session_id'] ||
+    ingress['journalPath'] !== launchValue['journal_path']
+  )
+    return null;
+  return {
+    processPid: process['pid'],
+    controlSchema: 'harness-collab/pi-managed-sdk-session/1',
+    launch: {
+      runtime: 'sdk',
+      sdkModulePath: launchValue['sdk_module_path'],
+      bootstrapExtensionPath: launchValue['bootstrap_extension_path'],
+      herdrAgentName: launchValue['herdr_agent_name'],
+      journalPath: launchValue['journal_path'],
+      sessionId: launchValue['session_id'],
+      cwd: launchValue['cwd'],
+      model: {
+        provider: 'openrouter',
+        id: launchValue['model']['id'],
+      },
+      ready: true,
+    },
+  };
+}
+
+function sameRealPath(left: string, right: string): boolean {
+  try {
+    return fs.realpathSync(left) === fs.realpathSync(right);
+  } catch {
+    return false;
+  }
+}
+
+function privateManagedConfigMatches(
+  input: BootstrapManagedSdkStartInput,
+): boolean {
+  const loaded = readBoundedFile(input.configPath, 64 * 1024);
+  if (
+    !loaded.ok ||
+    loaded.digest !== input.configDigest ||
+    !/^sha256:[0-9a-f]{64}$/.test(input.configDigest)
+  )
+    return false;
+  let value: unknown;
+  try {
+    value = JSON.parse(loaded.text) as unknown;
+  } catch {
+    return false;
+  }
+  if (!isRecord(value)) return false;
+  const model = value['model'];
+  if (
+    value['schema'] !== 'pappra/managed-pi-session-request/1' ||
+    value['runtime'] !== 'sdk' ||
+    value['cwd'] !== input.cwd ||
+    value['sessionId'] !== input.sessionId ||
+    value['sdkModulePath'] !== input.sdkModulePath ||
+    value['journalPath'] !== input.journalPath ||
+    value['controlSocketPath'] !== input.controlSocketPath ||
+    value['bootstrapExtensionPath'] !== input.bootstrapExtensionPath ||
+    value['herdrAgentName'] !== input.name ||
+    value['herdrPaneId'] !== input.paneId ||
+    model !== input.openrouterModel ||
+    Object.hasOwn(value, 'executionScope') ||
+    (input.automaticHandoffFile === undefined
+      ? Object.hasOwn(value, 'automaticHandoffFile')
+      : value['automaticHandoffFile'] !== input.automaticHandoffFile) ||
+    (input.handoffContextFile === undefined
+      ? Object.hasOwn(value, 'handoffContextFile')
+      : value['handoffContextFile'] !== input.handoffContextFile)
+  )
+    return false;
+  try {
+    const directory = path.dirname(input.configPath);
+    const directoryStat = fs.lstatSync(directory);
+    const configStat = fs.lstatSync(input.configPath);
+    return (
+      directoryStat.isDirectory() &&
+      !directoryStat.isSymbolicLink() &&
+      fs.realpathSync(directory) === directory &&
+      (directoryStat.mode & 0o077) === 0 &&
+      (typeof process.getuid !== 'function' ||
+        directoryStat.uid === process.getuid()) &&
+      configStat.isFile() &&
+      !configStat.isSymbolicLink() &&
+      (configStat.mode & 0o777) === 0o400 &&
+      (typeof process.getuid !== 'function' ||
+        configStat.uid === process.getuid())
+    );
+  } catch {
+    return false;
+  }
+}
 export function createHerdrBootstrapOps(
   options: {
     readonly env?: NodeJS.ProcessEnv;
     readonly run?: CommandRunner;
     readonly transport?: HerdrTransport;
+    readonly taskRoot?: string;
+    readonly peerPid?: (socketPath: string) => number | null;
   } = {},
 ): HerdrBootstrapOps {
   const env = options.env ?? process.env;
   const run = options.run ?? runHerdrCommand;
-  const transport = options.transport ?? createHerdrTransport({ env, run });
+  const transport =
+    options.transport ??
+    createHerdrTransport({
+      env,
+      run,
+      ...(options.taskRoot === undefined ? {} : { taskRoot: options.taskRoot }),
+    });
+  const socketPeerPid = options.peerPid ?? managedPiSocketPeerPid;
   const bin =
     typeof env['HERDR_BIN_PATH'] === 'string' &&
     env['HERDR_BIN_PATH'].trim() !== ''
       ? env['HERDR_BIN_PATH']
       : 'herdr';
-  return {
+  const ops: HerdrBootstrapOps = {
     id: 'herdr-bootstrap',
     transport,
     verifyCaller: (paneId) =>
@@ -547,6 +801,7 @@ export function createHerdrBootstrapOps(
       paneId,
       sessionId,
       extensionEntry,
+      openrouterModel,
       timeoutMs = START_TIMEOUT_MS,
       onReceipt,
     }) => {
@@ -590,6 +845,19 @@ export function createHerdrBootstrapOps(
             emptyReceipt('agent.start'),
           ),
         );
+      if (
+        openrouterModel !== undefined &&
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(openrouterModel)
+      )
+        return Promise.resolve(
+          fail(
+            'failed',
+            'model_invalid',
+            'OpenRouter model identifier is invalid',
+            null,
+            emptyReceipt('agent.start'),
+          ),
+        );
       const args = [
         'agent',
         'start',
@@ -607,6 +875,9 @@ export function createHerdrBootstrapOps(
         name,
         '--extension',
         extensionEntry,
+        ...(openrouterModel
+          ? ['--provider', 'openrouter', '--model', openrouterModel]
+          : []),
       ];
       return invoke({
         run,
@@ -651,6 +922,329 @@ export function createHerdrBootstrapOps(
         ...(onReceipt === undefined ? {} : { onReceipt }),
       });
     },
+    startManagedSdk: async (input) => {
+      const timeoutMs = input.timeoutMs ?? START_TIMEOUT_MS;
+      const empty = emptyReceipt('managed-sdk.start');
+      const failManaged = (
+        status: 'failed' | 'unavailable' | 'unknown',
+        code: string,
+        detail: string,
+        receipt: BootstrapCommandReceipt = empty,
+        correlationId: string | null = null,
+      ) =>
+        fail<BootstrapStartedManagedSdk>(
+          status,
+          code,
+          detail,
+          correlationId,
+          receipt,
+        );
+      if (
+        !HERDR_AGENT_NAME.test(input.name) ||
+        !PANE_ID.test(input.paneId) ||
+        !UUID.test(input.sessionId) ||
+        !path.isAbsolute(input.cwd) ||
+        !path.isAbsolute(input.sdkModulePath) ||
+        !path.isAbsolute(input.journalPath) ||
+        !path.isAbsolute(input.controlSocketPath) ||
+        !path.isAbsolute(input.bootstrapExtensionPath) ||
+        !path.isAbsolute(input.configPath) ||
+        (input.handoffContextFile !== undefined &&
+          (!path.isAbsolute(input.handoffContextFile) ||
+            path.resolve(input.handoffContextFile) !==
+              input.handoffContextFile ||
+            [...input.handoffContextFile].some((character) => {
+              const code = character.charCodeAt(0);
+              return code === 0 || code === 10 || code === 13;
+            }))) ||
+        Buffer.byteLength(input.controlSocketPath) > 100 ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(input.openrouterModel) ||
+        !Number.isSafeInteger(timeoutMs) ||
+        timeoutMs < 1 ||
+        timeoutMs > START_TIMEOUT_MS
+      )
+        return failManaged(
+          'failed',
+          'managed_start_input_invalid',
+          'Managed SDK start input failed bounded path, identity or model validation.',
+        );
+      if (!privateManagedConfigMatches(input))
+        return failManaged(
+          'failed',
+          'managed_config_invalid',
+          'Managed SDK config is not the exact private immutable request reserved by bootstrap.',
+        );
+      let args: ManagedSdkStartArgs;
+      try {
+        args = managedSdkStartArgs(input);
+      } catch {
+        return failManaged(
+          'failed',
+          'managed_start_command_invalid',
+          'Managed SDK command could not be safely encoded as fixed Nushell arguments.',
+        );
+      }
+      const commandArgv = ['herdr', ...args];
+      let submitted: CommandResult;
+      try {
+        submitted = await run(bin, args, timeoutMs + 5_000);
+      } catch {
+        const receipt: BootstrapCommandReceipt = {
+          ...empty,
+          argv: commandArgv,
+          spawn_error: 'command_runner_failed',
+        };
+        try {
+          await input.onReceipt?.(receipt);
+        } catch {
+          return failManaged(
+            'unknown',
+            'managed_start_receipt_persist_failed',
+            'Managed SDK submission outcome is unknown because its receipt was not persisted.',
+            receipt,
+          );
+        }
+        return failManaged(
+          'unavailable',
+          'managed_start_runner_failed',
+          'Herdr pane run was unavailable before a command could be queued.',
+          receipt,
+        );
+      }
+      const receipt = capture('managed-sdk.start', commandArgv, submitted);
+      try {
+        await input.onReceipt?.(receipt);
+      } catch {
+        return failManaged(
+          'unknown',
+          'managed_start_receipt_persist_failed',
+          'Managed SDK submission outcome is unknown because its receipt was not persisted.',
+          receipt,
+        );
+      }
+      if (!submitted.spawned)
+        return failManaged(
+          'unavailable',
+          'herdr_not_callable',
+          'Herdr did not spawn the managed pane-run command.',
+          receipt,
+        );
+      if (
+        submitted.timedOut ||
+        submitted.signal !== null ||
+        submitted.code !== 0
+      )
+        return failManaged(
+          'unknown',
+          'managed_start_submission_unknown',
+          'Herdr pane-run may have queued the managed CLI; startup must be reconciled without resubmission.',
+          receipt,
+        );
+      const queued = parseEnvelope(submitted);
+      // Herdr 0.9.5 acknowledges pane-run with exit 0 and empty stdout. This
+      // proves queue submission only; authenticated startup evidence is still required.
+      const emptyQueueReceipt = submitted.stdout.trim().length === 0;
+      if (
+        !emptyQueueReceipt &&
+        (queued.parseError !== null ||
+          queued.result === null ||
+          queued.resultType === null)
+      )
+        return failManaged(
+          'unknown',
+          'managed_start_submission_unconfirmed',
+          'Herdr pane-run response did not confirm a typed submission; no retry is permitted.',
+          receipt,
+          queued.correlationId,
+        );
+      const responsePane = queued.result?.['pane_id'];
+      if (responsePane !== undefined && responsePane !== input.paneId)
+        return failManaged(
+          'unknown',
+          'managed_start_pane_mismatch',
+          'Herdr pane-run response identified a different pane.',
+          receipt,
+          queued.correlationId,
+        );
+
+      const cliPath = path.join(getPackageRoot(), 'dist', 'cli', 'main.js');
+      const deadline = Date.now() + timeoutMs;
+      let lastDetail =
+        'Waiting for owned SDK control and Herdr identity evidence.';
+      while (Date.now() <= deadline) {
+        const listed = await transport.list();
+        if (!listed.ok) {
+          lastDetail = 'Herdr agent list is temporarily unavailable.';
+        } else {
+          const named = listed.agents.filter(
+            (agent) => agent.name === input.name,
+          );
+          if (named.length > 1)
+            return failManaged(
+              'unknown',
+              'managed_herdr_name_ambiguous',
+              'More than one Herdr observation claims the managed agent name.',
+              receipt,
+              queued.correlationId,
+            );
+          const agent = named[0];
+          if (agent !== undefined) {
+            if (
+              (agent.paneId !== null && agent.paneId !== input.paneId) ||
+              (agent.cwd !== null && !sameRealPath(agent.cwd, input.cwd)) ||
+              (agent.harness !== null && agent.harness !== 'pi')
+            )
+              return failManaged(
+                'unknown',
+                'managed_herdr_identity_mismatch',
+                'The named Herdr observation belongs to a different pane, cwd or harness.',
+                receipt,
+                queued.correlationId,
+              );
+            const status = agent.status.trim().toLowerCase();
+            if (
+              agent.paneId === input.paneId &&
+              agent.harness === 'pi' &&
+              agent.cwd !== null &&
+              sameRealPath(agent.cwd, input.cwd) &&
+              ['idle', 'done', 'working', 'running'].includes(status)
+            ) {
+              const pane = await ops.paneGet(input.paneId, READ_TIMEOUT_MS);
+              if (!pane.ok) {
+                lastDetail = 'Owned pane identity is not yet observable.';
+              } else if (
+                pane.value.paneId !== input.paneId ||
+                pane.value.workspaceId !== input.workspaceId ||
+                pane.value.terminalId !== input.terminalId ||
+                pane.value.cwd === null ||
+                !sameRealPath(pane.value.cwd, input.cwd)
+              ) {
+                return failManaged(
+                  'unknown',
+                  'managed_pane_identity_mismatch',
+                  'Herdr pane identity or cwd changed during managed SDK startup.',
+                  receipt,
+                  queued.correlationId,
+                );
+              } else {
+                let statusResult: CommandResult | null = null;
+                try {
+                  statusResult = await run(
+                    process.execPath,
+                    [
+                      cliPath,
+                      'session',
+                      'status',
+                      '--config',
+                      input.configPath,
+                      '--json',
+                    ],
+                    READ_TIMEOUT_MS,
+                  );
+                } catch {
+                  lastDetail =
+                    'Authenticated managed SDK control is not yet reachable.';
+                }
+                const control =
+                  statusResult === null
+                    ? null
+                    : parseManagedSdkControlStatus(statusResult);
+                if (control !== null) {
+                  const launch = control.launch;
+                  if (
+                    launch.sdkModulePath !== input.sdkModulePath ||
+                    launch.bootstrapExtensionPath !==
+                      input.bootstrapExtensionPath ||
+                    launch.herdrAgentName !== input.name ||
+                    launch.journalPath !== input.journalPath ||
+                    launch.sessionId !== input.sessionId ||
+                    !sameRealPath(launch.cwd, input.cwd) ||
+                    launch.model.provider !== 'openrouter' ||
+                    launch.model.id !== input.openrouterModel ||
+                    launch.ready !== true
+                  )
+                    return failManaged(
+                      'unknown',
+                      'managed_sdk_control_mismatch',
+                      'Authenticated SDK control metadata did not match the reserved managed launch.',
+                      receipt,
+                      queued.correlationId,
+                    );
+                  const process = await ops.paneProcessInfo(
+                    input.paneId,
+                    READ_TIMEOUT_MS,
+                  );
+                  if (!process.ok) {
+                    lastDetail =
+                      'Owned pane foreground process is not yet observable.';
+                  } else if (process.value.paneId !== input.paneId) {
+                    return failManaged(
+                      'unknown',
+                      'managed_process_info_pane_mismatch',
+                      'Herdr process-info returned a different pane.',
+                      receipt,
+                      queued.correlationId,
+                    );
+                  } else {
+                    const socketPid = socketPeerPid(input.controlSocketPath);
+                    const foreground = process.value.foregroundProcesses.find(
+                      (item) => item.pid === control.processPid,
+                    );
+                    if (socketPid !== null && socketPid !== control.processPid)
+                      return failManaged(
+                        'unknown',
+                        'managed_control_socket_owner_mismatch',
+                        'The managed control socket is owned by a different OS process.',
+                        receipt,
+                        queued.correlationId,
+                      );
+                    if (
+                      socketPid === control.processPid &&
+                      foreground !== undefined
+                    ) {
+                      return {
+                        ok: true,
+                        value: {
+                          agentName: agent.name!,
+                          harness: agent.harness,
+                          paneId: input.paneId,
+                          cwd: agent.cwd,
+                          status: agent.status,
+                          sessionId: control.launch.sessionId,
+                          identityProvenance: 'owned-pi-sdk-control',
+                          controlSchema: control.controlSchema,
+                          processPid: control.processPid,
+                          socketPeerPid: socketPid,
+                          foregroundProcessPid: foreground.pid,
+                          pane: pane.value,
+                          launch: control.launch,
+                        },
+                        correlationId: queued.correlationId,
+                        receipt,
+                      };
+                    }
+                    lastDetail =
+                      'SDK control, socket owner and pane foreground PID do not yet agree.';
+                  }
+                }
+              }
+            }
+          }
+        }
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        await new Promise<void>((resolve) =>
+          setTimeout(resolve, Math.min(100, remaining)),
+        );
+      }
+      return failManaged(
+        'unknown',
+        'managed_sdk_start_observation_timeout',
+        `${lastDetail} No resubmission or cleanup is permitted for this request id.`,
+        receipt,
+        queued.correlationId,
+      );
+    },
     closePane: ({ paneId, timeoutMs = CLOSE_TIMEOUT_MS, onReceipt }) => {
       if (!PANE_ID.test(paneId))
         return Promise.resolve(
@@ -675,6 +1269,7 @@ export function createHerdrBootstrapOps(
       });
     },
   };
+  return ops;
 }
 
 function emptyReceipt(operation: string): BootstrapCommandReceipt {

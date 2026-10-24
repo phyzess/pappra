@@ -2,6 +2,8 @@ export * as detect from './detect.js';
 export * as codex from './codex/native.js';
 export * as claude from './claude/native.js';
 export * as piRpc from './pi/rpc.js';
+export * as piManaged from './pi/managed-session.js';
+export * as piManagedSdk from './pi/managed-sdk-session.js';
 export * as piHistory from './pi/query-result.js';
 export * as pilot from './pilot.js';
 export {

@@ -61,6 +61,109 @@ function snapshot(paths: readonly string[]): string[] {
   );
 }
 
+test('live Pi derives a schema-valid runtime card without an invented exit receipt', () => {
+  const fixture = makeCapabilitiesFixture('pi-live', { harness: 'pi' });
+  try {
+    const before = snapshot([fixture.sessionFile, fixture.templateFile]);
+    const result = deriveCapabilityCard({
+      harness: 'pi',
+      assignmentFile: fixture.assignmentFile,
+      templateFile: fixture.templateFile,
+      sessionFile: fixture.sessionFile,
+      live: true,
+    });
+    assert.equal(result.status, 'derived', JSON.stringify(result));
+    assert.equal(result.card?.tools[0]?.state, 'verified');
+    assert.equal(result.card?.skills[0]?.state, 'verified');
+    assert.deepEqual(result.card?.evidence_records, [
+      { ref: fixture.sessionFile, digest: digestOf(fixture.sessionFile) },
+    ]);
+    assert.equal(
+      (result.card?.native_observation as Record<string, unknown>)
+        .launcher_clock,
+      null,
+    );
+    assert.ok(
+      result.limitations?.includes(
+        'live_snapshot_does_not_prove_process_state_or_queue_approval_inventory',
+      ),
+    );
+    assert.ok(!JSON.stringify(result).includes(FIXTURE_SECRET));
+    assert.deepEqual(
+      snapshot([fixture.sessionFile, fixture.templateFile]),
+      before,
+    );
+    const cardFile = writeCard(fixture, result);
+    assert.equal(
+      runCollaborationPreflight({
+        assignmentFile: fixture.assignmentFile,
+        capabilitiesFile: cardFile,
+      }).status,
+      'ready',
+    );
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
+test('live Pi refuses pending input, partial tool work, model drift and conflicting execution evidence', () => {
+  const fixture = makeCapabilitiesFixture('pi-live-pending', { harness: 'pi' });
+  try {
+    const rows = readRows(fixture.sessionFile);
+    const options = {
+      harness: 'pi' as const,
+      assignmentFile: fixture.assignmentFile,
+      templateFile: fixture.templateFile,
+      sessionFile: fixture.sessionFile,
+      live: true,
+    };
+    for (const row of [
+      {
+        type: 'message',
+        timestamp: new Date().toISOString(),
+        message: { role: 'user', content: [{ type: 'text', text: 'next' }] },
+      },
+      {
+        type: 'model_change',
+        timestamp: new Date().toISOString(),
+        modelId: 'another-model',
+      },
+    ]) {
+      writeRows(fixture.sessionFile, [...rows, row]);
+      assert.equal(deriveCapabilityCard(options).status, 'needs_input');
+    }
+    writeRows(fixture.sessionFile, rows.slice(0, 3));
+    assert.ok(
+      deriveCapabilityCard(options).blockers?.includes(
+        'incomplete_tool_results',
+      ),
+    );
+    writeRows(fixture.sessionFile, rows);
+    assert.equal(
+      deriveCapabilityCard({ ...options, executionFile: fixture.executionFile })
+        .status,
+      'invalid',
+    );
+    assert.equal(
+      deriveCapabilityCard({ ...options, harness: 'codex' }).status,
+      'invalid',
+    );
+    // A metadata-only append must never refresh an old capability observation.
+    const original = deriveCapabilityCard(options).card!.observed_at;
+    writeRows(fixture.sessionFile, [
+      ...rows,
+      {
+        type: 'session_info',
+        timestamp: new Date().toISOString(),
+        name: 'renamed',
+      },
+    ]);
+    assert.equal(deriveCapabilityCard(options).card!.observed_at, original);
+  } finally {
+    cleanup(fixture.root);
+  }
+});
+
 test('Pi evidence derives verified tools and an actually loaded skill', () => {
   const fixture = makeCapabilitiesFixture('c3-pi', { harness: 'pi' });
   try {

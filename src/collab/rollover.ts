@@ -12,6 +12,7 @@ import {
 import { bindNative, findAttempt } from './lifecycle.js';
 import { nowIso } from './store.js';
 import { isTaskRecord, text } from './validation.js';
+import { isNativeFirstWorkResult } from './first-work.js';
 
 /**
  * Bounded, record-level writer rollover correlation.
@@ -1177,7 +1178,13 @@ export function recordRolloverFirstWork(
     return failure('report_not_admitted', {
       classification: result.classification,
     });
-  if (result.status !== 'completed')
+  if (
+    result.status !== 'completed' &&
+    !(
+      report.body?.phase === 'handoff-first-work' &&
+      isNativeFirstWorkResult(result, intent)
+    )
+  )
     return failure('report_not_admitted', { status: result.status });
   if (report.body?.status !== result.status)
     return failure('report_status_mismatch', {

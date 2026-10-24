@@ -78,6 +78,15 @@ import {
   runCollaborationTransitionCommand,
 } from './commands/collaboration-transition.js';
 import { hostUsage, runHostCommand } from './commands/host.js';
+import { sessionUsage, runSessionCommand } from './commands/session.js';
+import {
+  collaborationRoleRunUsage,
+  runCollaborationRoleRunCommand,
+} from './commands/collaboration-role-run.js';
+import {
+  collaborationRolePlanUsage,
+  runCollaborationRolePlanCommand,
+} from './commands/collaboration-role-plan.js';
 import { runtimeUsage, runRuntimeCommand } from './commands/runtime.js';
 import { hostNameSchema } from '../schemas/host.js';
 import type { CliOutput } from './output.js';
@@ -89,8 +98,10 @@ function parseOptions(args: readonly string[]) {
       help: { type: 'boolean', short: 'h' },
       version: { type: 'boolean', short: 'v' },
       json: { type: 'boolean' },
+      live: { type: 'boolean' },
       config: { type: 'string' },
       apply: { type: 'boolean' },
+      watch: { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' },
       'no-runtime': { type: 'boolean' },
       reconfigure: { type: 'boolean' },
@@ -303,6 +314,7 @@ function parseOptions(args: readonly string[]) {
         positionals[1] !== 'transition' &&
         positionals[1] !== 'bootstrap' &&
         positionals[1] !== 'plan' &&
+        positionals[1] !== 'role-plan' &&
         positionals[1] !== 'message' &&
         !(positionals[1] === 'capabilities' && positionals[2] === 'derive') &&
         !(
@@ -408,6 +420,7 @@ const globalUsage =
   'pappra code <status|prepare|query> --repo <id> [options] [--json]\n' +
   'pappra host <detect|describe|plan|install|verify> --host <name> [options] [--json]\n' +
   'pappra runtime <install|status|verify|remove> [options] [--json]\n' +
+  'pappra session <plan|start|status|fence|stop> --config <abs managed-pi.json> [--json]\n' +
   `${collaborationCommandLine}`;
 
 export async function runCli(
@@ -415,6 +428,41 @@ export async function runCli(
   output: CliOutput,
 ): Promise<number> {
   const jsonRequested = args.includes('--json');
+  if (args[0] === 'session') {
+    try {
+      const parsedSession = parseArgs({
+        args: [...args.slice(1)],
+        options: {
+          config: { type: 'string' },
+          json: { type: 'boolean' },
+          help: { type: 'boolean', short: 'h' },
+        },
+        allowPositionals: true,
+        strict: true,
+      });
+      if (parsedSession.values.help) {
+        output.stdout(`${sessionUsage}\n`);
+        return 0;
+      }
+      if (
+        parsedSession.positionals.length !== 1 ||
+        args.filter((arg) => arg === '--config' || arg.startsWith('--config='))
+          .length > 1
+      )
+        throw new Error(sessionUsage);
+      return runSessionCommand(
+        {
+          action: parsedSession.positionals[0]!,
+          config: parsedSession.values.config ?? null,
+          json: parsedSession.values.json ?? false,
+        },
+        output,
+      );
+    } catch (error) {
+      failure(output, jsonRequested, 'invalid_arguments', error);
+      return 2;
+    }
+  }
   let parsed: ReturnType<typeof parseOptions>;
   try {
     parsed = parseOptions(args);
@@ -438,6 +486,86 @@ export async function runCli(
   } = parsed;
   const json = values.json === true;
   const applyRequested = values.apply === true;
+
+  if (command === 'collab' && collaborationAction === 'role-run') {
+    const allowed = new Set(['request', 'apply', 'watch', 'json', 'help']);
+    const invalid = Object.entries(values).some(
+      ([key, value]) => value !== undefined && !allowed.has(key),
+    );
+    const duplicates =
+      args.filter((arg) => arg === '--request' || arg.startsWith('--request='))
+        .length > 1;
+    if (invalid || duplicates) {
+      failure(output, json, 'invalid_arguments', collaborationRoleRunUsage);
+      return 2;
+    }
+    if (values.help) {
+      output.stdout(`${collaborationRoleRunUsage}\n`);
+      return 0;
+    }
+    return runCollaborationRoleRunCommand(
+      {
+        requestFile: values.request ?? null,
+        apply: applyRequested,
+        watch: values.watch === true,
+        json,
+      },
+      output,
+    );
+  }
+
+  if (values.watch !== undefined) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--watch is supported only by collab role-run.',
+    );
+    return 2;
+  }
+
+  if (command === 'collab' && collaborationAction?.startsWith('role-plan')) {
+    const allowed = new Set(['request', 'task-root', 'config', 'json', 'help']);
+    const extra = Object.entries(values).filter(
+      ([key, value]) => value !== undefined && !allowed.has(key),
+    );
+    const duplicate = ['--request', '--task-root', '--config'].some(
+      (flag) =>
+        args.filter((arg) => arg === flag || arg.startsWith(`${flag}=`))
+          .length > 1,
+    );
+    if (extra.length || duplicate) {
+      failure(output, json, 'invalid_arguments', collaborationRolePlanUsage);
+      return 2;
+    }
+    if (values.help) {
+      output.stdout(`${collaborationRolePlanUsage}\n`);
+      return 0;
+    }
+    return runCollaborationRolePlanCommand(
+      {
+        action: collaborationAction.slice('role-plan:'.length),
+        requestFile: values.request ?? null,
+        taskRoot: values['task-root'] ?? null,
+        planFile: values.config ?? null,
+        json,
+      },
+      output,
+    );
+  }
+
+  if (
+    values.live === true &&
+    !(command === 'collab' && collaborationAction === 'capabilities:derive')
+  ) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--live is only valid for collab capabilities derive.',
+    );
+    return 2;
+  }
 
   if (
     command !== 'init' &&
@@ -738,6 +866,7 @@ export async function runCli(
     }
     if (collaborationAction === 'capabilities:derive') {
       const duplicate = [
+        '--live',
         '--harness',
         '--assignment',
         '--template',
@@ -759,6 +888,7 @@ export async function runCli(
         return 2;
       }
       const allowed = new Set([
+        'live',
         'assignment',
         'harness',
         'template',
@@ -788,6 +918,7 @@ export async function runCli(
           executionFile: values.execution ?? null,
           sessionFile: values.session ?? null,
           eventsFile: values.events ?? null,
+          live: values.live ?? false,
           json,
         },
         output,
@@ -2204,21 +2335,21 @@ export async function runCli(
   if (values.help) {
     if (json) {
       output.stdout(
-        `${JSON.stringify({ ...info, usage: globalUsage, commands: ['init', 'doctor', 'docs', 'checkpoint', 'resume', 'code', 'host', 'collab'] })}\n`,
+        `${JSON.stringify({ ...info, usage: globalUsage, commands: ['init', 'doctor', 'docs', 'checkpoint', 'resume', 'code', 'host', 'collab', 'session'] })}\n`,
       );
     } else {
       output.stdout(
         `${info.name} ${info.version}\n${info.description}\n\nUsage:\n  ${globalUsage.replaceAll('\n', '\n  ')}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n      --json     Output JSON\n\nCommands:\n  init           Plan workspace initialization\n  doctor         Read-only workspace and installation diagnostics\n  docs           List, check, and archive registered documents\n`,
       );
       output.stdout(
-        '  checkpoint     Save a private task checkpoint\n  resume         Read a bounded recovery packet without starting an agent\n  code           Inspect or prepare selected code intelligence\n  host           Detect, plan, install, or verify a selected host integration\n  collab         Prepare, run, query, message, preflight, state, recovery and bindings\n',
+        '  checkpoint     Save a private task checkpoint\n  resume         Read a bounded recovery packet without starting an agent\n  code           Inspect or prepare selected code intelligence\n  host           Detect, plan, install, or verify a selected host integration\n  collab         Prepare, run, query, message, preflight, state, recovery and bindings\n  session        Launch and control an owned visible native Pi session\n',
       );
     }
     return 0;
   }
   if (json) {
     output.stdout(
-      `${JSON.stringify({ ...info, usage: globalUsage, commands: ['init', 'doctor', 'docs', 'checkpoint', 'resume', 'code', 'host', 'collab'] })}\n`,
+      `${JSON.stringify({ ...info, usage: globalUsage, commands: ['init', 'doctor', 'docs', 'checkpoint', 'resume', 'code', 'host', 'collab', 'session'] })}\n`,
     );
   } else {
     output.stdout(

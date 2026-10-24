@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
+import { readManagedSourceAssignment } from './managed-pi-source-admission.js';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import {
   isAssignment,
@@ -31,6 +33,7 @@ import {
 } from '../hosts/integration/bootstrap-config.js';
 import { readBoundedFile } from './bounded-file.js';
 import { runCollaborationPreflight } from './collab-preflight.js';
+import { MANAGED_PI_REQUEST_SCHEMA } from './managed-pi.js';
 import {
   assertMessageTaskCurrent,
   openMessageTask,
@@ -47,9 +50,13 @@ import {
   type NotifyResult,
 } from './collab-notify.js';
 import {
+  acceptedManagedSdkStartReceipt,
+  managedSdkStartArgs,
   createHerdrBootstrapOps,
   type BootstrapCommandReceipt,
+  type BootstrapManagedSdkStartInput,
   type BootstrapPaneSnapshot,
+  type BootstrapStartedManagedSdk,
   type HerdrBootstrapOps,
 } from './collab-bootstrap-transport.js';
 import {
@@ -150,7 +157,16 @@ export interface VisibleBootstrapRequest {
     readonly direction?: 'right' | 'down';
     readonly preserve_focus: true;
   };
-  readonly selected_model: { readonly preserve_daily: true };
+  readonly selected_model: {
+    readonly preserve_daily: true;
+    readonly openrouter_model?: string;
+  };
+  readonly managed_runtime?: {
+    readonly sdk_module_path: string;
+    readonly journal_path: string;
+    readonly automatic_handoff_file?: string;
+    readonly handoff_context_file?: string;
+  };
   readonly bootstrap: {
     readonly config_ref: string;
     readonly config_digest: string;
@@ -248,6 +264,8 @@ interface BootstrapContext {
   readonly task: OpenedMessageTask;
   readonly assignment: Assignment;
   readonly assignmentDigest: string;
+  readonly assignmentFile: string;
+  readonly admissionAssignmentDigest: string;
   readonly attempt: Attempt;
   readonly callerCard: CapabilityCard;
   readonly caller: HerdrCallerObservation;
@@ -290,6 +308,301 @@ function safePathEqual(left: string, right: string): boolean {
     return fs.realpathSync(left) === fs.realpathSync(right);
   } catch {
     return false;
+  }
+}
+
+interface ManagedRuntimePaths {
+  readonly sdkModulePath: string;
+  readonly journalPath: string;
+  readonly configPath: string;
+  readonly controlSocketPath: string;
+  readonly automaticHandoffFile?: string;
+  readonly handoffContextFile?: string;
+}
+
+type ManagedRuntimePathResult =
+  | { readonly ok: true; readonly paths: ManagedRuntimePaths }
+  | { readonly ok: false; readonly code: string; readonly message: string };
+
+function hasUnsafePathCharacters(value: string): boolean {
+  return [...value].some((character) => {
+    const code = character.charCodeAt(0);
+    return code === 0 || code === 10 || code === 13;
+  });
+}
+
+function isPrivateRealDirectory(directory: string): boolean {
+  try {
+    const stat = fs.lstatSync(directory);
+    return (
+      stat.isDirectory() &&
+      !stat.isSymbolicLink() &&
+      fs.realpathSync(directory) === directory &&
+      (stat.mode & 0o077) === 0 &&
+      (typeof process.getuid !== 'function' || stat.uid === process.getuid())
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isAbsentPath(candidate: string): boolean {
+  try {
+    fs.lstatSync(candidate);
+    return false;
+  } catch (error) {
+    return isRecord(error) && error['code'] === 'ENOENT';
+  }
+}
+
+function managedRuntimePathsFor(
+  request: VisibleBootstrapRequest,
+): ManagedRuntimePathResult {
+  const runtime = request.managed_runtime;
+  if (runtime === undefined)
+    return {
+      ok: false,
+      code: 'managed_runtime_missing',
+      message: 'Managed runtime is not selected.',
+    };
+  const model = request.selected_model.openrouter_model;
+  if (
+    request.target.choice !== 'sibling' ||
+    typeof model !== 'string' ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(model)
+  )
+    return {
+      ok: false,
+      code: 'managed_runtime_invalid',
+      message:
+        'Managed SDK launch requires a fresh sibling and an explicit OpenRouter model.',
+    };
+  const { sdk_module_path: sdkPath, journal_path: journalPath } = runtime;
+  if (
+    !path.isAbsolute(sdkPath) ||
+    !path.isAbsolute(journalPath) ||
+    path.resolve(sdkPath) !== sdkPath ||
+    path.resolve(journalPath) !== journalPath ||
+    hasUnsafePathCharacters(sdkPath) ||
+    hasUnsafePathCharacters(journalPath)
+  )
+    return {
+      ok: false,
+      code: 'managed_path_invalid',
+      message: 'SDK and journal paths must be normalized absolute paths.',
+    };
+  let sdkModulePath: string;
+  try {
+    const sdkStat = fs.lstatSync(sdkPath);
+    if (!sdkStat.isFile() || sdkStat.isSymbolicLink())
+      throw new Error('sdk_not_regular');
+    sdkModulePath = fs.realpathSync(sdkPath);
+  } catch {
+    return {
+      ok: false,
+      code: 'managed_sdk_module_invalid',
+      message:
+        'Pinned SDK entry must resolve to a regular file before any native effect.',
+    };
+  }
+  const parent = path.dirname(journalPath);
+  if (!isPrivateRealDirectory(parent))
+    return {
+      ok: false,
+      code: 'managed_journal_parent_not_private',
+      message:
+        'Journal parent must already be a private, real, current-user directory.',
+    };
+  const requestHash = crypto
+    .createHash('sha256')
+    .update(JSON.stringify([request.task_root, request.request_id]))
+    .digest('hex');
+  const configPath = path.join(
+    parent,
+    `.pappra-managed-sdk-${requestHash.slice(0, 20)}.json`,
+  );
+  let socketDirectory: string;
+  try {
+    socketDirectory = fs.realpathSync(
+      process.platform === 'darwin' ? '/private/tmp' : os.tmpdir(),
+    );
+    if (!fs.statSync(socketDirectory).isDirectory())
+      throw new Error('control_socket_directory_invalid');
+  } catch {
+    return {
+      ok: false,
+      code: 'managed_control_socket_directory_unavailable',
+      message: 'Managed SDK control socket directory is unavailable.',
+    };
+  }
+  const controlSocketPath = path.join(
+    socketDirectory,
+    `.pappra-sdk-${requestHash.slice(0, 16)}.sock`,
+  );
+  if (Buffer.byteLength(controlSocketPath) > 100)
+    return {
+      ok: false,
+      code: 'managed_control_socket_path_too_long',
+      message:
+        'Managed SDK control socket path exceeds the local Unix socket limit.',
+    };
+  const handoffContextFile = runtime.handoff_context_file;
+  const paths = [
+    journalPath,
+    `${journalPath}.pi-events.jsonl`,
+    `${journalPath}.control.json`,
+    configPath,
+    controlSocketPath,
+  ];
+  if (
+    paths.some((candidate) => !isAbsentPath(candidate)) ||
+    [configPath, controlSocketPath, handoffContextFile]
+      .filter((candidate): candidate is string => candidate !== undefined)
+      .some((candidate) => candidate === sdkModulePath) ||
+    (runtime.automatic_handoff_file !== undefined &&
+      (!path.isAbsolute(runtime.automatic_handoff_file) ||
+        hasUnsafePathCharacters(runtime.automatic_handoff_file) ||
+        [
+          sdkModulePath,
+          journalPath,
+          `${journalPath}.pi-events.jsonl`,
+          `${journalPath}.control.json`,
+          configPath,
+          controlSocketPath,
+          handoffContextFile,
+        ]
+          .filter((candidate): candidate is string => candidate !== undefined)
+          .includes(path.resolve(runtime.automatic_handoff_file)))) ||
+    (handoffContextFile !== undefined &&
+      (!path.isAbsolute(handoffContextFile) ||
+        path.resolve(handoffContextFile) !== handoffContextFile ||
+        hasUnsafePathCharacters(handoffContextFile) ||
+        !isPrivateRealDirectory(path.dirname(handoffContextFile)) ||
+        [
+          sdkModulePath,
+          journalPath,
+          `${journalPath}.pi-events.jsonl`,
+          `${journalPath}.control.json`,
+          configPath,
+          controlSocketPath,
+        ].includes(handoffContextFile)))
+  )
+    return {
+      ok: false,
+      code: 'managed_output_path_unavailable',
+      message:
+        'Managed journal, config, metadata, handoff or control paths are not fresh/private.',
+    };
+  return {
+    ok: true,
+    paths: {
+      sdkModulePath,
+      journalPath,
+      configPath,
+      controlSocketPath,
+      ...(runtime.automatic_handoff_file === undefined
+        ? {}
+        : { automaticHandoffFile: runtime.automatic_handoff_file }),
+      ...(handoffContextFile === undefined ? {} : { handoffContextFile }),
+    },
+  };
+}
+
+function writeManagedSdkConfig(
+  request: VisibleBootstrapRequest,
+  context: BootstrapContext,
+  paneId: string,
+  paths: ManagedRuntimePaths,
+):
+  | { readonly ok: true; readonly digest: string }
+  | { readonly ok: false; readonly code: string } {
+  const current = managedRuntimePathsFor(request);
+  if (!current.ok || current.paths.configPath !== paths.configPath)
+    return {
+      ok: false,
+      code: current.ok ? 'managed_path_changed' : current.code,
+    };
+  const model = request.selected_model.openrouter_model;
+  if (model === undefined) return { ok: false, code: 'managed_model_missing' };
+  const value = {
+    schema: MANAGED_PI_REQUEST_SCHEMA,
+    cwd: request.target.cwd,
+    model,
+    journalPath: paths.journalPath,
+    controlSocketPath: paths.controlSocketPath,
+    runtime: 'sdk',
+    sdkModulePath: paths.sdkModulePath,
+    sessionId: request.participant.native_session_selector,
+    bootstrapExtensionPath: request.bootstrap.extension_entry,
+    herdrAgentName: context.herdrAgent,
+    herdrPaneId: paneId,
+    ...(paths.automaticHandoffFile === undefined
+      ? {}
+      : { automaticHandoffFile: paths.automaticHandoffFile }),
+    ...(paths.handoffContextFile === undefined
+      ? {}
+      : { handoffContextFile: paths.handoffContextFile }),
+  };
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  if (bytes.byteLength > MAX_REQUEST_BYTES)
+    return { ok: false, code: 'managed_config_too_large' };
+  let descriptor: number | undefined;
+  let identity: { readonly dev: number; readonly ino: number } | undefined;
+  try {
+    if (!isPrivateRealDirectory(path.dirname(paths.configPath)))
+      return { ok: false, code: 'managed_journal_parent_not_private' };
+    descriptor = fs.openSync(paths.configPath, 'wx', 0o600);
+    fs.fchmodSync(descriptor, 0o400);
+    const stat = fs.fstatSync(descriptor);
+    identity = { dev: stat.dev, ino: stat.ino };
+    fs.writeFileSync(descriptor, bytes);
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    const directory = fs.openSync(path.dirname(paths.configPath), 'r');
+    try {
+      fs.fsyncSync(directory);
+    } finally {
+      fs.closeSync(directory);
+    }
+    const written = fs.lstatSync(paths.configPath);
+    const read = readBoundedFile(paths.configPath, MAX_REQUEST_BYTES);
+    if (
+      written.isSymbolicLink() ||
+      !written.isFile() ||
+      (written.mode & 0o777) !== 0o400 ||
+      (typeof process.getuid === 'function' &&
+        written.uid !== process.getuid()) ||
+      written.dev !== identity.dev ||
+      written.ino !== identity.ino ||
+      !read.ok ||
+      !read.bytes.equals(bytes)
+    )
+      throw new Error('managed_config_verification_failed');
+    return { ok: true, digest: read.digest };
+  } catch {
+    if (descriptor !== undefined) {
+      try {
+        fs.closeSync(descriptor);
+      } catch {
+        /* best effort */
+      }
+    }
+    if (identity !== undefined) {
+      try {
+        const current = fs.lstatSync(paths.configPath);
+        if (
+          current.isFile() &&
+          !current.isSymbolicLink() &&
+          current.dev === identity.dev &&
+          current.ino === identity.ino
+        )
+          fs.unlinkSync(paths.configPath);
+      } catch {
+        /* preserve unrelated replacements */
+      }
+    }
+    return { ok: false, code: 'managed_config_write_failed' };
   }
 }
 
@@ -484,6 +797,7 @@ export function validateVisibleBootstrapRequest(
     'message_pointer',
     'binding_ref',
     'readiness',
+    'managed_runtime',
   ];
   if (!isRecord(value) || !hasOnlyKeys(value, topKeys))
     return {
@@ -618,14 +932,56 @@ export function validateVisibleBootstrapRequest(
   const selectedModel = value['selected_model'];
   if (
     !isRecord(selectedModel) ||
-    !hasOnlyKeys(selectedModel, ['preserve_daily']) ||
-    selectedModel['preserve_daily'] !== true
+    !hasOnlyKeys(selectedModel, ['preserve_daily', 'openrouter_model']) ||
+    selectedModel['preserve_daily'] !== true ||
+    (selectedModel['openrouter_model'] !== undefined &&
+      (target['choice'] !== 'sibling' ||
+        typeof selectedModel['openrouter_model'] !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(
+          selectedModel['openrouter_model'],
+        )))
   )
     return {
       ok: false,
       code: 'model_override_refused',
       message:
-        'Only daily model/settings preservation is supported; model overrides are rejected.',
+        'Preserve daily settings; an explicit OpenRouter model requires a fresh sibling launch.',
+    };
+  const managedRuntime = value['managed_runtime'];
+  if (
+    managedRuntime !== undefined &&
+    (!isRecord(managedRuntime) ||
+      !hasOnlyKeys(managedRuntime, [
+        'sdk_module_path',
+        'journal_path',
+        'automatic_handoff_file',
+        'handoff_context_file',
+      ]) ||
+      !isText(managedRuntime['sdk_module_path'], 4096) ||
+      !path.isAbsolute(managedRuntime['sdk_module_path']) ||
+      hasUnsafePathCharacters(managedRuntime['sdk_module_path']) ||
+      !isText(managedRuntime['journal_path'], 4096) ||
+      !path.isAbsolute(managedRuntime['journal_path']) ||
+      hasUnsafePathCharacters(managedRuntime['journal_path']) ||
+      (managedRuntime['automatic_handoff_file'] !== undefined &&
+        (!isText(managedRuntime['automatic_handoff_file'], 4096) ||
+          !path.isAbsolute(managedRuntime['automatic_handoff_file']) ||
+          hasUnsafePathCharacters(managedRuntime['automatic_handoff_file']))) ||
+      (managedRuntime['handoff_context_file'] !== undefined &&
+        (!isText(managedRuntime['handoff_context_file'], 4096) ||
+          !path.isAbsolute(managedRuntime['handoff_context_file']) ||
+          hasUnsafePathCharacters(managedRuntime['handoff_context_file']))) ||
+      target['choice'] !== 'sibling' ||
+      typeof selectedModel['openrouter_model'] !== 'string' ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(
+        selectedModel['openrouter_model'],
+      ))
+  )
+    return {
+      ok: false,
+      code: 'managed_runtime_invalid',
+      message:
+        'managed_runtime requires a fresh sibling, an explicit OpenRouter model and absolute SDK/journal paths and an optional absolute future config path.',
     };
   const bootstrap = value['bootstrap'];
   if (
@@ -724,7 +1080,32 @@ export function validateVisibleBootstrapRequest(
       participant:
         participant as unknown as VisibleBootstrapRequest['participant'],
       target: target as unknown as VisibleBootstrapRequest['target'],
-      selected_model: { preserve_daily: true },
+      selected_model: {
+        preserve_daily: true,
+        ...(typeof selectedModel['openrouter_model'] === 'string'
+          ? { openrouter_model: selectedModel['openrouter_model'] }
+          : {}),
+      },
+      ...(managedRuntime === undefined
+        ? {}
+        : {
+            managed_runtime: {
+              sdk_module_path: managedRuntime['sdk_module_path'] as string,
+              journal_path: managedRuntime['journal_path'] as string,
+              ...(typeof managedRuntime['automatic_handoff_file'] === 'string'
+                ? {
+                    automatic_handoff_file:
+                      managedRuntime['automatic_handoff_file'],
+                  }
+                : {}),
+              ...(typeof managedRuntime['handoff_context_file'] === 'string'
+                ? {
+                    handoff_context_file:
+                      managedRuntime['handoff_context_file'],
+                  }
+                : {}),
+            },
+          }),
       bootstrap: bootstrap as unknown as VisibleBootstrapRequest['bootstrap'],
       message_pointer:
         pointer as unknown as VisibleBootstrapRequest['message_pointer'],
@@ -797,11 +1178,14 @@ function readJson(
 function readAssignment(
   file: string,
   attempt: Attempt,
+  record?: TaskRecord,
 ):
   | {
       readonly ok: true;
       readonly assignment: Assignment;
       readonly digest: string;
+      readonly file: string;
+      readonly admissionDigest: string;
     }
   | { readonly ok: false; readonly code: string; readonly message: string } {
   const read = readJson(file, MAX_ASSIGNMENT_BYTES);
@@ -823,7 +1207,36 @@ function readAssignment(
       code: 'assignment_invalid',
       message: 'Recorded assignment schema is invalid.',
     };
-  return { ok: true, assignment: read.value, digest: read.digest };
+  if (
+    record &&
+    (read.value.assignee.agent_id !== attempt.assignee.agent_id ||
+      read.value.assignee.session_id !== attempt.assignee.session_id)
+  ) {
+    try {
+      const current = readManagedSourceAssignment(record, attempt);
+      return {
+        ok: true,
+        assignment: current.assignment,
+        digest: current.originalDigest,
+        file: current.file,
+        admissionDigest: current.digest,
+      };
+    } catch {
+      return {
+        ok: false,
+        code: 'source_admission_unverified',
+        message:
+          'Current source admission does not derive from a completed verified succession.',
+      };
+    }
+  }
+  return {
+    ok: true,
+    assignment: read.value,
+    digest: read.digest,
+    file,
+    admissionDigest: read.digest,
+  };
 }
 
 function readCapabilityCard(
@@ -1496,6 +1909,7 @@ function acceptedPiArgv(
   sessionId: string,
   agentName: string,
   extensionEntry: string,
+  openrouterModel?: string,
 ): boolean {
   const executable = argv[0]?.split(/[\\/]/).at(-1)?.toLowerCase();
   const hasPair = (flag: string, value: string) =>
@@ -1503,7 +1917,6 @@ function acceptedPiArgv(
       (argument, index) => argument === flag && argv[index + 1] === value,
     );
   const forbidden = new Set([
-    '--model',
     '-m',
     '--settings',
     '--config',
@@ -1514,12 +1927,69 @@ function acceptedPiArgv(
     '--dangerously-skip-permissions',
     '--dangerously-bypass-approvals-and-sandbox',
   ]);
+  const overrideFlags = argv.filter(
+    (arg) =>
+      arg === '--provider' ||
+      arg === '--model' ||
+      arg.startsWith('--provider=') ||
+      arg.startsWith('--model='),
+  );
+  const modelMatches =
+    openrouterModel === undefined
+      ? overrideFlags.length === 0
+      : overrideFlags.length === 2 &&
+        hasPair('--provider', 'openrouter') &&
+        hasPair('--model', openrouterModel);
   return (
     (executable === 'pi' || executable === 'pi.exe') &&
     hasPair('--session-id', sessionId) &&
     hasPair('--name', agentName) &&
     hasPair('--extension', extensionEntry) &&
+    modelMatches &&
     !argv.some((argument) => forbidden.has(argument))
+  );
+}
+
+function managedSdkLaunchMatches(
+  observed: BootstrapStartedManagedSdk,
+  context: BootstrapContext,
+  pane: BootstrapPaneSnapshot,
+  paths: ManagedRuntimePaths,
+): boolean {
+  const request = context.request;
+  const model = request.selected_model.openrouter_model;
+  const liveStatuses = new Set(['idle', 'working', 'running']);
+  const launch = observed.launch;
+  return (
+    model !== undefined &&
+    observed.agentName === context.herdrAgent &&
+    observed.harness === 'pi' &&
+    observed.paneId === pane.paneId &&
+    observed.cwd !== null &&
+    safePathEqual(observed.cwd, request.target.cwd) &&
+    liveStatuses.has(observed.status.toLowerCase()) &&
+    observed.sessionId === request.participant.native_session_selector &&
+    observed.identityProvenance === 'owned-pi-sdk-control' &&
+    observed.controlSchema === 'harness-collab/pi-managed-sdk-session/1' &&
+    Number.isSafeInteger(observed.processPid) &&
+    observed.processPid > 0 &&
+    observed.socketPeerPid === observed.processPid &&
+    observed.foregroundProcessPid === observed.processPid &&
+    observed.pane.paneId === pane.paneId &&
+    observed.pane.workspaceId === pane.workspaceId &&
+    observed.pane.terminalId === pane.terminalId &&
+    observed.pane.cwd !== null &&
+    safePathEqual(observed.pane.cwd, request.target.cwd) &&
+    launch.runtime === 'sdk' &&
+    launch.sdkModulePath === paths.sdkModulePath &&
+    launch.bootstrapExtensionPath === request.bootstrap.extension_entry &&
+    launch.herdrAgentName === context.herdrAgent &&
+    launch.journalPath === paths.journalPath &&
+    launch.sessionId === request.participant.native_session_selector &&
+    safePathEqual(launch.cwd, request.target.cwd) &&
+    launch.model.provider === 'openrouter' &&
+    launch.model.id === model &&
+    launch.ready === true
   );
 }
 
@@ -1560,27 +2030,49 @@ function planReport(
       ? (bindingParticipant(context.binding, request.participant.agent_id)
           ?.pane_id ?? null)
       : '<created-pane-id>';
+  const managedPathResult =
+    request.managed_runtime === undefined
+      ? null
+      : managedRuntimePathsFor(request);
   const startArgv =
     request.target.choice === 'sibling'
-      ? [
-          'herdr',
-          'agent',
-          'start',
-          context.herdrAgent,
-          '--kind',
-          'pi',
-          '--pane',
-          paneId!,
-          '--timeout',
-          String(START_TIMEOUT_MS),
-          '--',
-          '--session-id',
-          request.participant.native_session_selector,
-          '--name',
-          context.herdrAgent,
-          '--extension',
-          request.bootstrap.extension_entry,
-        ]
+      ? request.managed_runtime === undefined
+        ? [
+            'herdr',
+            'agent',
+            'start',
+            context.herdrAgent,
+            '--kind',
+            'pi',
+            '--pane',
+            paneId!,
+            '--timeout',
+            String(START_TIMEOUT_MS),
+            '--',
+            '--session-id',
+            request.participant.native_session_selector,
+            '--name',
+            context.herdrAgent,
+            '--extension',
+            request.bootstrap.extension_entry,
+            ...(request.selected_model.openrouter_model
+              ? [
+                  '--provider',
+                  'openrouter',
+                  '--model',
+                  request.selected_model.openrouter_model,
+                ]
+              : []),
+          ]
+        : managedPathResult?.ok
+          ? [
+              'herdr',
+              ...managedSdkStartArgs({
+                paneId: paneId!,
+                configPath: managedPathResult.paths.configPath,
+              }),
+            ]
+          : null
       : null;
   return successReport(action, request, context.requestDigest, 'planned', {
     task_id: context.task.record.task_id,
@@ -1618,7 +2110,14 @@ function planReport(
       runtime: 'accepted_artifact_digest_match',
       gate_registration: 'not_proven_by_export_or_report',
       authority: 'default-deny-until-recorded-transfer-completes',
-      model: 'daily_default_launch; selected_runtime_inheritance_unverified',
+      model: request.selected_model.openrouter_model
+        ? {
+            provider: 'openrouter',
+            id: request.selected_model.openrouter_model,
+            observation:
+              'explicit_launch_selection; runtime_observation_unverified',
+          }
+        : 'daily_default_launch; selected_runtime_inheritance_unverified',
     },
     effects: [
       {
@@ -1642,9 +2141,17 @@ function planReport(
               detail: 'max 10s, 100ms intervals, 100 samples',
             },
             {
-              step: 'agent_start',
+              step:
+                request.managed_runtime === undefined
+                  ? 'agent_start'
+                  : 'managed_sdk_start',
               status: 'planned',
-              detail: 'Pi extension + exact session UUID; no model override',
+              detail:
+                request.managed_runtime === undefined
+                  ? request.selected_model.openrouter_model
+                    ? 'Pi extension + exact fresh session UUID + explicit OpenRouter model; daily resources preserved'
+                    : 'Pi extension + exact session UUID; no model override'
+                  : 'Fixed current-package SDK start via herdr pane run; exact session/model/extension/config pinned, runtime control evidence pending',
             },
           ]
         : []),
@@ -1691,6 +2198,13 @@ async function prepare(
       extra,
     ),
   });
+  if (request.managed_runtime !== undefined) {
+    const shape = validateVisibleBootstrapRequest(request);
+    if (!shape.ok) return fail('invalid', shape.code, shape.message);
+    const runtimePaths = managedRuntimePathsFor(request);
+    if (!runtimePaths.ok)
+      return fail('invalid', runtimePaths.code, runtimePaths.message);
+  }
   if (!request.binding_ref)
     return fail(
       'needs_input',
@@ -1754,7 +2268,11 @@ async function prepare(
       'input_revision_mismatch',
       'Request input revision differs from the current task attempt.',
     );
-  const assignmentRead = readAssignment(attempt.assignment_ref, attempt);
+  const assignmentRead = readAssignment(
+    attempt.assignment_ref,
+    attempt,
+    task.record,
+  );
   if (!assignmentRead.ok)
     return fail('needs_input', assignmentRead.code, assignmentRead.message);
   const assignment = assignmentRead.assignment;
@@ -1786,7 +2304,7 @@ async function prepare(
   );
   if (!cardRead.ok) return fail('needs_input', cardRead.code, cardRead.message);
   const preflight = runCollaborationPreflight({
-    assignmentFile: attempt.assignment_ref,
+    assignmentFile: assignmentRead.file,
     capabilitiesFile: request.admission.capability_card_ref,
     maxAgeMinutes: 30,
     now: (dependencies.clock ?? Date.now)(),
@@ -1853,11 +2371,12 @@ async function prepare(
   const callerBinding = routing.sender;
   const ops =
     dependencies.ops ??
-    createHerdrBootstrapOps(
-      dependencies.transport === undefined
+    createHerdrBootstrapOps({
+      taskRoot: task.taskRoot,
+      ...(dependencies.transport === undefined
         ? {}
-        : { transport: dependencies.transport },
-    );
+        : { transport: dependencies.transport }),
+    });
   if (
     dependencies.ops !== undefined &&
     dependencies.transport !== undefined &&
@@ -1869,6 +2388,15 @@ async function prepare(
       'The notification and bootstrap operations must share the same Herdr transport instance.',
     );
   const transport = ops.transport;
+  if (
+    request.managed_runtime !== undefined &&
+    ops.startManagedSdk === undefined
+  )
+    return fail(
+      'needs_input',
+      'managed_start_unavailable',
+      'This host cannot launch a managed SDK successor; no legacy Pi fallback is permitted.',
+    );
   const callerIdentity = await ops.verifyCaller(request.caller.pane_id);
   if (!callerIdentity.ok)
     return fail(
@@ -1893,6 +2421,24 @@ async function prepare(
   const listed = await ops.listAgents();
   if (!listed.ok)
     return fail('unknown', 'herdr_agent_list_unavailable', listed.detail);
+  if (
+    request.managed_runtime !== undefined &&
+    listed.agents.some((agent) => {
+      const reported = reportedSessionIdentity(
+        agent.sessionKind,
+        agent.sessionValue,
+      );
+      return (
+        reported.status === 'match' &&
+        reported.identity === request.participant.native_session_selector
+      );
+    })
+  )
+    return fail(
+      'needs_input',
+      'managed_session_selector_in_use',
+      'The requested SDK native session selector is already reported by a live Herdr agent.',
+    );
   const liveCaller = liveParticipant(
     callerBinding,
     assignment.assignee,
@@ -2036,6 +2582,8 @@ async function prepare(
     task,
     assignment,
     assignmentDigest: assignmentRead.digest,
+    assignmentFile: assignmentRead.file,
+    admissionAssignmentDigest: assignmentRead.admissionDigest,
     attempt,
     callerCard: cardRead.card,
     caller: callerIdentity.caller,
@@ -2361,8 +2909,17 @@ function commitEffectIntent(
         )
       )
         return { ok: false as const, reason: 'cancel_unconfirmed' };
-      const assignment = readAssignment(attempt.assignment_ref!, attempt);
-      if (!assignment.ok || assignment.digest !== context.assignmentDigest)
+      const assignment = readAssignment(
+        attempt.assignment_ref!,
+        attempt,
+        record,
+      );
+      if (
+        !assignment.ok ||
+        assignment.digest !== context.assignmentDigest ||
+        assignment.file !== context.assignmentFile ||
+        assignment.admissionDigest !== context.admissionAssignmentDigest
+      )
         return { ok: false as const, reason: 'assignment_changed' };
       const card = readCapabilityCard(
         request.admission.capability_card_ref,
@@ -2370,7 +2927,7 @@ function commitEffectIntent(
       );
       if (!card.ok) return { ok: false as const, reason: card.code };
       const preflight = runCollaborationPreflight({
-        assignmentFile: attempt.assignment_ref!,
+        assignmentFile: assignment.file,
         capabilitiesFile: request.admission.capability_card_ref,
         maxAgeMinutes: 30,
         now: clock,
@@ -2475,7 +3032,7 @@ function guardedBootstrapTransport(
     id: `${underlying.id}-visible-bootstrap-guard`,
     verifyCaller: (options) => underlying.verifyCaller(options),
     list: () => underlying.list(),
-    prompt: async (agent, text) => {
+    prompt: async (agent, text, registered) => {
       if (agent !== context.herdrAgent)
         return {
           status: 'refused',
@@ -2507,7 +3064,7 @@ function guardedBootstrapTransport(
           status: 'blocked',
           detail: `Bootstrap guard blocked prompt (${intent.code}).`,
         };
-      return underlying.prompt(agent, text);
+      return underlying.prompt(agent, text, registered);
     },
   };
 }
@@ -2628,10 +3185,16 @@ async function revalidateCurrent(
       code: 'cancel_unconfirmed',
       message: 'A cancellation is pending or unconfirmed.',
     };
-  const currentAssignment = readAssignment(attempt.assignment_ref!, attempt);
+  const currentAssignment = readAssignment(
+    attempt.assignment_ref!,
+    attempt,
+    opened.value.record,
+  );
   if (
     !currentAssignment.ok ||
-    currentAssignment.digest !== context.assignmentDigest
+    currentAssignment.digest !== context.assignmentDigest ||
+    currentAssignment.file !== context.assignmentFile ||
+    currentAssignment.admissionDigest !== context.admissionAssignmentDigest
   )
     return {
       ok: false,
@@ -2644,7 +3207,7 @@ async function revalidateCurrent(
   );
   if (!card.ok) return { ok: false, code: card.code, message: card.message };
   const preflight = runCollaborationPreflight({
-    assignmentFile: attempt.assignment_ref!,
+    assignmentFile: currentAssignment.file,
     capabilitiesFile: context.request.admission.capability_card_ref,
     maxAgeMinutes: 30,
     now,
@@ -3243,12 +3806,87 @@ async function applySibling(
       },
     );
   }
+  const refuseManagedStart = async (
+    code: string,
+    detail: string,
+  ): Promise<VisibleBootstrapReport> => {
+    const cleanup = await closeOwnedEmptyPane(
+      context,
+      reservationId,
+      pane,
+      now,
+    );
+    const cleanupConfirmed = cleanup.state === 'closed_owned_pane';
+    const saved = phase({
+      phase: 'managed_sdk_setup_failed',
+      outcome: cleanupConfirmed ? 'not_started' : 'unknown',
+      release: cleanupConfirmed,
+      detail: code,
+      extra: { cleanup: { state: cleanup.state, code: cleanup.code } },
+    });
+    return terminalReport(
+      context,
+      cleanupConfirmed ? 'needs_input' : 'unknown',
+      code,
+      detail,
+      cleanupConfirmed
+        ? 'Correct the managed SDK paths/config and submit a fresh request id.'
+        : 'Reconcile the owned pane; no automatic cleanup or retry is permitted.',
+      {
+        state_revision: saved.ok ? saved.revision : revision,
+        target: { ...request.target, pane_id: pane.paneId },
+        readiness: readiness.evidence,
+        reservation: {
+          reservation_id: reservationId,
+          phase: 'managed_sdk_setup_failed',
+          cleanup: cleanup.state,
+        },
+        effects: [
+          ...steps,
+          { step: 'managed-sdk-config', status: 'failed', detail: code },
+          { step: 'cleanup', status: cleanup.state, detail: cleanup.code },
+        ],
+      },
+    );
+  };
+  const unknownManagedStart = (
+    code: string,
+    detail: string,
+  ): VisibleBootstrapReport => {
+    const saved = phase({
+      phase: 'managed_sdk_start_unknown',
+      outcome: 'unknown',
+      detail: code,
+    });
+    return terminalReport(
+      context,
+      'unknown',
+      code,
+      detail,
+      'Inspect the managed SDK control response and owned pane; never re-submit this request id.',
+      {
+        state_revision: saved.ok ? saved.revision : revision,
+        target: { ...request.target, pane_id: pane.paneId },
+        readiness: readiness.evidence,
+        reservation: {
+          reservation_id: reservationId,
+          phase: 'managed_sdk_start_unknown',
+        },
+        effects: [
+          ...steps,
+          { step: 'managed-sdk-start', status: 'unknown', detail: code },
+        ],
+      },
+    );
+  };
   const startPending = commitEffectIntent(
     context,
     reservationId,
     beforeStart.task.record.state_revision,
     beforeStart.task.identity.recordFile,
-    'agent_start_pending',
+    request.managed_runtime === undefined
+      ? 'agent_start_pending'
+      : 'managed_sdk_start_pending',
     now(),
     dependencies.signal,
   );
@@ -3285,79 +3923,246 @@ async function applySibling(
     );
   }
   revision = startPending.revision;
-  const started = await context.ops.startAgent({
-    name: context.herdrAgent,
-    paneId: pane.paneId,
-    sessionId: request.participant.native_session_selector,
-    extensionEntry: request.bootstrap.extension_entry,
-    onReceipt: persistReceipt(context, reservationId, now),
-  });
-  if (!started.ok) {
-    const saved = phase({
-      phase:
-        started.status === 'unknown'
-          ? 'agent_start_unknown'
-          : 'agent_start_failed',
-      outcome: started.status === 'unknown' ? 'unknown' : 'failed',
-      detail: started.code,
-    });
-    return terminalReport(
+  let nativeSessionId: string;
+  let managedLaunch: BootstrapStartedManagedSdk | null = null;
+  let managedConfigPath: string | null = null;
+  let managedConfigDigest: string | null = null;
+  if (request.managed_runtime !== undefined) {
+    const runtimePaths = managedRuntimePathsFor(request);
+    if (!runtimePaths.ok)
+      return refuseManagedStart(runtimePaths.code, runtimePaths.message);
+    const config = writeManagedSdkConfig(
+      request,
       context,
-      started.status === 'unknown' ? 'unknown' : 'failed',
-      started.code,
-      started.detail,
-      'Inspect the exact Herdr start result; do not retry or close a pane that may now contain an agent.',
-      {
-        state_revision: saved.ok ? saved.revision : revision,
-        target: { ...request.target, pane_id: pane.paneId },
-        readiness: readiness.evidence,
-        effects: [
-          ...steps,
-          { step: 'agent-start', status: started.status, detail: started.code },
-        ],
-      },
+      pane.paneId,
+      runtimePaths.paths,
     );
-  }
-  const native = reportedSessionIdentity(
-    started.value.sessionKind,
-    started.value.sessionValue,
-  );
-  if (
-    started.value.name !== context.herdrAgent ||
-    started.value.paneId !== pane.paneId ||
-    started.value.workspaceId !== pane.workspaceId ||
-    started.value.terminalId !== pane.terminalId ||
-    native.status !== 'match' ||
-    native.identity !== request.participant.native_session_selector ||
-    started.value.harness !== 'pi' ||
-    started.value.cwd === null ||
-    !safePathEqual(started.value.cwd, request.target.cwd) ||
-    started.value.launchPending ||
-    !acceptedPiArgv(
-      started.value.argv,
-      request.participant.native_session_selector,
-      context.herdrAgent,
-      request.bootstrap.extension_entry,
-    ) ||
-    !started.value.interactiveReady
-  ) {
-    const saved = phase({
-      phase: 'agent_identity_unknown',
-      outcome: 'unknown',
-      detail: 'exact successor identity not proven',
+    if (!config.ok)
+      return refuseManagedStart(
+        config.code,
+        'The private immutable SDK configuration could not be created and verified.',
+      );
+    managedConfigPath = runtimePaths.paths.configPath;
+    managedConfigDigest = config.digest;
+    const configRecorded = phase({
+      phase: 'managed_sdk_start_pending',
       extra: {
-        created_pane_id: pane.paneId,
-        observed_agent_name: started.value.name,
-        observed_session_kind: started.value.sessionKind,
-        observed_session_id: native.status === 'match' ? native.identity : null,
+        managed_sdk_config: {
+          path: runtimePaths.paths.configPath,
+          digest: config.digest,
+          journal_path: runtimePaths.paths.journalPath,
+          control_socket_path: runtimePaths.paths.controlSocketPath,
+          session_id: request.participant.native_session_selector,
+          model: {
+            provider: 'openrouter',
+            id: request.selected_model.openrouter_model!,
+          },
+          bootstrap_extension_path: request.bootstrap.extension_entry,
+          herdr_agent_name: context.herdrAgent,
+          herdr_pane_id: pane.paneId,
+          ...(runtimePaths.paths.handoffContextFile === undefined
+            ? {}
+            : { handoff_context_file: runtimePaths.paths.handoffContextFile }),
+        },
       },
+    });
+    if (!configRecorded.ok)
+      return refuseManagedStart(
+        configRecorded.code,
+        'Managed SDK config was created but could not be bound to the durable reservation.',
+      );
+    const startManagedSdk = context.ops.startManagedSdk;
+    const model = request.selected_model.openrouter_model;
+    if (startManagedSdk === undefined || model === undefined)
+      return refuseManagedStart(
+        'managed_start_unavailable',
+        'No managed SDK start port or explicit OpenRouter model is available; legacy Pi fallback is forbidden.',
+      );
+    const managedInput: BootstrapManagedSdkStartInput = {
+      name: context.herdrAgent,
+      paneId: pane.paneId,
+      workspaceId: pane.workspaceId,
+      terminalId: pane.terminalId,
+      cwd: request.target.cwd,
+      sessionId: request.participant.native_session_selector,
+      openrouterModel: model,
+      sdkModulePath: runtimePaths.paths.sdkModulePath,
+      journalPath: runtimePaths.paths.journalPath,
+      controlSocketPath: runtimePaths.paths.controlSocketPath,
+      bootstrapExtensionPath: request.bootstrap.extension_entry,
+      configPath: runtimePaths.paths.configPath,
+      configDigest: config.digest,
+      timeoutMs: START_TIMEOUT_MS,
+      ...(runtimePaths.paths.automaticHandoffFile === undefined
+        ? {}
+        : { automaticHandoffFile: runtimePaths.paths.automaticHandoffFile }),
+      ...(runtimePaths.paths.handoffContextFile === undefined
+        ? {}
+        : { handoffContextFile: runtimePaths.paths.handoffContextFile }),
+      onReceipt: persistReceipt(context, reservationId, now),
+    };
+    let startedManaged: Awaited<ReturnType<typeof startManagedSdk>>;
+    try {
+      startedManaged = await startManagedSdk(managedInput);
+    } catch {
+      return unknownManagedStart(
+        'managed_sdk_start_exception',
+        'Managed SDK start threw after submission may have begun; no retry or cleanup was attempted.',
+      );
+    }
+    if (!startedManaged.ok) {
+      return startedManaged.status === 'unknown'
+        ? unknownManagedStart(startedManaged.code, startedManaged.detail)
+        : refuseManagedStart(startedManaged.code, startedManaged.detail);
+    }
+    if (
+      !acceptedManagedSdkStartReceipt(startedManaged.receipt, {
+        paneId: pane.paneId,
+        configPath: runtimePaths.paths.configPath,
+      })
+    )
+      return unknownManagedStart(
+        'managed_sdk_start_receipt_unverified',
+        'The fixed managed CLI submission receipt did not match the exact pane/config command.',
+      );
+    if (
+      !managedSdkLaunchMatches(
+        startedManaged.value,
+        context,
+        pane,
+        runtimePaths.paths,
+      )
+    )
+      return unknownManagedStart(
+        'managed_sdk_control_unverified',
+        'Herdr name/state, SDK control metadata, socket peer owner and pane foreground PID did not agree.',
+      );
+    managedLaunch = startedManaged.value;
+    nativeSessionId = startedManaged.value.sessionId;
+  } else {
+    const started = await context.ops.startAgent({
+      name: context.herdrAgent,
+      paneId: pane.paneId,
+      sessionId: request.participant.native_session_selector,
+      extensionEntry: request.bootstrap.extension_entry,
+      ...(request.selected_model.openrouter_model
+        ? { openrouterModel: request.selected_model.openrouter_model }
+        : {}),
+      onReceipt: persistReceipt(context, reservationId, now),
+    });
+    if (!started.ok) {
+      const saved = phase({
+        phase:
+          started.status === 'unknown'
+            ? 'agent_start_unknown'
+            : 'agent_start_failed',
+        outcome: started.status === 'unknown' ? 'unknown' : 'failed',
+        detail: started.code,
+      });
+      return terminalReport(
+        context,
+        started.status === 'unknown' ? 'unknown' : 'failed',
+        started.code,
+        started.detail,
+        'Inspect the exact Herdr start result; do not retry or close a pane that may now contain an agent.',
+        {
+          state_revision: saved.ok ? saved.revision : revision,
+          target: { ...request.target, pane_id: pane.paneId },
+          readiness: readiness.evidence,
+          effects: [
+            ...steps,
+            {
+              step: 'agent-start',
+              status: started.status,
+              detail: started.code,
+            },
+          ],
+        },
+      );
+    }
+    const native = reportedSessionIdentity(
+      started.value.sessionKind,
+      started.value.sessionValue,
+    );
+    if (
+      started.value.name !== context.herdrAgent ||
+      started.value.paneId !== pane.paneId ||
+      started.value.workspaceId !== pane.workspaceId ||
+      started.value.terminalId !== pane.terminalId ||
+      native.status !== 'match' ||
+      native.identity !== request.participant.native_session_selector ||
+      started.value.harness !== 'pi' ||
+      started.value.cwd === null ||
+      !safePathEqual(started.value.cwd, request.target.cwd) ||
+      started.value.launchPending ||
+      !acceptedPiArgv(
+        started.value.argv,
+        request.participant.native_session_selector,
+        context.herdrAgent,
+        request.bootstrap.extension_entry,
+        request.selected_model.openrouter_model,
+      ) ||
+      !started.value.interactiveReady
+    ) {
+      const saved = phase({
+        phase: 'agent_identity_unknown',
+        outcome: 'unknown',
+        detail: 'exact successor identity not proven',
+        extra: {
+          created_pane_id: pane.paneId,
+          observed_agent_name: started.value.name,
+          observed_session_kind: started.value.sessionKind,
+          observed_session_id:
+            native.status === 'match' ? native.identity : null,
+        },
+      });
+      return terminalReport(
+        context,
+        'unknown',
+        'agent_identity_unverified',
+        'Agent start returned but the exact live successor identity/interactive state is unconfirmed; no binding or prompt was written.',
+        null,
+        {
+          state_revision: saved.ok ? saved.revision : revision,
+          target: { ...request.target, pane_id: pane.paneId },
+          readiness: readiness.evidence,
+          effects: [
+            ...steps,
+            {
+              step: 'agent-start',
+              status: 'unknown',
+              detail: 'identity mismatch',
+            },
+          ],
+        },
+      );
+    }
+    nativeSessionId = native.identity;
+  }
+  const callerAfterStart = await liveCallerAgain(context);
+  const authorityAfterStart = await revalidateCurrent(context, now());
+  if (!callerAfterStart.ok || !authorityAfterStart.ok) {
+    const reason = !callerAfterStart.ok
+      ? callerAfterStart.code
+      : authorityAfterStart.ok
+        ? 'post_start_revalidation_unexpected'
+        : authorityAfterStart.code;
+    const detail = !callerAfterStart.ok
+      ? callerAfterStart.message
+      : authorityAfterStart.ok
+        ? 'Post-start authority unexpectedly passed the failure branch.'
+        : authorityAfterStart.message;
+    const saved = phase({
+      phase: 'post_start_revalidation_failed',
+      outcome: 'unknown',
+      detail: reason,
     });
     return terminalReport(
       context,
-      'unknown',
-      'agent_identity_unverified',
-      'Agent start returned but the exact live successor identity/interactive state is unconfirmed; no binding or prompt was written.',
-      null,
+      'needs_input',
+      reason,
+      `${detail} The successor may be running but remains unbound and unprompted.`,
+      'Reconcile current task authority and the owned pane before creating a new request.',
       {
         state_revision: saved.ok ? saved.revision : revision,
         target: { ...request.target, pane_id: pane.paneId },
@@ -3365,21 +4170,37 @@ async function applySibling(
         effects: [
           ...steps,
           {
-            step: 'agent-start',
-            status: 'unknown',
-            detail: 'identity mismatch',
+            step: managedLaunch === null ? 'agent-start' : 'managed-sdk-start',
+            status: 'blocked',
+            detail: reason,
           },
         ],
       },
     );
   }
   const startedPhase = phase({
-    phase: 'agent_started',
+    phase: managedLaunch === null ? 'agent_started' : 'managed_sdk_started',
     extra: {
       created_pane_id: pane.paneId,
       created_workspace_id: pane.workspaceId,
       created_terminal_id: pane.terminalId,
-      observed_session_id: native.identity,
+      observed_session_id: nativeSessionId,
+      ...(managedLaunch === null
+        ? {}
+        : {
+            managed_sdk_control: {
+              runtime: 'sdk',
+              identity_provenance: managedLaunch.identityProvenance,
+              control_schema: managedLaunch.controlSchema,
+              process_pid: managedLaunch.processPid,
+              socket_peer_pid: managedLaunch.socketPeerPid,
+              foreground_process_pid: managedLaunch.foregroundProcessPid,
+              model: managedLaunch.launch.model,
+              journal_path: managedLaunch.launch.journalPath,
+              config_path: managedConfigPath,
+              config_digest: managedConfigDigest,
+            },
+          }),
     },
   });
   if (!startedPhase.ok)
@@ -3392,12 +4213,13 @@ async function applySibling(
       { readiness: readiness.evidence, state_revision: revision },
     );
   steps.push({
-    step: 'agent-start',
+    step: managedLaunch === null ? 'agent-start' : 'managed-sdk-start',
     status: 'completed',
     detail:
-      'Pi agent started with exact --extension and --session-id arguments; registration is not independently proven.',
+      managedLaunch === null
+        ? 'Pi agent start matched exact native session id, extension argv, model selection and interactive readiness.'
+        : 'Managed SDK launch matched authenticated control, actual model/session/config metadata, socket peer owner and pane foreground PID; Herdr session-report ID was not used.',
   });
-
   const bindingPhase = phase({ phase: 'binding_pending' });
   if (!bindingPhase.ok)
     return terminalReport(
@@ -3414,7 +4236,7 @@ async function applySibling(
     cwd: request.target.cwd,
     herdr_agent: context.herdrAgent,
     pane_id: pane.paneId,
-    native_session_id: native.identity,
+    native_session_id: nativeSessionId,
   };
   let binding: CollabBinding;
   try {
@@ -3684,9 +4506,46 @@ async function applySibling(
       config_digest: context.configDigest,
       bundle_manifest_digest: context.bundle.digest,
       extension_entry: request.bootstrap.extension_entry,
+      runtime:
+        managedLaunch === null
+          ? 'accepted_artifact_digest_match'
+          : 'managed_sdk_control_observed',
       authority: 'default-deny-until-recorded-transfer-completes',
-      gate_registration: 'configured_not_independently_observed',
-      model: 'daily_default_launch; selected_runtime_inheritance_unverified',
+      gate_registration: 'not_independently_observed',
+      bootstrap_extension_load:
+        managedLaunch === null
+          ? 'not_independently_observed'
+          : 'control_metadata_observed',
+      model:
+        managedLaunch === null
+          ? 'daily_default_launch; selected_runtime_inheritance_unverified'
+          : {
+              ...managedLaunch.launch.model,
+              observation: 'owned-pi-sdk-control',
+            },
+      ...(managedLaunch === null
+        ? {}
+        : {
+            managed_sdk_control: {
+              identity_provenance: managedLaunch.identityProvenance,
+              control_schema: managedLaunch.controlSchema,
+              session_id: managedLaunch.sessionId,
+              process_pid: managedLaunch.processPid,
+              socket_peer_pid: managedLaunch.socketPeerPid,
+              foreground_process_pid: managedLaunch.foregroundProcessPid,
+              herdr_agent_name: managedLaunch.launch.herdrAgentName,
+              herdr_pane_id: managedLaunch.paneId,
+              sdk_module_path: managedLaunch.launch.sdkModulePath,
+              bootstrap_extension_path:
+                managedLaunch.launch.bootstrapExtensionPath,
+              journal_path: managedLaunch.launch.journalPath,
+              managed_config_path: managedConfigPath,
+              managed_config_digest: managedConfigDigest,
+              handoff_context_file:
+                request.managed_runtime?.handoff_context_file ?? null,
+              ready: managedLaunch.launch.ready,
+            },
+          }),
     },
     reservation: {
       reservation_id: reservationId,
@@ -3697,11 +4556,15 @@ async function applySibling(
     effects: steps,
     notification: summary,
     limits: [
-      'agent_start_and_extension_argument_do_not_prove_gate_registration',
+      managedLaunch === null
+        ? 'agent_start_and_extension_argument_do_not_prove_gate_registration'
+        : 'managed_sdk_extension_path_observed_but_gate_registration_not_independently_proven',
       'new_successor_capabilities_are_not_synthesized',
       'message_submitted_not_consumed_or_accepted',
       'no_old_writer_quiescence_or_native_archive_proof',
-      'selected_runtime_model_inheritance_unverified',
+      ...(managedLaunch === null
+        ? ['selected_runtime_model_inheritance_unverified']
+        : []),
     ],
   });
 }

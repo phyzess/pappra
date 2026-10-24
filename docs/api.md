@@ -29,6 +29,27 @@ local identity fails closed.
   controller; no native host is launched by default. The `pi-rpc` controller path
   and its observed Pi 1.3.0 behaviour are documented in `docs/pi-rpc.md`.
 - `pappra/schemas`: exported validation schemas and types.
+- `pappra/hosts/pi-managed`: explicit fresh native Pi TUI launch, write-ahead
+  terminal ingress journal, private endpoint and exact owned-child exit evidence.
+  Uses Python 3's standard PTY support on Unix, normal Pi configuration and an
+  explicit OpenRouter model. It does not adopt an existing session or prove
+  complete native queue, approval or external-writer quiescence.
+- `pappra/hosts/pi-managed-sdk`: explicit Pi 1.4.0 SDK and native TUI, pinned
+  internal queue/dialog inventory, ingress fences and owned-runtime disposal.
+  Its receipt describes runtime disposal, not operating-system process exit.
+- `pappra/collab/automatic-handoff`: threshold-driven native summary, full-source
+  checkpoint artifact capture, immutable bundle preparation and guarded transition ticks.
+- `pappra/collab/role-orchestration`: bounded event dispatch through the existing
+  work executor, durable no-redelivery receipts and authoritative aggregation.
+- `pappra/collab/role-plan`: optional planner/writer/reviewer expansion into the existing
+  work-plan model and conservative aggregation of its evaluated results.
+  Root exports include `managedPi` and `collabRolePlan` namespaces.
+
+The CLI exposes `session plan|start|status|fence|stop --config <absolute-file>`
+and `collab role-plan expand|aggregate`, plus `collab role-run --request <file>
+--apply [--watch]`. `collab capabilities derive --harness pi
+--live` derives a standard card from a settled saved interactive session without
+inventing a process-exit receipt. Existing preflight freshness checks still apply.
 
 ## Safety contract
 

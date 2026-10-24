@@ -74,6 +74,8 @@ export interface WorkPlanReportNode {
   readonly assignment_id: string;
   readonly attempt: number;
   readonly status: string;
+  /** Persisted assigned work with no native execution or durable dispatch intent yet. */
+  readonly dispatch_pending?: boolean;
   readonly blockers: readonly WorkPlanReportBlocker[];
   readonly next_action: string | null;
 }
@@ -290,6 +292,7 @@ function summarise(evaluation: WorkPlanEvaluation) {
 function projectNodes(
   evaluation: WorkPlanEvaluation,
   plan: WorkPlan,
+  record: TaskRecord,
 ): WorkPlanReportNode[] {
   const planned = new Map(plan.nodes.map((node) => [node.node_id, node]));
   return evaluation.nodes.map((node) => ({
@@ -298,6 +301,36 @@ function projectNodes(
     assignment_id: planned.get(node.node_id)?.assignment_id ?? node.node_id,
     attempt: planned.get(node.node_id)?.attempt ?? 1,
     status: node.status,
+    dispatch_pending:
+      node.status === 'running' &&
+      (() => {
+        const plannedNode = planned.get(node.node_id);
+        const attempt = record.attempts.find(
+          (row) =>
+            row.subtask_id === plannedNode?.assignment_id &&
+            row.attempt === plannedNode.attempt,
+        );
+        return (
+          attempt !== undefined &&
+          attempt.state === 'assigned' &&
+          !attempt.awaiting &&
+          !attempt.cancel_requested_at &&
+          !attempt.closed_at &&
+          !record.dispatch_frozen &&
+          attempt.native.observation === 'unknown' &&
+          attempt.native.session_id === null &&
+          attempt.native.run_id === null &&
+          attempt.native.mission_id === null &&
+          attempt.native.evidence_ref === null &&
+          !record.messages.some(
+            (message) =>
+              message.type === 'STATUS_QUERY' &&
+              message.subtask_id === attempt.subtask_id &&
+              message.attempt === attempt.attempt &&
+              message.message_id.startsWith('msg-work-intent-'),
+          )
+        );
+      })(),
     blockers: node.blockers.map((blocker) => ({
       code: blocker.code,
       detail: blocker.detail,
@@ -608,7 +641,7 @@ export async function inspectWorkPlan(
     status: incomplete ? 'incomplete' : 'evaluated',
     stale,
     summary: summarise(evaluated),
-    nodes: projectNodes(evaluated, plan),
+    nodes: projectNodes(evaluated, plan, task.record),
     core: evaluated,
   };
 }

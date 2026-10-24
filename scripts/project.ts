@@ -12,7 +12,11 @@ export function listFiles(root: string): string[] {
   });
 }
 
-export function runNode(args: readonly string[], cwd = projectRoot): void {
+export function runNode(
+  args: readonly string[],
+  cwd = projectRoot,
+  timeoutMs = 360_000,
+): void {
   const result = spawnSync(process.execPath, [...args], {
     cwd,
     stdio: 'inherit',
@@ -20,7 +24,7 @@ export function runNode(args: readonly string[], cwd = projectRoot): void {
     // P08 real-engine fixtures and the P10 integration/CLI matrix add bounded
     // process time; keep a finite ceiling rather than allowing a wedged test
     // process to hang.
-    timeout: 360_000,
+    timeout: timeoutMs,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {

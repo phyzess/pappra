@@ -91,6 +91,8 @@ export interface WorkNodeEvaluation {
   readonly status: WorkNodeStatus;
   readonly blockers: readonly WorkNodeBlocker[];
   readonly recovery: string | null;
+  /** This node's decision, distinct from blockers inherited from predecessors. */
+  readonly acceptance_blocker?: WorkNodeBlocker | null;
 }
 
 export interface WorkPlanEvaluation {
@@ -953,13 +955,6 @@ export function evaluateWorkPlan(
         'the latest decision targets a different plan or node',
       );
     }
-    const decision = witness.acceptance['decision'];
-    if (decision !== 'accepted') {
-      return denied(
-        decision === 'rejected' ? 'acceptance_rejected' : 'acceptance_mismatch',
-        `acceptance decision must be accepted, found ${String(decision)}`,
-      );
-    }
     const assignmentId = witness.acceptance['assignment_id'];
     const attemptNumber = witness.acceptance['attempt'];
     const inputRevision = witness.acceptance['input_revision'];
@@ -1028,6 +1023,13 @@ export function evaluateWorkPlan(
       return denied(
         'acceptance_not_coordinator',
         'acceptance must come from the current coordinator identity',
+      );
+    }
+    const decision = witness.acceptance['decision'];
+    if (decision !== 'accepted') {
+      return denied(
+        decision === 'rejected' ? 'acceptance_rejected' : 'acceptance_mismatch',
+        `acceptance decision must be accepted, found ${String(decision)}`,
       );
     }
     return settle({ accepted: true, blocker: null });
@@ -1239,6 +1241,7 @@ export function evaluateWorkPlan(
       role: node.role,
       status,
       blockers,
+      acceptance_blocker: acceptance?.blocker ?? null,
       recovery:
         firstBlocker !== undefined
           ? (RECOVERY.get(firstBlocker.code) ?? null)

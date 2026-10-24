@@ -13,17 +13,20 @@ import type { CliOutput } from '../output.js';
 
 /** One source of truth for the full collaboration command family in help output. */
 export const collaborationCommandLine =
-  'pappra collab <prepare|run|work-run|query|preflight|plan|bootstrap|rollover|transition|message|capabilities|state|resource|handoff|recovery|recovery-run|binding> [options]';
+  'pappra collab <prepare|run|work-run|role-run|query|preflight|plan|role-plan|bootstrap|rollover|transition|message|capabilities|state|resource|handoff|recovery|recovery-run|binding> [options]';
 
 export const collaborationUsage =
   `${collaborationCommandLine}\n` +
   '  prepare --goal <file> --domain-root <dir> [--json]\n' +
   '  run --prepared <file> --capabilities <card> --controller <fixture|pi-rpc>\n' +
   '  work-run --request <abs work-execution.json> [--apply] [--json]\n' +
+  '  role-run --request <abs role-orchestration.json> [--apply] [--json]\n' +
   '    Apply records bounded notification intents; plans write and notify nothing.\n' +
   '  query --prepared <file> [--json]\n' +
   '  preflight --assignment <file> --capabilities <card> [--max-age-minutes <n>] [--json]\n' +
   '  plan --task-root <dir> --config <plan.json> [--json]\n' +
+  '  role-plan expand --request <abs role-plan.json> [--json]\n' +
+  '  role-plan aggregate --request <abs role-plan.json> --task-root <abs> --config <abs expanded-plan.json> [--json]\n' +
   '  rollover <inspect|plan> --task-root <dir> --request <request.json> [--json]\n' +
   '  bootstrap <plan|apply> --task-root <abs> --request <abs request.json> [--json]\n' +
   '    Plan is read-only; apply launches only a visible Pi sibling or verified task-bound reuse.\n' +
@@ -34,7 +37,7 @@ export const collaborationUsage =
   '    Unsupported native-quiescence proof blocks before successor launch or claim transfer.\n' +
   '    Applied ACK and REPORT pointers are required; retirement retains the original transcript.\n' +
   '  message <send|list|read|notify> --task-root <dir> [options]\n' +
-  '  capabilities derive --harness <pi|codex|claude> --assignment <file> --template <file> --execution <file> [--session <file> | --events <file>] [--json]\n' +
+  '  capabilities derive --harness <pi|codex|claude> --assignment <file> --template <file> [--execution <file> | --live] [--session <file> | --events <file>] [--json]\n' +
   '  state <show|doctor|epoch-check> --task-root <dir> [options]\n' +
   '  resource <list|claim|release> --task-root <dir> [options]\n' +
   '  handoff <inventory|begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> --task-root <dir> [options]\n' +

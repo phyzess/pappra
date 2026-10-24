@@ -4,6 +4,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { runCollaborationPreflight } from '../../src/app/collab-preflight.js';
+import { inspectWorkPlan } from '../../src/app/collab-work-plan.js';
 import {
   parseCollaborationWorkRunArgs,
   runCollaborationWorkRunCommand,
@@ -388,6 +389,31 @@ test('plan mode has zero effects and deterministic aggregation', async () => {
   }
 });
 
+test('assigned work is dispatch-pending until its durable intent exists even before native binding', async () => {
+  const fixture = makeFixture('assigned-pending-dispatch', { count: 1 });
+  try {
+    const inspect = () =>
+      inspectWorkPlan({
+        taskRoot: fixture.taskRoot,
+        planFile: fixture.planFile,
+      });
+    const before = await inspect();
+    assert.equal(before.nodes[0]?.status, 'running');
+    assert.equal(before.nodes[0]?.dispatch_pending, true);
+    await runWorkExecution(
+      { request: fixture.request, apply: true },
+      { adapter: planAdapter() },
+    );
+    assert.equal(
+      readRecord(fixture.taskRoot)?.attempts[0]?.native.observation,
+      'unknown',
+    );
+    assert.equal((await inspect()).nodes[0]?.dispatch_pending, false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('typed CLI handler validates request and returns a read-only JSON plan', async () => {
   const fixture = makeFixture('cli-handler', { count: 1 });
   try {
@@ -595,6 +621,71 @@ test('production Herdr adapter rechecks authority after live routing and immedia
     assert.equal(prompts, 0);
     assert.equal(result.nodes[0]!.execution_status, 'blocked');
     assert.equal(result.nodes[0]!.delivery?.status, 'blocked');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('production work adapter preserves registered native delivery context after the final guard', async () => {
+  const fixture = makeFixture('native-registered-context', { count: 1 });
+  try {
+    mkdirSync(notificationsDir(fixture.taskRoot), { recursive: true });
+    const identity = {
+      name: 'coordinator',
+      harness: 'pi',
+      paneId: 'w1:p1',
+      cwd: fixture.request.caller.cwd,
+      sessionKind: 'id' as const,
+      sessionValue: fixture.request.caller.session_id,
+      status: 'working',
+      focused: false,
+    };
+    const transport: HerdrTransport = {
+      id: 'registered-native-fixture',
+      verifyCaller: async () => ({
+        ok: true,
+        caller: {
+          ...identity,
+          workspaceId: null,
+          tabId: null,
+          source: 'explicit',
+        },
+      }),
+      list: async () => ({
+        ok: true,
+        agents: [
+          identity,
+          {
+            ...identity,
+            name: 'worker-1',
+            paneId: 'w1:p2',
+            sessionValue: 'worker-session-1',
+          },
+        ],
+      }),
+      prompt: async (_agent, _text, registered) => {
+        assert(
+          registered,
+          'the authenticated SDK route requires registered-message context',
+        );
+        assert.equal(registered.taskRoot, fixture.taskRoot);
+        assert.equal(registered.sessionId, 'worker-session-1');
+        assert.equal(
+          registered.messageId,
+          fixture.assignmentMessages['writer-1']?.message_id,
+        );
+        return { status: 'submitted', detail: null };
+      },
+    };
+    const result = await runWorkExecution(
+      { request: fixture.request, apply: true },
+      { adapter: createHerdrWorkExecutionAdapter({ transport }) },
+    );
+    assert.equal(
+      result.nodes[0]?.execution_status,
+      'dispatched',
+      JSON.stringify(result),
+    );
   } finally {
     fixture.cleanup();
   }

@@ -938,6 +938,56 @@ test('first work needs current input, exact epochs and the pinned successor nati
   }
 });
 
+test('observed native first work preserves the active attempt for another handoff', () => {
+  const fixture = makeFixture('first-work-running');
+  try {
+    const record = driveToCompleted(fixture);
+    const report = reportMessage(record, {
+      status: 'running',
+      body: {
+        phase: 'handoff-first-work',
+        native_ref: {
+          schema: 'pappra/native-first-work/1',
+          handoff_id: 'handoff-1',
+          generation: 1,
+          session_id: NEXT.session_id,
+          observation: 'native_agent_settled',
+          evidence_ref: 'native:turn:1',
+        },
+      },
+    });
+    const result = rollover.recordRolloverFirstWork(record, {
+      intent_id: 'intent-1',
+      message: report,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    const attempt = record.attempts.find(
+      (row) => row.subtask_id === 'work' && row.attempt === 1,
+    )!;
+    assert.equal(attempt.state, 'running');
+    assert.equal(attempt.closed_at, undefined);
+    assert.equal(record.successions?.length, 1);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a generic running report does not prove native first work', () => {
+  const fixture = makeFixture('first-work-running-refused');
+  try {
+    const record = driveToCompleted(fixture);
+    const report = reportMessage(record, { status: 'running' });
+    const result = rollover.recordRolloverFirstWork(record, {
+      intent_id: 'intent-1',
+      message: report,
+    });
+    assert.equal(result.ok === false && result.reason, 'report_not_admitted');
+    assert.equal(record.successions?.length ?? 0, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('input, claim epoch, native and attempt drift all block the history marker', () => {
   const cases: readonly {
     readonly name: string;

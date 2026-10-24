@@ -6,6 +6,8 @@ import {
   realpathSync,
   renameSync,
   symlinkSync,
+  lstatSync,
+  readFileSync,
   writeFileSync,
 } from 'node:fs';
 import { join } from 'node:path';
@@ -30,11 +32,14 @@ import {
   type VisibleBootstrapRequest,
 } from '../../src/app/collab-bootstrap.js';
 import {
+  managedSdkStartArgs,
   type BootstrapCommandReceipt,
+  type BootstrapManagedSdkStartInput,
   type BootstrapOperationResult,
   type BootstrapPaneSnapshot,
   type BootstrapProcessSnapshot,
   type BootstrapStartedAgent,
+  type BootstrapStartedManagedSdk,
   type HerdrBootstrapOps,
 } from '../../src/app/collab-bootstrap-transport.js';
 import {
@@ -559,6 +564,7 @@ function fakeOps(
   options: {
     readonly includeSuccessor?: boolean;
     readonly readiness?: 'ready' | 'timeout';
+    readonly foreignProcess?: boolean;
     readonly splitUnknown?: boolean;
     readonly onVerifyCaller?: (call: number) => void | Promise<void>;
     readonly onPaneGet?: (call: number) => void | Promise<void>;
@@ -656,14 +662,16 @@ function fakeOps(
       events.push(`process-info:${paneId}`);
       processCall += 1;
       const busy = options.readiness === 'timeout' && processCall === 1;
+      const foreign = options.foreignProcess === true;
       const value: BootstrapProcessSnapshot = {
         paneId,
         shellPid: 51,
-        foregroundProcessGroupId: busy ? 17 : 51,
+        foregroundProcessGroupId: foreign || busy ? 17 : 51,
         tty: 'pts/2',
-        foregroundProcesses: busy
-          ? [{ pid: 17, name: 'git' }]
-          : [{ pid: 51, name: 'zsh' }],
+        foregroundProcesses:
+          foreign || busy
+            ? [{ pid: 17, name: 'git' }]
+            : [{ pid: 51, name: 'zsh' }],
       };
       return operationOk('pane.process-info', value);
     },
@@ -716,6 +724,9 @@ function fakeOps(
           name,
           '--extension',
           value.extensionEntry,
+          ...(input.openrouterModel
+            ? ['--provider', 'openrouter', '--model', input.openrouterModel]
+            : []),
         ],
       };
       return operationOk('agent.start', started);
@@ -805,6 +816,155 @@ function dependencies(
       return { ok: true, value: { ...result, status: notificationStatus } };
     },
   };
+}
+
+function managedRequest(value: Fixture): {
+  readonly request: VisibleBootstrapRequest;
+  readonly sdkModulePath: string;
+  readonly journalPath: string;
+  readonly automaticHandoffFile: string;
+  readonly handoffContextFile: string;
+} {
+  const parent = join(value.root, "managed space ' $ `tick`");
+  mkdirSync(parent, { recursive: true, mode: 0o700 });
+  const sdkModulePath = join(parent, 'pinned sdk entry.mjs');
+  const journalPath = join(parent, 'sdk journal.jsonl');
+  const automaticHandoffFile = join(parent, 'future handoff.json');
+  const handoffContextFile = join(parent, 'handoff context.json');
+  writeFileSync(sdkModulePath, 'export const VERSION = "1.4.0";\n', {
+    mode: 0o400,
+  });
+  return {
+    request: {
+      ...value.request,
+      selected_model: {
+        preserve_daily: true,
+        openrouter_model: 'openai/gpt-6-luna',
+      },
+      managed_runtime: {
+        sdk_module_path: sdkModulePath,
+        journal_path: journalPath,
+        automatic_handoff_file: automaticHandoffFile,
+        handoff_context_file: handoffContextFile,
+      },
+    },
+    sdkModulePath,
+    journalPath,
+    automaticHandoffFile,
+    handoffContextFile,
+  };
+}
+
+function managedStartReceipt(
+  input: BootstrapManagedSdkStartInput,
+): BootstrapCommandReceipt {
+  return {
+    operation: 'managed-sdk.start',
+    argv: ['herdr', ...managedSdkStartArgs(input)],
+    code: 0,
+    signal: null,
+    spawned: true,
+    timed_out: false,
+    spawn_error: null,
+    stdout: '{"result":{"type":"pane_run"}}',
+    stderr: '',
+  };
+}
+
+function managedStartedSdk(
+  input: BootstrapManagedSdkStartInput,
+  pane: BootstrapPaneSnapshot,
+): BootstrapStartedManagedSdk {
+  return {
+    agentName: input.name,
+    harness: 'pi',
+    paneId: input.paneId,
+    cwd: input.cwd,
+    status: 'working',
+    sessionId: input.sessionId,
+    identityProvenance: 'owned-pi-sdk-control',
+    controlSchema: 'harness-collab/pi-managed-sdk-session/1',
+    processPid: 52,
+    socketPeerPid: 52,
+    foregroundProcessPid: 52,
+    pane,
+    launch: {
+      runtime: 'sdk',
+      sdkModulePath: input.sdkModulePath,
+      bootstrapExtensionPath: input.bootstrapExtensionPath,
+      herdrAgentName: input.name,
+      journalPath: input.journalPath,
+      sessionId: input.sessionId,
+      cwd: input.cwd,
+      model: { provider: 'openrouter', id: input.openrouterModel },
+      ready: true,
+    },
+  };
+}
+
+function attachManagedStart(
+  host: ReturnType<typeof fakeOps>,
+  outcome: 'success' | 'unknown' = 'success',
+) {
+  let calls = 0;
+  let managedAgent: HerdrAgentObservation | null = null;
+  const originalList = host.ops.listAgents;
+  host.ops.listAgents = async () => {
+    const listed = await originalList();
+    return listed.ok && managedAgent !== null
+      ? { ok: true, agents: [...listed.agents, managedAgent] }
+      : listed;
+  };
+  host.ops.startManagedSdk = async (input) => {
+    calls += 1;
+    const config = JSON.parse(readFileSync(input.configPath, 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    assert.deepEqual(config, {
+      schema: 'pappra/managed-pi-session-request/1',
+      cwd: input.cwd,
+      model: input.openrouterModel,
+      journalPath: input.journalPath,
+      controlSocketPath: input.controlSocketPath,
+      runtime: 'sdk',
+      sdkModulePath: input.sdkModulePath,
+      sessionId: input.sessionId,
+      bootstrapExtensionPath: input.bootstrapExtensionPath,
+      herdrAgentName: input.name,
+      herdrPaneId: input.paneId,
+      automaticHandoffFile: input.automaticHandoffFile,
+      handoffContextFile: input.handoffContextFile,
+    });
+    const file = lstatSync(input.configPath);
+    assert.equal(file.isSymbolicLink(), false);
+    assert.equal(file.mode & 0o777, 0o400);
+    const receipt = managedStartReceipt(input);
+    await input.onReceipt?.(receipt);
+    if (outcome === 'unknown')
+      return {
+        ok: false as const,
+        status: 'unknown' as const,
+        code: 'managed_sdk_start_unknown',
+        detail:
+          'The pane command may have started but control evidence was late.',
+        correlationId: null,
+        receipt,
+      };
+    managedAgent = agentObservation({
+      name: input.name,
+      identity: SUCCESSOR,
+      paneId: input.paneId,
+      cwd: input.cwd,
+    });
+    return {
+      ok: true as const,
+      value: managedStartedSdk(input, host.pane),
+      correlationId: 'managed-sdk-control',
+      receipt,
+    };
+  };
+  return { calls: () => calls };
 }
 
 function admitCancellation(value: Fixture, messageId: string, clock: number) {
@@ -1524,6 +1684,340 @@ test('model overrides and stale admission input are refused before native effect
     assert.equal(host.counts.split, 0);
     assert.equal(host.counts.start, 0);
     assert.equal(host.events.includes('notify'), false);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('fresh successor pins an explicit OpenRouter model while preserving daily resources', async () => {
+  const value = fixture('bootstrap-openrouter-selection');
+  try {
+    const request: VisibleBootstrapRequest = {
+      ...value.request,
+      selected_model: {
+        preserve_daily: true,
+        openrouter_model: 'openai/gpt-6-luna',
+      },
+    };
+    const valid = validateVisibleBootstrapRequest(request);
+    assert.equal(valid.ok, true);
+    assert.equal(
+      valid.request.selected_model.openrouter_model,
+      'openai/gpt-6-luna',
+    );
+    const host = fakeOps(value);
+    const deps = dependencies(value, host, {}, request);
+    const planned = await planVisibleBootstrap(request, deps);
+    assert.equal(planned.status, 'planned');
+    const argv = planned.target?.['launch_argv'] as string[];
+    assert.deepEqual(argv.slice(-4), [
+      '--provider',
+      'openrouter',
+      '--model',
+      'openai/gpt-6-luna',
+    ]);
+    assert.equal(host.counts.start, 0);
+    const applied = await applyVisibleBootstrap(request, deps);
+    assert.equal(applied.status, 'applied', JSON.stringify(applied));
+    assert.equal(host.counts.start, 1);
+    const changed = await applyVisibleBootstrap(
+      {
+        ...request,
+        selected_model: {
+          preserve_daily: true,
+          openrouter_model: 'another/model',
+        },
+      },
+      deps,
+    );
+    assert.equal(changed.code, 'request_id_content_conflict');
+    assert.equal(host.counts.start, 1);
+    assert.equal(
+      validateVisibleBootstrapRequest({
+        ...request,
+        target: { ...request.target, choice: 'reuse' },
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateVisibleBootstrapRequest({
+        ...request,
+        selected_model: {
+          preserve_daily: true,
+          openrouter_model: '--no-tools',
+        },
+      }).ok,
+      false,
+    );
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('a successor reporting another model is never routed even after a successful start receipt', async () => {
+  const value = fixture('bootstrap-openrouter-drift');
+  try {
+    const request: VisibleBootstrapRequest = {
+      ...value.request,
+      selected_model: {
+        preserve_daily: true,
+        openrouter_model: 'openai/gpt-6-luna',
+      },
+    };
+    const host = fakeOps(value);
+    const start = host.ops.startAgent;
+    host.ops.startAgent = async (input) => {
+      const result = await start(input);
+      return result.ok
+        ? {
+            ...result,
+            value: {
+              ...result.value,
+              argv: result.value.argv.map((item) =>
+                item === 'openai/gpt-6-luna' ? 'another/model' : item,
+              ),
+            },
+          }
+        : result;
+    };
+    const report = await applyVisibleBootstrap(
+      request,
+      dependencies(value, host, {}, request),
+    );
+    assert.equal(report.status, 'unknown', JSON.stringify(report));
+    assert.equal(host.events.includes('notify'), false);
+    assert.equal(host.counts.start, 1);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('managed SDK request pins exact config and binds only authenticated native identity', async () => {
+  const value = fixture('bootstrap-managed-sdk-success');
+  const managed = managedRequest(value);
+  try {
+    const host = fakeOps(value);
+    const starter = attachManagedStart(host);
+    const deps = dependencies(value, host, {}, managed.request);
+    const plan = await planVisibleBootstrap(managed.request, deps);
+    assert.equal(plan.status, 'planned', JSON.stringify(plan));
+    const planArgv = plan.target?.['launch_argv'] as string[];
+    assert.deepEqual(planArgv.slice(1, 3), ['pane', 'run']);
+    assert.equal(planArgv.includes('agent'), false);
+    assert.equal(starter.calls(), 0);
+
+    const report = await applyVisibleBootstrap(managed.request, deps);
+    assert.equal(report.status, 'applied', JSON.stringify(report));
+    assert.equal(starter.calls(), 1);
+    assert.equal(host.counts.start, 0);
+    const bootstrap = report.bootstrap as Record<string, unknown>;
+    assert.equal(bootstrap['runtime'], 'managed_sdk_control_observed');
+    const control = bootstrap['managed_sdk_control'] as Record<string, unknown>;
+    assert.equal(control['session_id'], SUCCESSOR.session_id);
+    assert.equal(control['sdk_module_path'], managed.sdkModulePath);
+    assert.equal(control['bootstrap_extension_path'], value.extensionEntry);
+    assert.equal(control['herdr_pane_id'], 'w1:p2');
+    assert.equal(control['identity_provenance'], 'owned-pi-sdk-control');
+    const model = bootstrap['model'] as Record<string, unknown>;
+    assert.equal(model['provider'], 'openrouter');
+    assert.equal(model['id'], 'openai/gpt-6-luna');
+    assert.equal(model['observation'], 'owned-pi-sdk-control');
+    const bindingPath = join(
+      value.taskRoot,
+      'notifications',
+      'visible-bootstrap-bindings',
+      `${managed.request.request_id}.json`,
+    );
+    const binding = JSON.parse(readFileSync(bindingPath, 'utf8')) as {
+      participants: { native_session_id: string; pane_id: string }[];
+    };
+    assert.equal(
+      binding.participants.find((item) => item.pane_id === 'w1:p2')
+        ?.native_session_id,
+      SUCCESSOR.session_id,
+    );
+    const changed: VisibleBootstrapRequest = {
+      ...managed.request,
+      managed_runtime: {
+        ...managed.request.managed_runtime!,
+        journal_path: join(value.root, 'different journal.jsonl'),
+      },
+    };
+    const conflict = await applyVisibleBootstrap(changed, deps);
+    assert.equal(conflict.code, 'request_id_content_conflict');
+    assert.equal(starter.calls(), 1);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('unknown managed SDK startup is durable and duplicate apply never queues again', async () => {
+  const value = fixture('bootstrap-managed-sdk-unknown');
+  const managed = managedRequest(value);
+  try {
+    const host = fakeOps(value);
+    const starter = attachManagedStart(host, 'unknown');
+    const deps = dependencies(value, host, {}, managed.request);
+    const first = await applyVisibleBootstrap(managed.request, deps);
+    assert.equal(first.status, 'unknown', JSON.stringify(first));
+    assert.equal(starter.calls(), 1);
+    const second = await applyVisibleBootstrap(managed.request, deps);
+    assert.equal(second.status, 'reconcile_required');
+    assert.equal(starter.calls(), 1);
+    assert.equal(host.events.includes('notify'), false);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('late approval before managed SDK launch blocks the start port', async () => {
+  const value = fixture('bootstrap-managed-sdk-late-approval');
+  const managed = managedRequest(value);
+  try {
+    const host = fakeOps(value, {
+      onPaneGet: (call) => {
+        if (call !== 3) return;
+        const block = buildMessage(
+          {
+            message_id: 'msg-managed-late-approval',
+            type: 'BLOCK',
+            task_id: 'sample',
+            from: COORDINATOR,
+            to: SOURCE,
+            subtask_id: 'work',
+            attempt: 1,
+            owner_epoch: 1,
+            body: { kind: 'approval' },
+          },
+          { clock: NOW + 4 },
+        );
+        const submitted = submitMessage(value.taskRoot, block, {
+          clock: NOW + 4,
+        });
+        assert.equal(submitted.ok, true, JSON.stringify(submitted));
+      },
+    });
+    const starter = attachManagedStart(host);
+    const report = await applyVisibleBootstrap(
+      managed.request,
+      dependencies(value, host, {}, managed.request),
+    );
+    assert.equal(report.status, 'needs_input', JSON.stringify(report));
+    assert.equal(starter.calls(), 0);
+    assert.equal(host.counts.start, 0);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('managed SDK refuses a foreign session or pane process before launch', async () => {
+  const collision = fixture('bootstrap-managed-sdk-session-collision');
+  const managed = managedRequest(collision);
+  try {
+    const host = fakeOps(collision, { includeSuccessor: true });
+    const starter = attachManagedStart(host);
+    const report = await applyVisibleBootstrap(
+      managed.request,
+      dependencies(collision, host, {}, managed.request),
+    );
+    assert.equal(report.status, 'needs_input');
+    assert.equal(report.code, 'managed_session_selector_in_use');
+    assert.equal(host.counts.split, 0);
+    assert.equal(starter.calls(), 0);
+  } finally {
+    collision.cleanup();
+  }
+
+  const foreign = fixture('bootstrap-managed-sdk-foreign-process');
+  const foreignManaged = managedRequest(foreign);
+  try {
+    const host = fakeOps(foreign, { foreignProcess: true });
+    const starter = attachManagedStart(host);
+    const report = await applyVisibleBootstrap(
+      foreignManaged.request,
+      dependencies(foreign, host, {}, foreignManaged.request),
+    );
+    assert.notEqual(report.status, 'applied');
+    assert.equal(starter.calls(), 0);
+    assert.equal(host.counts.start, 0);
+    assert.equal(host.counts.close, 0);
+  } finally {
+    foreign.cleanup();
+  }
+});
+
+test('managed SDK rejects reuse, missing explicit model and invalid paths before native effects', async () => {
+  const value = fixture('bootstrap-managed-sdk-invalid');
+  const managed = managedRequest(value);
+  try {
+    assert.equal(
+      validateVisibleBootstrapRequest({
+        ...managed.request,
+        target: { ...managed.request.target, choice: 'reuse' },
+      }).ok,
+      false,
+    );
+    assert.equal(
+      validateVisibleBootstrapRequest({
+        ...managed.request,
+        selected_model: { preserve_daily: true },
+      }).ok,
+      false,
+    );
+    const invalid: VisibleBootstrapRequest = {
+      ...managed.request,
+      managed_runtime: {
+        ...managed.request.managed_runtime!,
+        sdk_module_path: join(value.root, 'missing-sdk-entry.mjs'),
+      },
+    };
+    const host = fakeOps(value);
+    const starter = attachManagedStart(host);
+    const report = await applyVisibleBootstrap(
+      invalid,
+      dependencies(value, host, {}, invalid),
+    );
+    assert.equal(report.status, 'invalid');
+    assert.equal(report.code, 'managed_sdk_module_invalid');
+    assert.equal(host.counts.verify, 0);
+    assert.equal(host.counts.split, 0);
+    assert.equal(starter.calls(), 0);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('bootstrap guard forwards registered prompt context unchanged to SDK-aware Herdr transport', async () => {
+  const value = fixture('bootstrap-registered-prompt-context');
+  try {
+    const host = fakeOps(value);
+    let registeredContext:
+      | {
+          readonly taskRoot: string;
+          readonly messageId: string;
+          readonly digest: string;
+          readonly sessionId: string;
+        }
+      | undefined;
+    host.transport.verifyCaller = async () => ({
+      ok: true,
+      caller: host.caller,
+    });
+    host.transport.prompt = async (_agent, _text, registered) => {
+      registeredContext = registered;
+      return { status: 'submitted', detail: null };
+    };
+    const report = await applyVisibleBootstrap(
+      value.request,
+      dependencies(value, host, { useDefaultNotify: true }),
+    );
+    assert.equal(report.status, 'applied', JSON.stringify(report));
+    assert.deepEqual(registeredContext, {
+      taskRoot: value.taskRoot,
+      messageId: value.request.message_pointer.message_id,
+      digest: sha256File(value.request.message_pointer.content_ref),
+      sessionId: value.message.to.session_id,
+    });
   } finally {
     value.cleanup();
   }

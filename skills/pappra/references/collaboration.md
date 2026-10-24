@@ -162,6 +162,35 @@ when a binding leaves `native_session_id` null. Missing session stays
 `native_session: "unknown"` instead of claiming a match. A moved task or binding
 must be revalidated and re-bound; nothing is relocated automatically.
 
+## Controller-owned native Pi sessions
+
+`pappra session plan --config <abs managed-pi.json>` validates a fresh launch
+request. `session start` runs the native Pi TUI in the calling visible terminal
+with its normal daily configuration and an explicit OpenRouter model. The
+request schema is `pappra/managed-pi-session-request/1` with `cwd`, `model` and
+`journalPath`; use an existing private directory for the journal.
+
+`session status|fence|stop --config <same-file> --json` uses only that launch's
+private endpoint. Fencing stops terminal ingress; stopping waits for the exact
+owned child. Neither proves complete queues, approvals or external-writer
+quiescence, and automatic handoff/resource transfer remains blocked. Existing
+interactive sessions cannot be adopted. Input journals can contain private
+keystrokes; preserve their private permissions and never replay raw bytes.
+
+## Role-based planning
+
+`pappra collab role-plan expand --request <abs role-plan.json> --json`
+expands explicit participants, assignments and disjoint writer scopes into the
+existing work-plan format. Save its `plan` field, then use `collab plan` and
+`collab work-run` with their existing admission and capability requirements.
+The reviewer depends on all writers and waits for coordinator acceptance.
+
+`pappra collab role-plan aggregate --request <abs role-plan.json> --task-root <abs> --config <abs expanded-plan.json> --json`
+checks the persisted plan against the request and reads authoritative task
+evidence through the work-plan inspector. Rejected, unknown, missing and pending
+outcomes remain visible. A delivery acknowledgement never becomes acceptance.
+Neither command launches a model, claims resources or creates an assignment.
+
 ## Native capability evidence
 
 `pappra collab capabilities derive --harness <pi|codex|claude> --assignment <abs assignment.json> --template <abs card.declared.json> --execution <abs execution.json> [--session <abs pi-session.jsonl> | --events <abs events.jsonl>] [--json]`
@@ -190,6 +219,21 @@ evidence content.
 Old evidence never becomes fresh and a fixture shape is not live-version proof.
 The card remains a claim from the supplied evidence; preflight still checks it
 separately and no authentication, ownership, admission or launch is implied.
+
+For an interactive Pi session that is still open, replace `--execution <file>`
+with `--live`. This derives the standard card directly from a settled saved
+session, without fabricating a process-exit receipt or manually normalizing a
+model-written card. Pending tool results, a trailing user message, a non-`stop`
+assistant result or a later model change refuse derivation. Metadata appends do
+not refresh the observation timestamp. This is a historical snapshot of observed
+successful tools and skill reads, not proof of current tool registration, live
+process state, queue contents, approvals or ownership.
+
+```nu
+let derived = (^pappra collab capabilities derive --harness pi --assignment /abs/assignment.json --template /abs/card.declared.json --live --session /abs/session.jsonl --json | from json)
+if $derived.status != 'derived' { error make {msg: $"derive refused: ($derived.status)"} }
+$derived.card | to json | save --raw /abs/task/card.runtime.json
+```
 
 ```nu
 let derived = (^pappra collab capabilities derive --harness pi --assignment /abs/assignment.json --template /abs/card.declared.json --execution /abs/execution.json --session /abs/session.jsonl --json | from json)
