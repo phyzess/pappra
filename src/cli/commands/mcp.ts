@@ -9,9 +9,9 @@ export const mcpUsage =
   'code_query, runtime_status.\n' +
   'Gated write tools: checkpoint and docs_scan and code_prepare and runtime_install\n' +
   'require apply: true; collab_prepare writes the prepared goal and claims from an\n' +
-  'explicit pappra/collaboration-goal/1 and generates no card; collab_start requires\n' +
-  'confirm: true and an admitted runtime capability card, and refuses a declared or\n' +
-  'stale card. No tool starts a model or answers a host approval prompt on its own.';
+  'explicit pappra/collaboration-goal/1 and generates no card. runtime_install only\n' +
+  'copies the running package (from: self); other sources require the CLI.\n' +
+  'collab_start returns cli_required and never launches, even with confirm: true.';
 
 export interface McpCommandOptions {
   readonly cwd: string;

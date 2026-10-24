@@ -13,16 +13,8 @@ import { CodeIntelligenceService } from '../code/index.js';
 import { HOST_SUPPORT } from '../hosts/integration/support.js';
 import { getPackageInfo } from '../package-info.js';
 import { scanDiscoveredDocuments } from '../knowledge/scan.js';
-import { installRuntime } from '../install/runtime.js';
-import { bindAndRecordRuntime, ensureDefaultRuntime } from '../app/init.js';
-import {
-  FixtureController,
-  PiRpcController,
-  finishStarted,
-  prepareCollaboration,
-  startPrepared,
-  submitResultReport,
-} from '../app/collaboration.js';
+import { ensureDefaultRuntime } from '../app/init.js';
+import { prepareCollaboration } from '../app/collaboration.js';
 import { collaborationGoalSchema } from '../schemas/collaboration.js';
 
 export const MCP_SERVER_NAME = 'pappra';
@@ -447,19 +439,17 @@ export function createPappraMcpServer(
     {
       title: 'Install the durable runtime',
       description:
-        'Installs and binds a durable runtime copy. Requires apply: true; the default source is the running package.',
-      inputSchema: {
-        from: z.enum(['self', 'tarball', 'version']).optional(),
-        version: z.string().min(1).max(128).optional(),
-        tarball: z.string().min(1).max(4096).optional(),
+        'Installs and binds a durable runtime copy. Requires apply: true; only the running package is allowed. Other sources require the user to run the CLI.',
+      inputSchema: z.strictObject({
+        from: z.literal('self').optional(),
         apply: z.boolean(),
-      },
+      }),
       annotations: { readOnlyHint: false },
     },
     async (args) =>
       errorResult(async () => {
         const from = args.from ?? 'self';
-        const version = args.version ?? getPackageInfo().version;
+        const version = getPackageInfo().version;
         if (args.apply !== true) {
           return {
             ok: false,
@@ -470,36 +460,12 @@ export function createPappraMcpServer(
             from,
           };
         }
-        if (from === 'self') {
-          const result = await ensureDefaultRuntime(root, version);
-          return {
-            ok: result.ok && result.completion,
-            completion: result.completion,
-            runtime: result.runtime,
-            diagnostics: result.diagnostics,
-          };
-        }
-        const tarball = args.tarball;
-        if (from === 'tarball' && tarball === undefined) {
-          return {
-            ok: false,
-            message: 'from: tarball requires the tarball path.',
-          };
-        }
-        const installed = await installRuntime({
-          version,
-          source:
-            from === 'tarball' && tarball !== undefined
-              ? { kind: 'tarball', path: tarball }
-              : { kind: 'version' },
-          packageName: getPackageInfo().name,
-        });
-        const bound = await bindAndRecordRuntime(root, installed);
+        const result = await ensureDefaultRuntime(root, version);
         return {
-          ok: bound.ok && bound.completion,
-          completion: bound.completion,
-          runtime: installed,
-          diagnostics: bound.diagnostics,
+          ok: result.ok && result.completion,
+          completion: result.completion,
+          runtime: result.runtime,
+          diagnostics: result.diagnostics,
         };
       }),
   );
@@ -509,7 +475,7 @@ export function createPappraMcpServer(
     {
       title: 'Prepare a bounded collaboration',
       description:
-        'Prepares a bounded collaboration from an explicit shared pappra/collaboration-goal/1 document plus a shared domain root, then claims its resources. Identities, configuration, cwd, roles and capabilities are never inferred. No capability card is generated: derive and preflight actual runtime evidence separately before collab_start. The legacy flat objective form is unsupported.',
+        'Prepares a bounded collaboration from an explicit shared pappra/collaboration-goal/1 document plus a shared domain root, then claims its resources. Identities, configuration, cwd, roles and capabilities are never inferred. No capability card is generated: derive and preflight actual runtime evidence separately before a user-authorized CLI launch. The legacy flat objective form is unsupported.',
       inputSchema: z.strictObject({
         domainRoot: z.string().min(1).max(4096),
         goal: collaborationGoalSchema,
@@ -536,7 +502,7 @@ export function createPappraMcpServer(
           prepared: result.value.prepared,
           goal: result.value.goal,
           notes: [
-            'No capability card is generated and no observation timestamp is manufactured. Supply actual capability evidence: derive a runtime card with pappra collab capabilities derive from the receiving session, check it with pappra collab preflight, then call collab_start with confirm: true.',
+            'No capability card is generated and no observation timestamp is manufactured. Supply actual capability evidence: derive a runtime card with pappra collab capabilities derive from the receiving session, check it with pappra collab preflight, then ask the user to launch with pappra collab run in the CLI.',
             'The removed cardPath/card outputs were declared-only evidence and never authorized a launch.',
           ],
         };
@@ -548,51 +514,22 @@ export function createPappraMcpServer(
     {
       title: 'Start one admitted collaboration launch',
       description:
-        'Performs one admitted launch with an explicit controller and returns the report. Requires confirm: true and a runtime capability card; a declared card is refused by admission. Controllers: fixture | pi-rpc; pi-rpc only launches assignments whose assignee harness is pi.',
+        'Returns CLI guidance without launching. The user must launch through the CLI; an agent-supplied confirm flag is not user approval.',
       inputSchema: {
         prepared: z.string().min(1).max(4096),
         capabilities: z.string().min(1).max(4096),
         controller: z.enum(['fixture', 'pi-rpc']),
         confirm: z.boolean(),
       },
-      annotations: { readOnlyHint: false, destructiveHint: true },
+      annotations: { readOnlyHint: true, destructiveHint: false },
     },
-    async (args) =>
-      errorResult(async () => {
-        if (args.confirm !== true) {
-          return {
-            ok: false,
-            status: 'confirmation_required',
-            message:
-              'collab_start launches a process; the user must confirm before calling it with confirm: true.',
-          };
-        }
-        const controller =
-          args.controller === 'fixture'
-            ? new FixtureController()
-            : new PiRpcController();
-        const started = await startPrepared(args.prepared, {
-          capabilitiesFile: args.capabilities,
-          controller,
-          controllerId: controller.id,
-        });
-        if (!started.ok) return started as unknown as ToolPayload;
-        try {
-          const finished = await finishStarted(started.value);
-          if (!finished.ok) {
-            return finished as unknown as ToolPayload;
-          }
-          const report = submitResultReport(started.value, finished.value);
-          return {
-            ok: report.ok,
-            status: finished.value.status,
-            report,
-            finish: finished.value,
-          };
-        } finally {
-          await started.value.session.dispose?.().catch(() => undefined);
-        }
-      }),
+    async () =>
+      errorResult(async () => ({
+        ok: false,
+        status: 'cli_required',
+        message:
+          'MCP cannot authorize process launches. Ask the user to run pappra collab run --prepared <file> --capabilities <file> --controller <controller> --confirm in the CLI.',
+      })),
   );
 
   server.registerTool(

@@ -5,6 +5,7 @@ import {
   readFileSync,
   rmSync,
   writeFileSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,28 @@ import {
 function temp(): string {
   return mkdtempSync(join(tmpdir(), 'pappra-host-mcp-'));
 }
+
+test('MCP registration refuses final and parent symlinks even with force', async () => {
+  const root = temp();
+  const outside = temp();
+  try {
+    const external = join(outside, 'mcp.json');
+    writeFileSync(external, '{"mcpServers":{}}\n');
+    const before = readFileSync(external, 'utf8');
+    symlinkSync(external, join(root, '.mcp.json'));
+    const claude = await planHostMcp('claude', root);
+    assert.equal(claude.state, 'conflict');
+    assert.equal((await applyHostMcp(claude, { force: true })).applied, false);
+    symlinkSync(outside, join(root, '.pi'), 'dir');
+    const pi = await planHostMcp('pi', root);
+    assert.equal(pi.state, 'conflict');
+    assert.equal((await applyHostMcp(pi, { force: true })).applied, false);
+    assert.equal(readFileSync(external, 'utf8'), before);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
 
 test('claude and pi mcp registration merges without dropping other servers', async () => {
   const root = temp();

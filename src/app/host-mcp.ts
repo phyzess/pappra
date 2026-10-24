@@ -1,7 +1,11 @@
 import { spawnSync } from 'node:child_process';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { HostName } from '../schemas/host.js';
+import { observePath, readTextFileBounded } from '../infra/fs.js';
+import {
+  ensureStatePathBoundary,
+  writeJsonAtomic,
+} from '../install/ownership.js';
 
 const MCP_ENTRY = { command: 'pappra', args: ['mcp'] } as const;
 
@@ -40,7 +44,10 @@ function sameEntry(value: unknown): boolean {
   );
 }
 
-async function readConfig(path: string): Promise<
+async function readConfig(
+  path: string,
+  root: string,
+): Promise<
   | {
       readonly ok: true;
       readonly value: Record<string, unknown>;
@@ -50,7 +57,21 @@ async function readConfig(path: string): Promise<
 > {
   let text: string;
   try {
-    text = await readFile(path, 'utf8');
+    const boundary = await ensureStatePathBoundary(root, path);
+    if (!boundary.ok) return { ok: false, message: boundary.message };
+    const observation = await observePath(path);
+    if (observation.kind === 'missing') {
+      return { ok: true, value: {}, exists: false };
+    }
+    if (observation.kind !== 'file') {
+      return {
+        ok: false,
+        message: `MCP config is not a regular file: ${path}`,
+      };
+    }
+    const read = await readTextFileBounded(path);
+    if (!read.ok) return { ok: false, message: read.message };
+    text = read.value.text;
   } catch (error) {
     if (
       typeof error === 'object' &&
@@ -105,7 +126,7 @@ export async function planHostMcp(
       message: `No MCP registration is defined for ${host}.`,
     };
   }
-  const config = await readConfig(target);
+  const config = await readConfig(target, root);
   if (!config.ok) {
     return {
       host,
@@ -193,7 +214,8 @@ export async function applyHostMcp(
   if (target === null) {
     return { ...plan, applied: false, verified: false, detail: plan.message };
   }
-  const config = await readConfig(target);
+  const root = plan.host === 'pi' ? dirname(dirname(target)) : dirname(target);
+  const config = await readConfig(target, root);
   if (!config.ok) {
     return { ...plan, applied: false, verified: false, detail: config.message };
   }
@@ -204,11 +226,19 @@ export async function applyHostMcp(
       : {}),
     pappra: MCP_ENTRY,
   };
-  await mkdir(dirname(target), { recursive: true });
-  await writeFile(
+  const written = await writeJsonAtomic(
     target,
-    `${JSON.stringify({ ...config.value, mcpServers: nextServers }, null, 2)}\n`,
+    { ...config.value, mcpServers: nextServers },
+    root,
   );
+  if (!written.ok) {
+    return {
+      ...plan,
+      applied: false,
+      verified: false,
+      detail: written.message,
+    };
+  }
   const verified = await verifyHostMcp(plan);
   return {
     ...plan,
@@ -260,7 +290,9 @@ export async function verifyHostMcp(plan: HostMcpPlan): Promise<HostMcpResult> {
   if (plan.target === null) {
     return { ...plan, applied: false, verified: false, detail: plan.message };
   }
-  const config = await readConfig(plan.target);
+  const root =
+    plan.host === 'pi' ? dirname(dirname(plan.target)) : dirname(plan.target);
+  const config = await readConfig(plan.target, root);
   if (!config.ok) {
     return { ...plan, applied: false, verified: false, detail: config.message };
   }

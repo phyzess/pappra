@@ -22,9 +22,9 @@ Write tools, gated by arguments:
 | `checkpoint` | `apply: true` |
 | `docs_scan` | `apply: true` registers; omitted/`false` only plans |
 | `code_prepare` | `apply: true` mutates; omitted/`false` only plans |
-| `runtime_install` | `apply: true` |
+| `runtime_install` | `apply: true`; only `from: "self"`, no source/version overrides |
 | `collab_prepare` | writes the prepared goal/claims from an explicit goal; generates no card |
-| `collab_start` | `confirm: true` **and** a runtime capability card; a declared card is refused |
+| `collab_start` | always returns `cli_required`; never launches from MCP |
 
 `collab_prepare` accepts `{ domainRoot, goal }`, where `goal` is the shared strict
 `pappra/collaboration-goal/1` document — the same document the installed CLI consumes
@@ -51,10 +51,13 @@ Preparation returns the existing prepared bundle and goal. It no longer synthesi
 `card.declared.json` and no longer returns the removed `cardPath`/`card` outputs: a
 declared card never authorized a launch. Callers supply actual capability evidence
 separately — observe the receiving session, derive a runtime card with
-`pappra collab capabilities derive`, check it with `pappra collab preflight`, then call
-`collab_start` with `confirm: true`. Declared, stale or mismatched evidence is still
+`pappra collab capabilities derive`, check it with `pappra collab preflight`, then ask
+the user to launch through `pappra collab run --prepared <file> --capabilities <file>
+--controller <controller> --confirm`. Agent-supplied `confirm:true` is not user approval;
+the MCP tool cannot launch. Tarball and registry runtime installs also require the CLI.
+Declared, stale or mismatched evidence is still
 refused by admission. This is metadata support only: live controllers remain
-`fixture` and `pi-rpc`, `collab_start`/`collab run` reject a real controller whose
+`fixture` and `pi-rpc`; `collab run` rejects a real controller whose
 harness does not match the assignment without launching, and no Codex/Claude live
 controller is added here.
 

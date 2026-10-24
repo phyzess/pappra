@@ -95,6 +95,7 @@ test('mcp lists the read-only tool set and answers workspace_status', async () =
         'code_status',
         'code_query',
         'runtime_status',
+        'collab_start',
       ]);
       for (const tool of tools.tools) {
         assert.equal(
@@ -298,7 +299,7 @@ test('docs_scan preserves incomplete coverage in MCP results', async () => {
   }
 });
 
-test('collab_start refuses without confirmation and never launches', async () => {
+test('collab_start refuses even agent-supplied confirmation and never launches', async () => {
   const root = makeTempDir('mcp-collab');
   try {
     createRepository(root);
@@ -306,19 +307,21 @@ test('collab_start refuses without confirmation and never launches', async () =>
     writeMachineConfig(root, baseMachineConfig(root));
     const { client, server } = await connect(root);
     try {
-      const refused = textPayload(
-        await client.callTool({
-          name: 'collab_start',
-          arguments: {
-            prepared: join(root, 'missing-prepared.json'),
-            capabilities: join(root, 'missing-card.json'),
-            controller: 'fixture',
-            confirm: false,
-          },
-        }),
-      );
-      assert.equal(refused.ok, false);
-      assert.equal(refused.status, 'confirmation_required');
+      for (const confirm of [false, true]) {
+        const refused = textPayload(
+          await client.callTool({
+            name: 'collab_start',
+            arguments: {
+              prepared: join(root, 'missing-prepared.json'),
+              capabilities: join(root, 'missing-card.json'),
+              controller: 'fixture',
+              confirm,
+            },
+          }),
+        );
+        assert.equal(refused.ok, false);
+        assert.equal(refused.status, 'cli_required');
+      }
     } finally {
       await client.close();
       await server.close();
@@ -371,6 +374,40 @@ function explicitGoal(
 function domainHasTasks(root: string): boolean {
   return existsSync(join(root, 'domain', 'tasks'));
 }
+
+test('runtime_install rejects arbitrary sources and version overrides before mutation', async () => {
+  const root = makeTempDir('mcp-runtime-source');
+  const { client, server } = await connect(root);
+  try {
+    for (const args of [
+      { from: 'tarball', tarball: join(root, 'payload.tgz') },
+      { from: 'version', version: '9.9.9' },
+      { from: 'self', version: '9.9.9' },
+      { from: 'self', tarball: join(root, 'payload.tgz') },
+    ]) {
+      const text = await refusalText(
+        client.callTool({
+          name: 'runtime_install',
+          arguments: { ...args, apply: true },
+        }),
+      );
+      assert.match(text, /runtime_install/);
+    }
+    assert.equal(existsSync(join(root, '.pappra')), false);
+    const preview = textPayload(
+      await client.callTool({
+        name: 'runtime_install',
+        arguments: { from: 'self', apply: false },
+      }),
+    );
+    assert.equal(preview.from, 'self');
+    assert.equal(preview.status, 'confirmation_required');
+  } finally {
+    await client.close();
+    await server.close();
+    cleanup(root);
+  }
+});
 
 async function refusalText(call: Promise<unknown>): Promise<string> {
   const result = (await call) as {
@@ -699,7 +736,7 @@ test('collab_start refuses a real controller on a foreign harness without launch
         }),
       );
       assert.equal(refused.ok, false);
-      assert.equal(refused.code, 'controller_harness_mismatch');
+      assert.equal(refused.status, 'cli_required');
       const record = JSON.parse(
         readFileSync(join(bundle.task_root as string, 'task.json'), 'utf8'),
       ) as Record<string, unknown>;
