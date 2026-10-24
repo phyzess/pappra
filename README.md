@@ -116,7 +116,10 @@ Pi configuration, selects an explicit OpenRouter model, journals terminal input
 and exposes a private status/fence/stop endpoint. See
 [managed Pi sessions](docs/managed-pi-session.md). Opt-in SDK mode pins Pi 1.4.0
 and observes native queues and dialogs within its owned runtime. External writers
-and unowned descendants remain outside that proof. Threshold-driven checkpoint
+and unowned descendants remain outside that proof. [Controlled resume](docs/managed-pi-resume.md)
+checks process death and current task authority before reopening an idle session;
+[provider diagnostics](docs/managed-provider-diagnostics.md) retain redacted transport details.
+Threshold-driven checkpoint
 and bundle capture are available through [automatic handoff](docs/automatic-handoff.md);
 ownership transfer still requires the existing supported transition contract.
 [Role plans](docs/collaboration-role-plan.md) support an optional planner before

@@ -1,8 +1,17 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs';
+import {
+  appendFileSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { ManagedPiJournal } from '../../src/hosts/pi/managed-session.js';
 import {
   ManagedPiSdkIngressFence,
@@ -27,6 +36,42 @@ function readJournal(file: string) {
 test('managed SDK adapter inventories native queues, gates ingress, publishes events and captures native summary', async (t) => {
   const directory = temporaryDirectory();
   t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const sessionId = '11111111-2222-4333-8444-555555555555';
+  const sessionFile = path.join(
+    realpathSync(directory),
+    'native-session.jsonl',
+  );
+  writeFileSync(
+    sessionFile,
+    [
+      JSON.stringify({
+        type: 'session',
+        id: sessionId,
+        timestamp: '2026-10-24T00:00:00.000Z',
+        cwd: '/repo',
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'prior-user',
+        parentId: null,
+        timestamp: '2026-10-24T00:00:01.000Z',
+        message: { role: 'user', content: 'Prior genuine turn.' },
+      }),
+      JSON.stringify({
+        type: 'message',
+        id: 'prior-assistant',
+        parentId: 'prior-user',
+        timestamp: '2026-10-24T00:00:02.000Z',
+        message: {
+          role: 'assistant',
+          content: [{ type: 'text', text: 'Prior native answer.' }],
+          stopReason: 'stop',
+        },
+      }),
+      '',
+    ].join('\n'),
+    { mode: 0o600 },
+  );
   const journalPath = path.join(directory, 'sdk.jsonl');
   const journal = new ManagedPiJournal(
     journalPath,
@@ -51,13 +96,17 @@ test('managed SDK adapter inventories native queues, gates ingress, publishes ev
   const summaryReleased = new Promise<void>((resolve) => {
     releaseSummary = resolve;
   });
+  let releaseInteractiveRun!: () => void;
+  const interactiveRun = new Promise<void>((resolve) => {
+    releaseInteractiveRun = resolve;
+  });
   const session = {
     agent: {
       state: { pendingToolCalls: new Set<string>() },
       streamFunction: () => 'native-stream',
     },
-    sessionId: '11111111-2222-4333-8444-555555555555',
-    sessionFile: '/sessions/source.jsonl',
+    sessionId,
+    sessionFile,
     model: { id: 'openai/gpt-6-luna', provider: 'openrouter' },
     thinkingLevel: 'high',
     get isStreaming() {
@@ -96,6 +145,10 @@ test('managed SDK adapter inventories native queues, gates ingress, publishes ev
     waitForIdle: async () => undefined,
     prompt: async (text: string) => {
       nativeInputs.push(text);
+      appendFileSync(
+        sessionFile,
+        `${JSON.stringify({ type: 'test-user-message', text })}\n`,
+      );
     },
     steer: async () => undefined,
     followUp: async () => undefined,
@@ -113,9 +166,10 @@ test('managed SDK adapter inventories native queues, gates ingress, publishes ev
   } as unknown as ManagedPiSdkSessionPort & Record<string, unknown>;
   const mode = {
     init: async () => undefined,
-    run: async () => undefined,
+    run: () => interactiveRun,
     stop: () => {
       stopped += 1;
+      releaseInteractiveRun();
     },
     pendingUserInputs: [] as string[],
     compactionQueuedMessages: [] as unknown[],
@@ -147,7 +201,35 @@ test('managed SDK adapter inventories native queues, gates ingress, publishes ev
     quiesceTimeoutMs: 100,
     canCompact: () => true,
     canExecute: () => executionAllowed,
+    executionScope: {} as never,
+    resumeAuthorization: {
+      registeredInputs: [
+        {
+          requestId: 'prior-input',
+          inputDigest: createHash('sha256')
+            .update('Previously reserved pointer.')
+            .digest('hex'),
+        },
+      ],
+    } as never,
   });
+  await controller.initializeInteractiveMode();
+  assert.equal(controller.recordInitialResumeCheckpoint(), true);
+  const startupCheckpoint = readJournal(journalPath).find(
+    (record) => record['kind'] === 'sdk_resume_checkpoint',
+  );
+  assert.equal(
+    startupCheckpoint?.['checkpoint_schema'],
+    'pappra/managed-pi-resume-checkpoint/1',
+  );
+  assert.deepEqual(startupCheckpoint?.['registered_inputs'], [
+    {
+      request_id: 'prior-input',
+      input_digest: createHash('sha256')
+        .update('Previously reserved pointer.')
+        .digest('hex'),
+    },
+  ]);
 
   await assert.rejects(
     (session.prompt as (text: string) => Promise<void>)(
@@ -158,6 +240,12 @@ test('managed SDK adapter inventories native queues, gates ingress, publishes ev
   assert.throws(() => session.agent.streamFunction(), /ingress is fenced/);
   assert.deepEqual(nativeInputs, []);
   executionAllowed = true;
+  assert.equal(
+    controller.submitInput('prior-input', 'Previously reserved pointer.')
+      .duplicate,
+    true,
+  );
+  assert.deepEqual(nativeInputs, []);
 
   const initial = controller.snapshot();
   const resourceEvents: unknown[] = [];
@@ -197,6 +285,68 @@ test('managed SDK adapter inventories native queues, gates ingress, publishes ev
     /sdk_input_id_conflict/,
   );
   assert.deepEqual(nativeInputs, ['A registered pointer.']);
+  const inputReservation = readJournal(journalPath).find(
+    (record) => record['kind'] === 'sdk_control_input_reserved',
+  );
+  assert.equal(
+    inputReservation?.['input_digest'],
+    createHash('sha256').update('A registered pointer.').digest('hex'),
+  );
+  assert.equal(typeof inputReservation?.['digest'], 'string');
+  inputCallback?.({ type: 'agent_start' });
+  appendFileSync(
+    sessionFile,
+    `${JSON.stringify({
+      type: 'test-assistant-message',
+      stopReason: 'stop',
+    })}\n`,
+  );
+  inputCallback?.({
+    type: 'agent_end',
+    willRetry: false,
+    messages: [{ role: 'assistant', stopReason: 'stop' }],
+  });
+  inputCallback?.({ type: 'agent_settled', aborted: false });
+  let checkpoints = readJournal(journalPath).filter(
+    (record) => record['kind'] === 'sdk_resume_checkpoint',
+  );
+  assert.equal(checkpoints.length, 2);
+  const settledInputs = checkpoints[1]?.['registered_inputs'] as unknown[];
+  assert.deepEqual(settledInputs, [
+    {
+      request_id: 'prior-input',
+      input_digest: createHash('sha256')
+        .update('Previously reserved pointer.')
+        .digest('hex'),
+    },
+    {
+      request_id: 'registered-input-1',
+      input_digest: createHash('sha256')
+        .update('A registered pointer.')
+        .digest('hex'),
+    },
+  ]);
+  inputCallback?.({ type: 'agent_start' });
+  inputCallback?.({
+    type: 'agent_end',
+    willRetry: false,
+    messages: [
+      {
+        role: 'assistant',
+        stopReason: 'error',
+        errorMessage: 'provider result is unknown',
+      },
+    ],
+  });
+  inputCallback?.({ type: 'agent_settled', aborted: false });
+  checkpoints = readJournal(journalPath).filter(
+    (record) => record['kind'] === 'sdk_resume_checkpoint',
+  );
+  assert.equal(
+    checkpoints.length,
+    2,
+    'error turns must not mint safe checkpoints',
+  );
 
   const pinnedSession = session as unknown as Record<string, unknown>;
   const pinnedMode = mode as unknown as Record<string, unknown>;
@@ -281,7 +431,7 @@ test('managed SDK adapter inventories native queues, gates ingress, publishes ev
   const capture = await capturing;
   assert.equal(capture.summary, 'Native Pi compaction summary');
   assert.equal(capture.complete, false);
-  assert.equal(capture.sessionFile, '/sessions/source.jsonl');
+  assert.equal(capture.sessionFile, sessionFile);
   const quiesced = controller.snapshot();
   assert.equal(stopped, 1);
   assert.equal(quiesced.ingress.state, 'fenced');

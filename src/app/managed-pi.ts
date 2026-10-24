@@ -4,6 +4,7 @@ import { readBoundedFile } from './bounded-file.js';
 import type { ManagedPiReadinessConfig } from './managed-pi-readiness.js';
 import type { ManagedPiExecutionScope } from './collab-session-transition.js';
 import type { ManagedPiInitialAdmissionConfig } from './managed-pi-initial-admission.js';
+import type { ManagedPiResumeConfig } from './managed-pi-resume-admission.js';
 
 export const MANAGED_PI_REQUEST_SCHEMA = 'pappra/managed-pi-session-request/1';
 
@@ -23,6 +24,7 @@ export interface ManagedPiRequest {
   readonly automaticHandoffFile?: string;
   readonly executionScope?: ManagedPiExecutionScope;
   readonly initialAssignment?: ManagedPiInitialAdmissionConfig;
+  readonly resume?: ManagedPiResumeConfig;
   readonly bootstrapExtensionPath?: string;
   readonly handoffContextFile?: string;
   readonly herdrAgentName?: string;
@@ -61,6 +63,7 @@ export function readManagedPiRequest(file: string): ManagedPiRequest {
     'automaticHandoffFile',
     'executionScope',
     'initialAssignment',
+    'resume',
     'bootstrapExtensionPath',
     'handoffContextFile',
     'herdrAgentName',
@@ -104,6 +107,33 @@ export function readManagedPiRequest(file: string): ManagedPiRequest {
   )
     throw new Error('runtime must be pty or sdk.');
   if (raw.runtime === 'sdk') {
+    if (raw.resume !== undefined) {
+      const resume = raw.resume as Record<string, unknown>;
+      if (
+        !resume ||
+        typeof resume !== 'object' ||
+        Array.isArray(resume) ||
+        Object.keys(resume).length !== 3 ||
+        !['sourceJournalPath', 'sourceSessionFile'].every(
+          (key) =>
+            typeof resume[key] === 'string' &&
+            path.isAbsolute(resume[key] as string) &&
+            !(resume[key] as string).includes('\0'),
+        ) ||
+        typeof resume.sourceRunId !== 'string' ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(resume.sourceRunId) ||
+        raw.journalPath === resume.sourceJournalPath ||
+        !raw.executionScope ||
+        !raw.sessionId ||
+        raw.initialAssignment !== undefined ||
+        raw.bootstrapExtensionPath !== undefined ||
+        raw.handoffContextFile !== undefined ||
+        raw.automaticHandoffFile !== undefined
+      )
+        throw new Error(
+          'resume requires exact source pins, a new journal and one immediate SDK task scope.',
+        );
+    }
     if (raw.initialAssignment !== undefined) {
       const initial = raw.initialAssignment as Record<string, unknown>;
       const required = [
@@ -192,9 +222,7 @@ export function readManagedPiRequest(file: string): ManagedPiRequest {
         !('cwd' in scope) ||
         scope.cwd !== raw.cwd
       )
-        throw new Error(
-          'executionScope must match the fresh SDK session and cwd.',
-        );
+        throw new Error('executionScope must match the SDK session and cwd.');
     }
     if (
       typeof raw.sdkModulePath !== 'string' ||
@@ -209,7 +237,7 @@ export function readManagedPiRequest(file: string): ManagedPiRequest {
           raw.sessionId,
         ))
     )
-      throw new Error('SDK sessionId must be a fresh UUID.');
+      throw new Error('SDK sessionId must be a UUID.');
     if (
       raw.automaticHandoffFile !== undefined &&
       (typeof raw.automaticHandoffFile !== 'string' ||
@@ -229,6 +257,7 @@ export function readManagedPiRequest(file: string): ManagedPiRequest {
     raw.automaticHandoffFile !== undefined ||
     raw.executionScope !== undefined ||
     raw.initialAssignment !== undefined ||
+    raw.resume !== undefined ||
     raw.bootstrapExtensionPath !== undefined ||
     raw.herdrAgentName !== undefined ||
     raw.herdrPaneId !== undefined ||
@@ -291,6 +320,13 @@ export function planManagedPiSession(request: ManagedPiRequest) {
     control_descriptor: `${request.journalPath}.control.json`,
     native_tui: true,
     runtime: request.runtime ?? 'pty',
+    launch_kind: request.resume ? 'controlled-resume' : 'fresh-session',
+    resume: request.resume
+      ? {
+          source_journal: request.resume.sourceJournalPath,
+          authority: 'requires-dead-source-checkpoint-and-task-reservation',
+        }
+      : null,
     daily_configuration: 'preserved',
     transfer_safe_quiescence: 'unavailable',
     owned_runtime_quiescence:
@@ -302,7 +338,7 @@ export function planManagedPiSession(request: ManagedPiRequest) {
       : null,
     effect: 'none',
     readiness: request.readiness
-      ? { mode: 'native-settled-event', cardFile: request.readiness.cardFile }
+      ? { mode: 'native-resource-events', cardFile: request.readiness.cardFile }
       : null,
   } as const;
 }

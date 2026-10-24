@@ -40,6 +40,10 @@ import {
   registerManagedPiInitialLaunch,
 } from './managed-pi-initial-launch.js';
 
+import {
+  canExecuteManagedPiResume,
+  prepareManagedPiResume,
+} from './managed-pi-resume-admission.js';
 /** Native SDK CLI lifecycle, including a receiver's deferred authoritative task binding. */
 export async function runManagedPiSdkRuntime(
   request: ManagedPiRequest,
@@ -87,6 +91,18 @@ export async function runManagedPiSdkRuntime(
       canonicalJson(automatic.transition.managed_execution_scope)
   )
     throw new Error('managed_execution_scope_conflict');
+  const resumeAuthorization = request.resume
+    ? await prepareManagedPiResume(request)
+    : undefined;
+  if (
+    resumeAuthorization &&
+    (!request.executionScope ||
+      bootstrap ||
+      automatic ||
+      request.initialAssignment ||
+      request.handoffContextFile)
+  )
+    throw new Error('managed_pi_resume_scope_or_mode_invalid');
   let scope: ManagedPiExecutionScope | null = null;
   let host: SessionTransitionHost | undefined;
   let control: Awaited<ReturnType<typeof serveManagedPiSdkControl>> | null =
@@ -114,6 +130,7 @@ export async function runManagedPiSdkRuntime(
   let sourceAdmissionPending = false;
   let sourceAdmissionError: string | null = null;
   let controller: ManagedPiSdkSessionController | undefined;
+  let admissionController: ManagedPiSdkSessionController | undefined;
   const paneId = request.herdrPaneId ?? process.env.HERDR_PANE_ID ?? null;
   const name = request.herdrAgentName;
   let resolveHandoff!: () => void;
@@ -286,8 +303,13 @@ export async function runManagedPiSdkRuntime(
       live,
       binding.scope,
       `${request.journalPath}.control.json`,
-      { confirmNative: !request.initialAssignment },
+      {
+        confirmNative: !request.initialAssignment,
+        ...(resumeAuthorization ? { resumeAuthorization } : {}),
+      },
     );
+    live.bindResumeCheckpointScope(binding.scope);
+    live.recordInitialResumeCheckpoint();
     receiver?.startWork();
     if (ready) startHandoff(live);
   };
@@ -347,6 +369,22 @@ export async function runManagedPiSdkRuntime(
           : null,
         retirement: retirement?.receipt ?? null,
         execution_scope: scope,
+        resume: resumeAuthorization
+          ? {
+              source_run_id: resumeAuthorization.sourceRunId,
+              source_pid: resumeAuthorization.sourcePid,
+              restored_session_id: resumeAuthorization.sessionId,
+              checkpoint_sequence: resumeAuthorization.checkpointSequence,
+              checkpoint_digest: resumeAuthorization.checkpointDigest,
+              task_authority_current: canExecuteManagedPiResume(
+                resumeAuthorization,
+                {
+                  sessionId: live.observe().native.sessionId,
+                  cwd: live.observe().cwd,
+                },
+              ),
+            }
+          : null,
         bootstrap_admission: admission?.status() ?? null,
         initial_admission: initialAdmission?.status() ?? null,
         herdr_publication: publication?.status() ?? null,
@@ -402,6 +440,10 @@ export async function runManagedPiSdkRuntime(
       journalPath: request.journalPath,
       sdkModulePath: request.sdkModulePath!,
       ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+      ...(request.executionScope
+        ? { executionScope: request.executionScope }
+        : {}),
+      ...(resumeAuthorization ? { resumeAuthorization } : {}),
       ...(request.thinkingLevel
         ? { thinkingLevel: request.thinkingLevel }
         : {}),
@@ -409,10 +451,21 @@ export async function runManagedPiSdkRuntime(
         ? { bootstrapExtensionPath: request.bootstrapExtensionPath }
         : {}),
       ...(identity ? { nativeIdentity: identity } : {}),
-      ...(request.initialAssignment
-        ? { canExecute: () => initialAdmission?.canExecute() === true }
+      ...(resumeAuthorization || request.initialAssignment
+        ? {
+            canExecute: () =>
+              (!resumeAuthorization ||
+                (admissionController !== undefined &&
+                  canExecuteManagedPiResume(resumeAuthorization, {
+                    sessionId: admissionController.observe().native.sessionId,
+                    cwd: admissionController.observe().cwd,
+                  }))) &&
+              (!request.initialAssignment ||
+                initialAdmission?.canExecute() === true),
+          }
         : {}),
       beforeInteractiveStart: async (live) => {
+        admissionController = live;
         bindIdentity(live);
         if (bootstrap?.ok) {
           const current = readPiBootstrapConfig(
@@ -478,6 +531,7 @@ export async function runManagedPiSdkRuntime(
       }
     } else if (name) throw new Error('managed_herdr_context_required');
     ready = true;
+    controller.recordInitialResumeCheckpoint();
     if (sourceReadiness)
       readiness = watchManagedPiReadiness(
         sourceReadiness,

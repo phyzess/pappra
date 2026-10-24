@@ -15,6 +15,10 @@ import type {
   RoleRepairDependencies,
   NativeStopReceipt,
 } from './collab-role-repair.js';
+import {
+  consumeManagedPiResumeRegistration,
+  type ManagedPiSdkResumeAuthorization,
+} from './managed-pi-resume-admission.js';
 
 const REGISTRY = 'managed_pi_runtime_registry';
 const object = (value: unknown): value is Record<string, unknown> =>
@@ -77,7 +81,10 @@ export async function registerManagedPiRuntime(
   controller: ManagedPiSdkSessionController,
   scope: ManagedPiExecutionScope,
   descriptorFile: string,
-  options: { readonly confirmNative?: boolean } = {},
+  options: {
+    readonly confirmNative?: boolean;
+    readonly resumeAuthorization?: ManagedPiSdkResumeAuthorization;
+  } = {},
 ) {
   const live = controller.observe();
   const snapshot = controller.snapshot();
@@ -162,11 +169,22 @@ export async function registerManagedPiRuntime(
         return { ok: false, reason: 'managed_runtime_registration_stale' };
       const rows = entries(record);
       const old = rows.find((row) => row.session_id === entry.session_id);
-      if (old && canonicalJson(old) !== canonicalJson(entry))
-        return {
-          ok: false,
-          reason: 'managed_runtime_identity_already_registered',
-        };
+      if (old && canonicalJson(old) !== canonicalJson(entry)) {
+        if (!options.resumeAuthorization)
+          return {
+            ok: false,
+            reason: 'managed_runtime_identity_already_registered',
+          };
+        consumeManagedPiResumeRegistration(
+          record,
+          options.resumeAuthorization,
+          old,
+          entry,
+        );
+        rows[rows.indexOf(old)] = entry;
+      } else if (options.resumeAuthorization) {
+        return { ok: false, reason: 'managed_runtime_resume_source_missing' };
+      }
       if (!old) {
         if (rows.length >= 64)
           return { ok: false, reason: 'managed_runtime_registry_limit' };
@@ -180,7 +198,8 @@ export async function registerManagedPiRuntime(
         return { ok: false, reason: 'managed_runtime_native_binding_conflict' };
       if (
         options.confirmNative !== false &&
-        current.native.observation !== 'confirmed'
+        (current.native.observation !== 'confirmed' ||
+          options.resumeAuthorization !== undefined)
       ) {
         const observed = bindNative(record, {
           subtaskId: scope.subtask_id,

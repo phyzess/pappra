@@ -1,8 +1,19 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import {
+  withManagedProviderDiagnostics,
+  managedProviderResponseId,
+} from './managed-provider-diagnostics.js';
+import { managedPiHostIdentity } from './managed-host-identity.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { canonicalJson } from '../../collab/envelope.js';
+import type { ManagedPiExecutionScope } from '../../app/collab-session-transition.js';
+import {
+  assertManagedPiSdkResumeAuthorization,
+  type ManagedPiSdkResumeAuthorization,
+} from '../../app/managed-pi-resume-admission.js';
 import {
   createManagedPiJournalArtifacts,
   ManagedPiSessionError,
@@ -61,6 +72,7 @@ interface ManagedPiSdkExtensionApi {
 export interface ManagedPiSdkFence {
   readonly fenced: boolean;
   fence(reason: string): void;
+  invalidateResumeCheckpoint(reason: string): void;
 }
 
 /** Shared fence used by the SDK extension and the lifecycle controller. */
@@ -68,6 +80,22 @@ export class ManagedPiSdkIngressFence implements ManagedPiSdkFence {
   private isFenced = false;
 
   constructor(private readonly journal: ManagedPiJournal) {}
+
+  private checkpointRevisionValue = 0;
+
+  get checkpointRevision() {
+    return this.checkpointRevisionValue;
+  }
+
+  invalidateResumeCheckpoint(reason: string) {
+    this.checkpointRevisionValue += 1;
+    try {
+      this.journal.append('sdk_resume_checkpoint_invalidated', { reason });
+    } catch (error) {
+      this.fence('resume_checkpoint_invalidation_failed');
+      throw error;
+    }
+  }
 
   get fenced() {
     return this.isFenced;
@@ -158,15 +186,24 @@ export function createManagedPiSdkLifecycleExtension(
         return { action: 'handled' };
       }
     });
-    api.on('tool_call', () =>
-      fence.fenced || !canExecute()
-        ? {
-            block: true,
-            reason: 'managed Pi runtime is fenced',
-            terminate: true,
-          }
-        : undefined,
-    );
+    api.on('tool_call', () => {
+      if (fence.fenced || !canExecute())
+        return {
+          block: true,
+          reason: 'managed Pi runtime is fenced',
+          terminate: true,
+        };
+      try {
+        fence.invalidateResumeCheckpoint('native_tool_call');
+      } catch {
+        return {
+          block: true,
+          reason: 'managed Pi resume checkpoint journal failed',
+          terminate: true,
+        };
+      }
+      return undefined;
+    });
   };
 }
 
@@ -333,9 +370,13 @@ export interface ManagedPiSdkSessionOptions {
   /** Model ID within OpenRouter, for example `openai/gpt-6-luna`. */
   readonly model: string;
   readonly journalPath: string;
-  /** Optional coordinator-prepared fresh UUID; never opens or resumes an existing session. */
+  /** Fresh UUID for new sessions; resume requires the root-issued authorization below. */
   readonly sessionId?: string;
   readonly quiesceTimeoutMs?: number;
+  /** Exact immediate task binding, required when reopening a transcript. */
+  readonly executionScope?: ManagedPiExecutionScope;
+  /** Opaque, root-issued admission; never accepted from serialized launch config. */
+  readonly resumeAuthorization?: ManagedPiSdkResumeAuthorization;
   /** Absolute path to the exact SDK module entrypoint; no ambient or global fallback is used. */
   readonly sdkModulePath: string;
   readonly nativeIdentity?: ManagedPiSdkNativeIdentity;
@@ -381,6 +422,7 @@ interface ManagedPiSdkModule {
       sessionDir?: string,
       options?: { id?: string },
     ): unknown;
+    open(path: string, sessionDir?: string, cwdOverride?: string): unknown;
     list(cwd: string): Promise<readonly { id: string }[]>;
   };
   createAgentSessionServices(options: {
@@ -587,6 +629,102 @@ async function waitWithin(
     );
   });
 }
+
+function isCompleteIdleSnapshot(snapshot: ManagedPiSdkSessionSnapshot) {
+  const { queues, work, extensionDialogs, builtInUiApprovals } =
+    snapshot.ownedRuntime;
+  return (
+    queues.completeness === 'complete' &&
+    queues.pendingMessageCount === 0 &&
+    work.observation === 'complete' &&
+    work.isIdle &&
+    !work.isStreaming &&
+    !work.isCompacting &&
+    work.isBashRunning === false &&
+    work.hasPendingBashMessages === false &&
+    work.pendingToolCalls === 0 &&
+    extensionDialogs.completeness === 'complete' &&
+    extensionDialogs.pending.length === 0 &&
+    builtInUiApprovals.observation === 'complete' &&
+    builtInUiApprovals.uncoveredPaths.length === 0
+  );
+}
+
+function hashSessionTranscript(
+  sessionFile: string,
+  sessionId: string,
+  cwd: string,
+): { readonly sessionFile: string; readonly transcriptDigest: string } | null {
+  let fd: number | undefined;
+  try {
+    const absolute = path.resolve(sessionFile);
+    const stat = fs.lstatSync(absolute, { bigint: true });
+    if (!stat.isFile() || stat.isSymbolicLink()) return null;
+    const canonical = fs.realpathSync(absolute);
+    if (canonical !== absolute) return null;
+    fd = fs.openSync(
+      canonical,
+      fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+    );
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (
+      !opened.isFile() ||
+      opened.dev !== stat.dev ||
+      opened.ino !== stat.ino ||
+      opened.size !== stat.size
+    )
+      return null;
+    const headerBuffer = Buffer.alloc(64 * 1024);
+    const headerBytes = fs.readSync(
+      fd,
+      headerBuffer,
+      0,
+      headerBuffer.length,
+      0,
+    );
+    const firstLine = headerBuffer
+      .subarray(0, headerBytes)
+      .toString('utf8')
+      .split('\n', 1)[0];
+    if (!firstLine) return null;
+    const header: unknown = JSON.parse(firstLine);
+    if (
+      !isRecord(header) ||
+      header['type'] !== 'session' ||
+      header['id'] !== sessionId ||
+      typeof header['cwd'] !== 'string' ||
+      (header['cwd'] !== cwd &&
+        path.resolve(header['cwd']) !== path.resolve(cwd))
+    )
+      return null;
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let offset = 0;
+    for (;;) {
+      const count = fs.readSync(fd, buffer, 0, buffer.length, offset);
+      if (count === 0) break;
+      hash.update(buffer.subarray(0, count));
+      offset += count;
+    }
+    const after = fs.fstatSync(fd, { bigint: true });
+    if (
+      after.dev !== opened.dev ||
+      after.ino !== opened.ino ||
+      after.size !== opened.size ||
+      after.mtimeNs !== opened.mtimeNs ||
+      BigInt(offset) !== after.size
+    )
+      return null;
+    return {
+      sessionFile: canonical,
+      transcriptDigest: `sha256:${hash.digest('hex')}`,
+    };
+  } catch {
+    return null;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
 /** Wrap the public ExtensionUIContext passed through AgentSession.bindExtensions. */
 function wrapExtensionUiDialogs(
   context: unknown,
@@ -660,7 +798,13 @@ export class ManagedPiSdkSessionController {
   private resourceFingerprint: string | null = null;
   private resourceUpdatePending = false;
   private readonly submittedInputs = new Map<string, string>();
+  private resumeCheckpointScope: ManagedPiExecutionScope | undefined;
 
+  private lastAgentEndCheckpointSafe = false;
+  private readonly providerCalls = new WeakMap<
+    ManagedPiSdkSessionPort,
+    { id: string; started: number }
+  >();
   constructor(
     private readonly input: {
       readonly runtime: ManagedPiSdkRuntimePort;
@@ -668,16 +812,31 @@ export class ManagedPiSdkSessionController {
       readonly fence: ManagedPiSdkIngressFence;
       readonly journal: ManagedPiJournal;
       readonly model: string;
+      readonly executionScope?: ManagedPiExecutionScope;
       readonly nativeIdentity: ManagedPiSdkNativeIdentity | undefined;
       readonly quiesceTimeoutMs: number;
       readonly metadataPath?: string;
       readonly resources?: () => ManagedPiSdkServices | undefined;
       readonly canCompact?: () => boolean;
       readonly canExecute?: () => boolean;
+      readonly resumeAuthorization?: ManagedPiSdkResumeAuthorization;
     },
   ) {
     this.session = input.runtime.session;
     this.nativeIdentity = input.nativeIdentity;
+    this.resumeCheckpointScope =
+      input.resumeAuthorization?.scope ?? input.executionScope;
+    for (const registered of input.resumeAuthorization?.registeredInputs ??
+      []) {
+      if (
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(registered.requestId) ||
+        !/^[a-f0-9]{64}$/.test(registered.inputDigest) ||
+        this.submittedInputs.size >= 256 ||
+        this.submittedInputs.has(registered.requestId)
+      )
+        throw new ManagedPiSessionError('resume_registered_input_invalid');
+      this.submittedInputs.set(registered.requestId, registered.inputDigest);
+    }
     this.bindSession(this.session);
   }
 
@@ -771,9 +930,12 @@ export class ManagedPiSdkSessionController {
           !this.summaryProviderRun.getStore()
         )
           throw new Error('managed Pi provider ingress is fenced');
+        const providerCallId = randomUUID();
         try {
+          this.input.fence.invalidateResumeCheckpoint('provider_run');
           this.input.journal.append('sdk_provider_run_admitted', {
             session_id: session.sessionId,
+            provider_call_id: providerCallId,
             purpose: this.summaryProviderRun.getStore()
               ? 'native_summary_compaction'
               : 'task_work',
@@ -782,7 +944,27 @@ export class ManagedPiSdkSessionController {
           this.input.fence.fence('provider_run_journal_failed');
           throw error;
         }
-        return Reflect.apply(original, agent, args);
+        this.providerCalls.set(session, {
+          id: providerCallId,
+          started: performance.now(),
+        });
+        const observedArgs: unknown[] = [...args];
+        observedArgs[2] = withManagedProviderDiagnostics(
+          args[2],
+          args[0],
+          providerCallId,
+          (kind, fields) => {
+            try {
+              this.input.journal.append(kind, {
+                session_id: session.sessionId,
+                ...fields,
+              });
+            } catch {
+              this.input.fence.fence('provider_diagnostics_journal_failed');
+            }
+          },
+        );
+        return Reflect.apply(original, agent, observedArgs);
       };
     }
     this.unsubscribers.get(session)?.();
@@ -838,6 +1020,7 @@ export class ManagedPiSdkSessionController {
             new ManagedPiSessionError('sdk_runtime_ingress_fenced'),
           );
         try {
+          this.input.fence.invalidateResumeCheckpoint(`semantic_${name}`);
           this.input.journal.append(
             name === 'executeBash'
               ? 'sdk_user_bash_admitted'
@@ -884,41 +1067,127 @@ export class ManagedPiSdkSessionController {
     event: unknown,
   ) {
     if (!isRecord(event) || typeof event['type'] !== 'string') return;
+    const type = event['type'];
+    if (type === 'agent_start') this.lastAgentEndCheckpointSafe = false;
+    if (type === 'agent_end') {
+      const messages = Array.isArray(event['messages'])
+        ? event['messages']
+        : [];
+      const lastAssistant = [...messages]
+        .reverse()
+        .find(
+          (message) => isRecord(message) && message['role'] === 'assistant',
+        );
+      this.lastAgentEndCheckpointSafe =
+        event['willRetry'] === false &&
+        isRecord(lastAssistant) &&
+        lastAssistant['stopReason'] === 'stop' &&
+        typeof lastAssistant['errorMessage'] !== 'string';
+    }
+    const invalidatesCheckpoint =
+      type === 'queue_update' ||
+      type === 'tool_execution_start' ||
+      type === 'tool_execution_update' ||
+      type === 'tool_execution_end' ||
+      type === 'agent_start' ||
+      type === 'agent_end' ||
+      type === 'agent_settled' ||
+      type === 'message_end' ||
+      type === 'entry_appended' ||
+      type === 'session_info_changed' ||
+      type === 'thinking_level_changed' ||
+      type === 'compaction_start' ||
+      type === 'compaction_end';
     try {
-      if (event['type'] === 'queue_update') {
+      if (invalidatesCheckpoint)
+        this.input.fence.invalidateResumeCheckpoint(`native_${type}`);
+      if (
+        type === 'message_end' &&
+        isRecord(event['message']) &&
+        event['message']['role'] === 'assistant'
+      ) {
+        const message = event['message'];
+        const call = this.providerCalls.get(session);
+        const reason = message['stopReason'];
+        this.input.journal.append('sdk_provider_message_observed', {
+          session_id: session.sessionId,
+          provider_call_id: call?.id ?? null,
+          response_id: managedProviderResponseId(message['responseId']),
+          stop_reason:
+            typeof reason === 'string' &&
+            ['stop', 'length', 'error', 'aborted', 'toolUse'].includes(reason)
+              ? reason
+              : 'unknown',
+          elapsed_ms: call
+            ? Math.round(Math.max(0, performance.now() - call.started) * 1000) /
+              1000
+            : null,
+        });
+      }
+      if (type === 'queue_update') {
         this.input.journal.append('sdk_queue_observed', {
           session_id: session.sessionId,
           steering: event['steering'],
           follow_up: event['followUp'],
         });
       } else if (
-        event['type'] === 'tool_execution_start' ||
-        event['type'] === 'tool_execution_end' ||
-        event['type'] === 'agent_settled' ||
-        event['type'] === 'agent_start' ||
-        event['type'] === 'agent_end'
+        type === 'tool_execution_start' ||
+        type === 'tool_execution_end' ||
+        type === 'agent_settled' ||
+        type === 'agent_start' ||
+        type === 'agent_end'
       ) {
-        this.input.journal.append(`sdk_${event['type']}`, {
+        const lifecycle: Record<string, unknown> = {
           session_id: session.sessionId,
-        });
+        };
+        if (type === 'agent_settled')
+          lifecycle['aborted'] = event['aborted'] === true;
+        if (type === 'agent_end') {
+          const messages = Array.isArray(event['messages'])
+            ? event['messages']
+            : [];
+          const lastAssistant = [...messages]
+            .reverse()
+            .find(
+              (message) => isRecord(message) && message['role'] === 'assistant',
+            );
+          lifecycle['will_retry'] = event['willRetry'] === true;
+          lifecycle['stop_reason'] = isRecord(lastAssistant)
+            ? (lastAssistant['stopReason'] ?? null)
+            : null;
+          lifecycle['error_message_present'] =
+            isRecord(lastAssistant) &&
+            typeof lastAssistant['errorMessage'] === 'string';
+        }
+        this.input.journal.append(`sdk_${type}`, lifecycle);
       }
     } catch {
       this.input.fence.fence('sdk_lifecycle_journal_failed');
     }
     if (
-      event['type'] === 'queue_update' ||
-      event['type'] === 'tool_execution_start' ||
-      event['type'] === 'tool_execution_end' ||
-      event['type'] === 'agent_settled' ||
-      event['type'] === 'agent_start' ||
-      event['type'] === 'agent_end'
+      type === 'queue_update' ||
+      type === 'tool_execution_start' ||
+      type === 'tool_execution_end' ||
+      type === 'agent_settled' ||
+      type === 'agent_start' ||
+      type === 'agent_end'
     )
       this.notifyLifecycleListeners(event);
-    if (event['type'] === 'agent_settled') {
+    if (type === 'agent_settled') {
+      const settledSafely =
+        event['aborted'] === false && this.lastAgentEndCheckpointSafe;
+      this.lastAgentEndCheckpointSafe = false;
       try {
         this.publishResourcesReady(true);
       } catch {
         this.input.fence.fence('resources_ready_refresh_failed');
+      }
+      if (settledSafely) {
+        try {
+          this.appendResumeCheckpoint();
+        } catch {
+          this.input.fence.fence('resume_checkpoint_write_failed');
+        }
       }
     }
   }
@@ -926,6 +1195,7 @@ export class ManagedPiSdkSessionController {
   /** Called by AgentSessionRuntime's native replacement callback wrapper. */
   replaceSession(session: ManagedPiSdkSessionPort) {
     const previousSessionId = this.session.sessionId;
+    this.input.fence.invalidateResumeCheckpoint('session_replaced');
     this.bindSession(session);
     try {
       this.input.journal.append('sdk_session_replaced', {
@@ -1368,6 +1638,89 @@ export class ManagedPiSdkSessionController {
     this.lifecycleListeners.clear();
   }
 
+  bindResumeCheckpointScope(scope: ManagedPiExecutionScope) {
+    if (
+      scope.session_id !== this.session.sessionId ||
+      path.resolve(scope.cwd) !== path.resolve(this.input.runtime.cwd)
+    )
+      throw new ManagedPiSessionError('sdk_resume_checkpoint_scope_mismatch');
+    const authorizedScope = this.input.resumeAuthorization?.scope;
+    if (
+      authorizedScope &&
+      canonicalJson(scope) !== canonicalJson(authorizedScope)
+    )
+      throw new ManagedPiSessionError('sdk_resume_authorized_scope_mismatch');
+    if (
+      this.resumeCheckpointScope &&
+      canonicalJson(scope) !== canonicalJson(this.resumeCheckpointScope)
+    )
+      throw new ManagedPiSessionError('sdk_resume_checkpoint_scope_conflict');
+    this.resumeCheckpointScope = scope;
+  }
+
+  recordInitialResumeCheckpoint() {
+    if (!this.initialized || this.disposed) return false;
+    return this.appendResumeCheckpoint();
+  }
+
+  private appendResumeCheckpoint() {
+    if (
+      this.disposed ||
+      !this.input.journal.healthy ||
+      !this.resumeCheckpointScope
+    )
+      return false;
+    const hostIdentity = managedPiHostIdentity();
+    if (!hostIdentity) return false;
+    const revision = this.input.fence.checkpointRevision;
+    const snapshot = this.snapshot();
+    if (
+      snapshot.ingress.state !== 'open' ||
+      !snapshot.ingress.healthy ||
+      !isCompleteIdleSnapshot(snapshot)
+    )
+      return false;
+    const file = this.session.sessionFile;
+    if (!file) return false;
+    const transcript = hashSessionTranscript(
+      file,
+      snapshot.session.sessionId,
+      this.input.runtime.cwd,
+    );
+    if (!transcript || revision !== this.input.fence.checkpointRevision)
+      return false;
+    const finalSnapshot = this.snapshot();
+    if (
+      revision !== this.input.fence.checkpointRevision ||
+      finalSnapshot.session.sessionId !== snapshot.session.sessionId ||
+      finalSnapshot.session.sessionFile !== snapshot.session.sessionFile ||
+      !isCompleteIdleSnapshot(finalSnapshot) ||
+      finalSnapshot.ingress.state !== 'open' ||
+      !finalSnapshot.ingress.healthy
+    )
+      return false;
+    const registeredInputs = [...this.submittedInputs]
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([requestId, inputDigest]) => ({
+        request_id: requestId,
+        input_digest: inputDigest,
+      }));
+    this.input.journal.append('sdk_resume_checkpoint', {
+      checkpoint_schema: 'pappra/managed-pi-resume-checkpoint/1',
+      session_id: finalSnapshot.session.sessionId,
+      session_file: transcript.sessionFile,
+      cwd: this.input.runtime.cwd,
+      model: this.observe().native.modelObservation.model,
+      process_pid: process.pid,
+      host_identity: hostIdentity,
+      execution_scope: this.resumeCheckpointScope,
+      transcript_digest: transcript.transcriptDigest,
+      snapshot: finalSnapshot,
+      registered_inputs: registeredInputs,
+    });
+    return true;
+  }
+
   async initializeInteractiveMode() {
     await this.input.interactiveMode.init();
     this.initialized = true;
@@ -1393,11 +1746,15 @@ export class ManagedPiSdkSessionController {
       text.length > 128 * 1024
     )
       throw new ManagedPiSessionError('sdk_input_invalid');
-    if (this.disposed || this.input.fence.fenced)
+    if (
+      this.disposed ||
+      this.input.fence.fenced ||
+      this.input.canExecute?.() === false
+    )
       throw new ManagedPiSessionError('sdk_runtime_ingress_fenced');
-    const digest = createHash('sha256').update(text).digest('hex');
+    const inputDigest = createHash('sha256').update(text).digest('hex');
     const prior = this.submittedInputs.get(requestId);
-    if (prior && prior !== digest)
+    if (prior && prior !== inputDigest)
       throw new ManagedPiSessionError('sdk_input_id_conflict');
     if (prior)
       return {
@@ -1408,12 +1765,13 @@ export class ManagedPiSdkSessionController {
       };
     if (this.submittedInputs.size >= 256)
       throw new ManagedPiSessionError('sdk_input_limit');
+    this.input.fence.invalidateResumeCheckpoint('sdk_control_input_reserved');
     this.input.journal.append('sdk_control_input_reserved', {
       request_id: requestId,
-      digest,
+      input_digest: inputDigest,
       session_id: this.session.sessionId,
     });
-    this.submittedInputs.set(requestId, digest);
+    this.submittedInputs.set(requestId, inputDigest);
     const target = this.session as unknown as Record<string, unknown>;
     const prompt = target['prompt'];
     if (typeof prompt !== 'function')
@@ -1621,6 +1979,23 @@ export async function startManagedPiSdkSession(
     !SESSION_ID_PATTERN.test(options.sessionId)
   )
     throw new ManagedPiSessionError('session_id_invalid');
+  const resumeAuthorization = options.resumeAuthorization;
+  if (resumeAuthorization) {
+    if (
+      !options.sessionId ||
+      options.sessionId !== resumeAuthorization.sessionId ||
+      path.resolve(options.cwd) !== path.resolve(resumeAuthorization.cwd) ||
+      !options.executionScope ||
+      canonicalJson(options.executionScope) !==
+        canonicalJson(resumeAuthorization.scope) ||
+      options.bootstrapExtensionPath
+    )
+      throw new ManagedPiSessionError('sdk_resume_authorization_mismatch');
+    assertManagedPiSdkResumeAuthorization(resumeAuthorization, {
+      sessionId: options.sessionId,
+      cwd: options.cwd,
+    });
+  }
   if (!options.model.trim()) throw new ManagedPiSessionError('model_required');
   const quiesceTimeoutMs = options.quiesceTimeoutMs ?? 5_000;
   if (
@@ -1657,7 +2032,7 @@ export async function startManagedPiSdkSession(
   };
   if (typeof compaction.prepareCompaction !== 'function')
     throw new ManagedPiSessionError('sdk_compaction_preparation_unavailable');
-  if (options.sessionId) {
+  if (options.sessionId && !resumeAuthorization) {
     const existingSessions = await sdk.SessionManager.list(options.cwd);
     if (existingSessions.some((session) => session.id === options.sessionId))
       throw new ManagedPiSessionError('session_id_already_exists');
@@ -1689,11 +2064,37 @@ export async function startManagedPiSdkSession(
       sdk_version: sdk.VERSION,
     });
     const agentDir = sdk.getAgentDir();
-    const initialSessionManager = sdk.SessionManager.create(
-      options.cwd,
-      undefined,
-      options.sessionId ? { id: options.sessionId } : undefined,
-    );
+    let initialSessionManager: unknown;
+    if (resumeAuthorization) {
+      if (typeof sdk.SessionManager.open !== 'function')
+        throw new ManagedPiSessionError('sdk_session_resume_api_unavailable');
+      assertManagedPiSdkResumeAuthorization(resumeAuthorization, {
+        sessionId: options.sessionId!,
+        cwd: options.cwd,
+      });
+      const pinnedTranscript = hashSessionTranscript(
+        resumeAuthorization.sessionFile,
+        resumeAuthorization.sessionId,
+        resumeAuthorization.cwd,
+      );
+      if (
+        !pinnedTranscript ||
+        pinnedTranscript.sessionFile !==
+          path.resolve(resumeAuthorization.sessionFile) ||
+        pinnedTranscript.transcriptDigest !==
+          resumeAuthorization.transcriptDigest
+      )
+        throw new ManagedPiSessionError('sdk_resume_transcript_changed');
+      initialSessionManager = sdk.SessionManager.open(
+        resumeAuthorization.sessionFile,
+      );
+    } else {
+      initialSessionManager = sdk.SessionManager.create(
+        options.cwd,
+        undefined,
+        options.sessionId ? { id: options.sessionId } : undefined,
+      );
+    }
     const createRuntime = async (runtimeOptions: {
       cwd: string;
       agentDir: string;
@@ -1761,6 +2162,33 @@ export async function startManagedPiSdkSession(
       sessionManager: initialSessionManager,
     });
     runtime = createdRuntime;
+    if (resumeAuthorization) {
+      assertManagedPiSdkResumeAuthorization(resumeAuthorization, {
+        sessionId: options.sessionId!,
+        cwd: options.cwd,
+      });
+      const reopenedSession = createdRuntime.session;
+      const reopenedFile = reopenedSession.sessionFile;
+      const reopenedTranscript = reopenedFile
+        ? hashSessionTranscript(
+            reopenedFile,
+            reopenedSession.sessionId,
+            createdRuntime.cwd,
+          )
+        : null;
+      if (
+        reopenedSession.sessionId !== resumeAuthorization.sessionId ||
+        path.resolve(createdRuntime.cwd) !==
+          path.resolve(resumeAuthorization.cwd) ||
+        !reopenedFile ||
+        path.resolve(reopenedFile) !==
+          path.resolve(resumeAuthorization.sessionFile) ||
+        !reopenedTranscript ||
+        reopenedTranscript.transcriptDigest !==
+          resumeAuthorization.transcriptDigest
+      )
+        throw new ManagedPiSessionError('sdk_resume_opened_session_mismatch');
+    }
     const originalSetRebindSession =
       createdRuntime.setRebindSession.bind(createdRuntime);
     createdRuntime.setRebindSession = (callback) =>
@@ -1775,6 +2203,7 @@ export async function startManagedPiSdkSession(
     interactiveMode = new sdk.InteractiveMode(createdRuntime);
     controller = new ManagedPiSdkSessionController({
       ...(options.canExecute ? { canExecute: options.canExecute } : {}),
+      ...(resumeAuthorization ? { resumeAuthorization } : {}),
       runtime: createdRuntime,
       interactiveMode,
       fence,
@@ -1782,6 +2211,12 @@ export async function startManagedPiSdkSession(
       model: options.model,
       nativeIdentity: options.nativeIdentity,
       quiesceTimeoutMs: quiesceTimeoutMs,
+      ...(options.executionScope
+        ? {
+            executionScope:
+              resumeAuthorization?.scope ?? options.executionScope,
+          }
+        : {}),
       metadataPath,
       resources: () => currentServices,
       canCompact: () => {

@@ -32,7 +32,11 @@ export async function publishManagedPiHerdrIdentity(
   let lastState: string | null = null;
   let error: string | null = null;
   const invoke = async (args: readonly string[], read = false) => {
-    const result = await run('herdr', args, 5000);
+    let result = await run('herdr', args, 5000);
+    // This observation has no native effect. A busy Herdr server can miss the
+    // first deadline while simultaneous SDK/MCP startups enumerate processes.
+    // Mutations and failed ownership observations are never repeated here.
+    if (read && result.timedOut) result = await run('herdr', args, 5000);
     if (
       !result.spawned ||
       result.code !== 0 ||
