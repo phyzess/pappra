@@ -73,7 +73,7 @@ import { buildInitPlan, type PlannedFileContent } from '../install/plan.js';
 import {
   backupPath,
   ensureStatePathBoundary,
-  readWorkspaceManifest,
+  writeBytesAtomic,
   writeWorkspaceManifest,
 } from '../install/ownership.js';
 import type { WorkspaceInstallManifest } from '../schemas/install.js';
@@ -2646,7 +2646,7 @@ async function cleanupCreatedFiles(
 }
 
 /**
- * Applies only create operations from a plan, after revalidating root,
+ * Applies create and managed replacement operations from a plan, after revalidating root,
  * configuration digest, target absence and exact bytes. External actions are
  * reported as pending and never executed here.
  */
@@ -2810,19 +2810,54 @@ export async function applyInitPlan(
       createdDirectories.push(path);
     }
   };
-  const restoreReplacements = async (): Promise<void> => {
+  const restoreReplacements = async (): Promise<string[]> => {
+    const residual: string[] = [];
+    const entries =
+      originalManifest === null ? [] : [...originalManifest.entries];
     for (const replacement of [...replacements].reverse()) {
       try {
-        await writeFile(replacement.absolutePath, replacement.beforeBytes);
+        const current = await observePath(replacement.absolutePath);
+        if (
+          current.kind !== 'file' ||
+          current.stats === null ||
+          current.stats.dev !== replacement.identity.dev ||
+          current.stats.ino !== replacement.identity.ino ||
+          sha256Digest(await readFile(replacement.absolutePath)) !==
+            replacement.afterDigest
+        ) {
+          residual.push(replacement.path);
+          continue;
+        }
+        const restored = await writeBytesAtomic(
+          replacement.absolutePath,
+          replacement.beforeBytes,
+          root,
+        );
+        if (!restored.ok) throw new Error(restored.message);
+        const after = await observePath(replacement.absolutePath);
+        if (after.kind !== 'file' || after.stats === null)
+          throw new Error('Restored file is unreadable.');
+        const index = entries.findIndex(
+          (entry) => entry.path === replacement.path,
+        );
+        if (index >= 0)
+          entries[index] = {
+            ...entries[index]!,
+            afterDigest: replacement.backupDigest,
+            identity: { dev: after.stats.dev, ino: after.stats.ino },
+          };
       } catch {
-        // The residual list below and the failure diagnostic report this case.
+        residual.push(replacement.path);
       }
     }
-    if (originalManifest !== null) {
-      await writeWorkspaceManifest(root, originalManifest).catch(
-        () => undefined,
-      );
+    if (originalManifest !== null && replacements.length > 0) {
+      const restored = await writeWorkspaceManifest(root, {
+        ...originalManifest,
+        entries,
+      }).catch(() => ({ ok: false }));
+      if (!restored.ok) residual.push('.pappra/local/install-manifest.json');
     }
+    return residual;
   };
   const rootBeforeWrite = await observePath(root);
   if (
@@ -2840,13 +2875,39 @@ export async function applyInitPlan(
   }
 
   try {
+    if (bundle.plan.files.length > 0) {
+      const managedStart = await beginManagedApply(
+        root,
+        bundle.plan,
+        bundle.writes,
+        bundle.rootIdentity,
+      );
+      if (!managedStart.ok) {
+        return {
+          ok: false,
+          status:
+            managedStart.status === 'invalid'
+              ? 'stale'
+              : managedStart.status === 'locked'
+                ? 'conflict'
+                : 'failed',
+          appliedFiles: [],
+          pendingExternalActions: [],
+          residualPaths: managedStart.residualPaths,
+          diagnostics: managedStart.diagnostics,
+        };
+      }
+      managed = managedStart.context;
+      originalManifest = managed.manifest;
+    }
     for (const index of replaceIndexes) {
       const file = bundle.plan.files[index]!;
       const write = bundle.writes[index]!;
       await options.beforeWrite?.(file.path, index);
       const absolutePath = resolvePortableRelativePath(root, file.path);
-      const backupRef = backupPath(root, bundle.plan.planId, file.path);
-      const stateBoundary = await ensureStatePathBoundary(root, backupRef);
+      const backupFile = backupPath(root, managed!.installId, file.path);
+      const backupRef = toWorkspaceRelativePath(root, backupFile)!;
+      const stateBoundary = await ensureStatePathBoundary(root, backupFile);
       if (!stateBoundary.ok) throw new Error(stateBoundary.message);
       const beforeBytes = await readFile(absolutePath);
       if (
@@ -2856,13 +2917,45 @@ export async function applyInitPlan(
         throw new Error(`Replacement target changed again: ${file.path}`);
       }
       const observation = await observePath(absolutePath);
+      if (observation.kind !== 'file')
+        throw new Error(`Unsafe replacement target: ${file.path}`);
       const mode =
         observation.stats === null ? 0o644 : observation.stats.mode & 0o777;
-      await mkdir(dirname(backupRef), { recursive: true });
-      await writeFile(backupRef, beforeBytes, { mode: 0o600, flag: 'wx' });
+      await mkdir(dirname(backupFile), { recursive: true });
+      await writeFile(backupFile, beforeBytes, { mode: 0o600, flag: 'wx' });
       const temporary = `${absolutePath}.pappra-replace-${randomUUID().slice(0, 8)}`;
-      await writeFile(temporary, write.bytes, { mode });
-      await rename(temporary, absolutePath);
+      try {
+        await writeFile(temporary, write.bytes, { mode, flag: 'wx' });
+        const staged = await observePath(temporary);
+        if (staged.kind !== 'file' || staged.stats === null)
+          throw new Error('Replacement staging failed.');
+        const recorded = await recordManagedFile(
+          managed!,
+          file.path,
+          file.nextDigest,
+          { dev: staged.stats.dev, ino: staged.stats.ino },
+          { backupRef, backupDigest: sha256Digest(beforeBytes) },
+        );
+        if (!recorded.ok)
+          throw new Error(
+            recorded.diagnostics[0]?.message ?? 'Cannot journal replacement.',
+          );
+        const beforeRename = await observePath(absolutePath);
+        if (
+          beforeRename.kind !== 'file' ||
+          beforeRename.stats?.dev !== observation.stats?.dev ||
+          beforeRename.stats?.ino !== observation.stats?.ino ||
+          sha256Digest(await readFile(absolutePath)) !==
+            file.expectedBeforeDigest
+        ) {
+          throw new Error(
+            `Replacement target changed before publish: ${file.path}`,
+          );
+        }
+        await rename(temporary, absolutePath);
+      } finally {
+        await rm(temporary, { force: true }).catch(() => undefined);
+      }
       const after = await observePath(absolutePath);
       if (after.kind !== 'file' || after.stats === null) {
         throw new Error(
@@ -2880,78 +2973,7 @@ export async function applyInitPlan(
       });
     }
 
-    if (replacements.length > 0) {
-      const manifestRead = await readWorkspaceManifest(root);
-      if (manifestRead.diagnostics.length > 0) {
-        throw new Error(
-          manifestRead.diagnostics[0]?.message ??
-            'Workspace install manifest is unreadable.',
-        );
-      }
-      if (manifestRead.value === null) {
-        throw new Error(
-          'Workspace install manifest is missing; Pappra does not adopt an unowned replacement.',
-        );
-      }
-      originalManifest = manifestRead.value;
-      const entries = [...manifestRead.value.entries];
-      const verifiedAt = new Date().toISOString();
-      for (const replacement of replacements) {
-        const entry = {
-          path: replacement.path,
-          installId: bundle.plan.planId,
-          operation: 'replace-managed' as const,
-          beforeDigest: replacement.backupDigest,
-          afterDigest: replacement.afterDigest,
-          backupRef: replacement.backupRef,
-          backupDigest: replacement.backupDigest,
-          identity: replacement.identity,
-          owner: 'pappra' as const,
-          verifiedAt,
-        };
-        const existingIndex = entries.findIndex(
-          (item) => item.path === replacement.path,
-        );
-        if (existingIndex === -1) entries.push(entry);
-        else entries[existingIndex] = entry;
-      }
-      const written = await writeWorkspaceManifest(root, {
-        ...manifestRead.value,
-        entries,
-      });
-      if (!written.ok) throw new Error(written.message);
-    }
-
     if (createIndexes.length > 0) {
-      const createPlan = {
-        ...bundle.plan,
-        files: createIndexes.map((index) => bundle.plan.files[index]!),
-      };
-      const createWrites = createIndexes.map((index) => bundle.writes[index]!);
-      const managedStart = await beginManagedApply(
-        root,
-        createPlan,
-        createWrites,
-        bundle.rootIdentity,
-      );
-      if (!managedStart.ok) {
-        const status =
-          managedStart.status === 'invalid'
-            ? 'stale'
-            : managedStart.status === 'locked'
-              ? 'conflict'
-              : 'failed';
-        await restoreReplacements();
-        return {
-          ok: false,
-          status,
-          appliedFiles: [],
-          pendingExternalActions: [],
-          residualPaths: managedStart.residualPaths,
-          diagnostics: managedStart.diagnostics,
-        };
-      }
-      managed = managedStart.context;
       for (const index of createIndexes) {
         const file = bundle.plan.files[index]!;
         const write = bundle.writes[index]!;
@@ -2979,7 +3001,7 @@ export async function applyInitPlan(
         }
         created.push(record);
         const recorded = await recordManagedFile(
-          managed,
+          managed!,
           file.path,
           file.nextDigest,
           { dev: record.dev, ino: record.ino },
@@ -2990,15 +3012,19 @@ export async function applyInitPlan(
           );
         }
       }
+    }
+    if (managed !== null) {
       const completed = await completeManagedApply(managed);
       if (!completed.ok) {
-        const residual = await cleanupCreatedFiles(root, created);
+        const residual = [
+          ...(await cleanupCreatedFiles(root, created)),
+          ...(await restoreReplacements()),
+        ];
         const failed = await failManagedApply(
           managed,
           'Cannot finalize managed installation manifest.',
           residual,
         );
-        await restoreReplacements();
         return {
           ok: false,
           status: 'failed',
@@ -3028,8 +3054,10 @@ export async function applyInitPlan(
       diagnostics: [],
     };
   } catch (error) {
-    await restoreReplacements();
-    const residual = await cleanupCreatedFiles(root, created);
+    const residual = [
+      ...(await restoreReplacements()),
+      ...(await cleanupCreatedFiles(root, created)),
+    ];
     for (const directory of createdDirectories.reverse()) {
       await rmdir(directory).catch(() => undefined);
     }

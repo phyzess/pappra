@@ -514,7 +514,7 @@ test(
       );
 
       const transcript = readableTranscript(run.stdout);
-      assert.equal(run.status, 1, run.stderr || transcript.slice(-4000));
+      assert.equal(run.status, 0, run.stderr || transcript.slice(-4000));
       assert(transcript.includes('Confirmed TTY workspace'));
       assert(transcript.includes('Applied files: .pappra/workspace.json,'));
       assert(

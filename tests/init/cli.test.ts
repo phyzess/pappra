@@ -100,7 +100,7 @@ test('init runtime preview is read-only; --apply ensures and reuses an isolated 
       temporary,
       { PAPPRA_DATA_HOME: dataDir },
     );
-    assert.equal(configOnly.status, 1, configOnly.stderr);
+    assert.equal(configOnly.status, 0, configOnly.stderr);
     const configOnlyResult = parseJson(configOnly.stdout);
     assert.equal(configOnlyResult.ok, true);
     assert.equal(configOnlyResult.initComplete, false);
@@ -221,7 +221,7 @@ test('init --no-runtime reports no-changes and exit 0 once a matching runtime is
       workspace,
       environment,
     );
-    assert.equal(pending.status, 1, `${pending.stdout}\n${pending.stderr}`);
+    assert.equal(pending.status, 0, `${pending.stdout}\n${pending.stderr}`);
     const pendingValue = parseJson(pending.stdout);
     assert.equal(pendingValue.ok, true);
     assert.equal(pendingValue.initComplete, false);
@@ -760,7 +760,7 @@ test('init --no-runtime previews and applies configuration without runtime work'
       temporary,
       { PAPPRA_DATA_HOME: dataDir },
     );
-    assert.equal(applied.status, 1, applied.stderr);
+    assert.equal(applied.status, 0, applied.stderr);
     const result = parseJson(applied.stdout);
     assert.equal(result.ok, true);
     assert.equal(result.initComplete, false);
@@ -1241,7 +1241,7 @@ test('init --print-choices prints a round-trippable choices document', () => {
       temporary,
       { PATH: isolated.path, PAPPRA_DATA_HOME: dataDir },
     );
-    assert.equal(applied.status, 1, applied.stderr);
+    assert.equal(applied.status, 0, applied.stderr);
     const appliedValue = parseJson(applied.stdout);
     assert.equal(appliedValue.ok, true);
     assert.equal(appliedValue.initComplete, false);
@@ -1280,7 +1280,7 @@ test('init --yes applies derived selections without a TTY', () => {
         ...runtimeEnv(temporary),
       },
     );
-    assert.equal(applied.status, 1, applied.stderr);
+    assert.equal(applied.status, 0, applied.stderr);
     const value = parseJson(applied.stdout);
     assert.equal(value.ok, true);
     assert.equal(value.initComplete, false);
@@ -1320,7 +1320,7 @@ test('init --yes applies derived selections without a TTY', () => {
         ...runtimeEnv(temporary),
       },
     );
-    assert.equal(repeated.status, 1, repeated.stderr);
+    assert.equal(repeated.status, 0, repeated.stderr);
     const repeatedValue = parseJson(repeated.stdout);
     assert.equal(repeatedValue.ok, true);
     assert.equal(repeatedValue.initComplete, false);
@@ -1370,7 +1370,7 @@ test('init --reconfigure replaces a stale workspace config with a backup', () =>
       temporary,
       environment,
     );
-    assert.equal(first.status, 1, first.stderr);
+    assert.equal(first.status, 0, first.stderr);
     const firstValue = parseJson(first.stdout);
     assert.equal(firstValue.ok, true);
     assert.equal(firstValue.initComplete, false);
@@ -1425,7 +1425,7 @@ test('init --reconfigure replaces a stale workspace config with a backup', () =>
       temporary,
       environment,
     );
-    assert.equal(reconfigured.status, 1, reconfigured.stderr);
+    assert.equal(reconfigured.status, 0, reconfigured.stderr);
     const value = parseJson(reconfigured.stdout);
     assert.equal(value.ok, true);
     assert.equal(value.initComplete, false);
@@ -1461,7 +1461,7 @@ test('init --reconfigure replaces a stale workspace config with a backup', () =>
       temporary,
       environment,
     );
-    assert.equal(repeated.status, 1, repeated.stderr);
+    assert.equal(repeated.status, 0, repeated.stderr);
     const repeatedValue = parseJson(repeated.stdout);
     assert.equal(repeatedValue.ok, true);
     assert.equal(repeatedValue.initComplete, false);

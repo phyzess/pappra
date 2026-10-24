@@ -50,8 +50,8 @@ A successful apply also reports advisory `nextActions`:
 `pappra docs scan --apply` to register documents that discovery already reports under the
 configured knowledge sources.
 
-Exit codes: `0` converged, `1` applied with a pending manual step (for example with
-`--no-runtime`), `2` invalid input, `3` unavailable environment.
+Exit codes: `0` requested work completed (including configuration-only `--no-runtime`),
+`1` conflict or incomplete requested work, `2` invalid input, `3` unavailable environment.
 
 ## Agent-native tools
 
@@ -157,9 +157,8 @@ without selections never prompts and still exits nonzero, but it returns the
 discovery candidates and the suggested `pappra/init-choices/1` document. A TTY
 invocation without selections opens the wizard; `--config`/`--json` never prompt.
 
-A converged apply exits `0`. With `--no-runtime` (or an explicit
-`--install-runtime` that has not run yet) the result is `ok:true` with
-`status:"external-actions-pending"` and a nonzero exit; inspect
+A converged apply exits `0`. With `--no-runtime` the result is `ok:true` with
+`status:"external-actions-pending"`, `initComplete:false` and exit `0`; inspect
 `pendingExternalActions` instead of treating that as a corrupt configuration.
 `doctor` reports the resulting runtime conditions; `pappra runtime verify` runs
 the active check.

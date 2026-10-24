@@ -88,6 +88,7 @@ import {
   runCollaborationRolePlanCommand,
 } from './commands/collaboration-role-plan.js';
 import { runtimeUsage, runRuntimeCommand } from './commands/runtime.js';
+import { repairUsage, runRepairCommand } from './commands/repair.js';
 import { hostNameSchema } from '../schemas/host.js';
 import type { CliOutput } from './output.js';
 
@@ -414,6 +415,7 @@ const globalUsage =
   'pappra init [--config <file> | --yes] [--apply] [--json] [--print-choices]\n' +
   '              [--install-runtime (--runtime-tarball <file> | --runtime-version <version>)]\n' +
   'pappra doctor [--root <path>] [--json]\n' +
+  'pappra repair [--root <path>] [--runtime-version <v>] [--install-id <uuid>] [--apply] [--json]\n' +
   'pappra docs <list|check|archive|scan> [options]\n' +
   'pappra checkpoint --task <id> [options] [--json]\n' +
   'pappra resume <taskId> [--session <id>] [--json]\n' +
@@ -428,6 +430,52 @@ export async function runCli(
   output: CliOutput,
 ): Promise<number> {
   const jsonRequested = args.includes('--json');
+  if (args[0] === 'repair') {
+    try {
+      const parsedRepair = parseArgs({
+        args: [...args.slice(1)],
+        options: {
+          root: { type: 'string' },
+          'runtime-version': { type: 'string' },
+          'install-id': { type: 'string' },
+          apply: { type: 'boolean' },
+          json: { type: 'boolean' },
+          help: { type: 'boolean', short: 'h' },
+        },
+        allowPositionals: false,
+        strict: true,
+      });
+      if (
+        ['--root', '--runtime-version', '--install-id'].some(
+          (flag) =>
+            args.filter((arg) => arg === flag || arg.startsWith(`${flag}=`))
+              .length > 1,
+        )
+      )
+        throw new Error('Repair options must not be repeated.');
+      if (parsedRepair.values.help) {
+        output.stdout(repairUsage);
+        return 0;
+      }
+      return runRepairCommand(
+        {
+          root: parsedRepair.values.root ?? process.cwd(),
+          ...(parsedRepair.values['runtime-version'] === undefined
+            ? {}
+            : { runtimeVersion: parsedRepair.values['runtime-version'] }),
+          ...(parsedRepair.values['install-id'] === undefined
+            ? {}
+            : { installId: parsedRepair.values['install-id'] }),
+          apply: parsedRepair.values.apply === true,
+          json: parsedRepair.values.json === true,
+        },
+        output,
+      );
+    } catch (error) {
+      failure(output, jsonRequested, 'invalid_arguments', error);
+      return 2;
+    }
+  }
   if (args[0] === 'session') {
     try {
       const parsedSession = parseArgs({

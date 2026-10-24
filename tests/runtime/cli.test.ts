@@ -104,7 +104,7 @@ test('runtime install --bind records the durable copy in machine.json', () => {
       temporary,
       environment,
     );
-    assert.equal(init.status, 1, init.stderr);
+    assert.equal(init.status, 0, init.stderr);
     const initValue = parseJson(init.stdout);
     assert.equal(initValue.ok, true);
     assert.equal(initValue.initComplete, false);
@@ -161,6 +161,21 @@ test('runtime remove requires --apply and refuses a bound runtime unless forced'
     );
     assert.equal(bound.status, 1, bound.stderr);
     assert.equal(parseJson(bound.stdout).ok, false);
+
+    // A caller outside the owning workspace cannot claim the shared runtime
+    // is unused merely because its own cwd has no machine.json binding.
+    const otherWorkspace = invoke(
+      ['runtime', 'remove', '--runtime-version', version, '--apply', '--json'],
+      dirname(temporary),
+      environment,
+    );
+    assert.equal(otherWorkspace.status, 1, otherWorkspace.stderr);
+    assert.equal(
+      (parseJson(otherWorkspace.stdout).removed as Record<string, unknown>)
+        .status,
+      'in-use',
+    );
+    assert.equal(existsSync(join(dataDir, 'runtimes', version)), true);
 
     const forced = invoke(
       ['runtime', 'remove', '--apply', '--force', '--json'],

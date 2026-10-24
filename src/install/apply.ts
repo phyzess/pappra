@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
 import { diagnosticCodes } from '../schemas/errors.js';
@@ -162,7 +162,9 @@ export async function beginManagedApply(
   }
   if (
     writes.length !== plan.files.length ||
-    plan.files.some((file) => file.operation !== 'create')
+    plan.files.some(
+      (file) => !['create', 'replace-managed'].includes(file.operation),
+    )
   ) {
     return {
       ok: false,
@@ -170,8 +172,8 @@ export async function beginManagedApply(
       diagnostics: [
         diagnostic(
           diagnosticCodes.initApplyUnsupported,
-          'P04 managed apply currently supports create-only plans.',
-          'Regenerate the plan; managed replacement is not silently emulated.',
+          'Managed apply supports only create and managed replacement plans.',
+          'Regenerate the plan with supported file operations.',
           root,
         ),
       ],
@@ -209,15 +211,15 @@ export async function beginManagedApply(
   }
   const existingPaths = new Set(manifest.entries.map((entry) => entry.path));
   for (const file of plan.files) {
-    if (existingPaths.has(file.path)) {
+    if ((file.operation === 'create') === existingPaths.has(file.path)) {
       return {
         ok: false,
         status: 'invalid',
         diagnostics: [
           diagnostic(
             diagnosticCodes.initTargetExists,
-            `A managed file entry already exists for ${file.path}.`,
-            'Inspect ownership state; Pappra does not overwrite managed files as create.',
+            `Managed ownership does not match the planned operation for ${file.path}.`,
+            'Inspect ownership state; replacements require an existing managed entry.',
             workspaceInstallPaths(root).manifestPath,
           ),
         ],
@@ -248,8 +250,73 @@ export async function beginManagedApply(
     };
   }
 
+  const currentManifest = await readWorkspaceManifest(root);
+  const priorJournal = await findIncompleteWorkspaceJournal(root);
+  if (
+    currentManifest.digest !== manifestRead.digest ||
+    priorJournal.incomplete !== null ||
+    priorJournal.unreadable.length > 0
+  ) {
+    await releaseInstallLock(lock.path, lock.lock.token);
+    return {
+      ok: false,
+      status: 'invalid',
+      residualPaths: [],
+      diagnostics: [
+        diagnostic(
+          diagnosticCodes.initPlanStale,
+          'Managed ownership changed or an incomplete journal requires recovery.',
+          'Run pappra repair to inspect interrupted installs, then regenerate the plan.',
+          priorJournal.incomplete ?? workspaceInstallPaths(root).manifestPath,
+        ),
+      ],
+    };
+  }
+
   const installId = randomUUID();
   const journalFile = journalPath(root, installId);
+  const manifestBackupSteps: InstallJournal['steps'] = [];
+  if (plan.files.some((file) => file.operation === 'replace-managed')) {
+    const backup = backupPath(root, installId, 'install-manifest.json');
+    try {
+      const boundary = await ensureStatePathBoundary(root, backup);
+      if (!boundary.ok) throw new Error(boundary.message);
+      const bytes = await readFile(workspaceInstallPaths(root).manifestPath);
+      if (sha256Digest(bytes) !== manifestRead.digest)
+        throw new Error('Ownership changed before backup.');
+      await mkdir(dirname(backup), { recursive: true });
+      await writeFile(backup, bytes, { flag: 'wx', mode: 0o600 });
+      manifestBackupSteps.push(
+        {
+          name: 'manifest-backup',
+          status: 'ok',
+          at: now(),
+          detail: relative(root, backup).split(sep).join('/'),
+        },
+        {
+          name: 'manifest-backup-digest',
+          status: 'ok',
+          at: now(),
+          detail: sha256Digest(bytes),
+        },
+      );
+    } catch (error) {
+      await releaseInstallLock(lock.path, lock.lock.token);
+      return {
+        ok: false,
+        status: 'failed',
+        residualPaths: [],
+        diagnostics: [
+          diagnostic(
+            diagnosticCodes.initApplyFailed,
+            `Cannot back up managed ownership: ${errorMessage(error)}`,
+            'Inspect the workspace state; no target was changed.',
+            journalFile,
+          ),
+        ],
+      };
+    }
+  }
   let journal: InstallJournal = {
     schema: 'pappra/install-journal/1',
     installId,
@@ -262,6 +329,7 @@ export async function beginManagedApply(
     updatedAt: now(),
     steps: [
       { name: 'lock-acquired', status: 'ok', at: now(), detail: lock.path },
+      ...manifestBackupSteps,
       ...writes.map((write) => ({
         name: `pending:${write.path}`,
         status: 'ok' as const,
@@ -269,13 +337,21 @@ export async function beginManagedApply(
         detail: write.digest,
       })),
     ],
-    entries: writes.map((write) => ({
+    entries: writes.map((write, index) => ({
       path: write.path,
       status: 'pending' as const,
       digest: write.digest,
       identity: null,
-      backupRef: null,
-      backupDigest: null,
+      backupRef:
+        plan.files[index]?.operation === 'replace-managed'
+          ? relative(root, backupPath(root, installId, write.path))
+              .split(sep)
+              .join('/')
+          : null,
+      backupDigest:
+        plan.files[index]?.operation === 'replace-managed'
+          ? plan.files[index]!.expectedBeforeDigest
+          : null,
       detail: null,
     })),
     residuals: [],
@@ -326,6 +402,7 @@ export async function recordManagedFile(
   path: string,
   digest: string,
   identity: FileIdentity,
+  replacement?: { readonly backupRef: string; readonly backupDigest: string },
 ): Promise<
   | { readonly ok: true }
   | { readonly ok: false; readonly diagnostics: readonly Diagnostic[] }
@@ -349,6 +426,8 @@ export async function recordManagedFile(
           ...entry,
           status: 'created' as const,
           identity,
+          backupRef: replacement?.backupRef ?? null,
+          backupDigest: replacement?.backupDigest ?? null,
           detail: null,
         }
       : entry,
@@ -381,9 +460,17 @@ export async function recordManagedFile(
     };
   }
   context.journal = journal;
-  context.entries.push(
-    manifestEntry(context.installId, path, digest, identity),
-  );
+  context.entries.push({
+    ...manifestEntry(context.installId, path, digest, identity),
+    ...(replacement === undefined
+      ? {}
+      : {
+          operation: 'replace-managed' as const,
+          beforeDigest: replacement.backupDigest,
+          backupRef: replacement.backupRef,
+          backupDigest: replacement.backupDigest,
+        }),
+  });
   return { ok: true };
 }
 
@@ -405,7 +492,13 @@ export async function completeManagedApply(
   );
   await writeInstallJournal(context.journalFile, appliedJournal, context.root);
   context.journal = appliedJournal;
-  const entries = [...context.manifest.entries, ...context.entries];
+  const changedPaths = new Set(context.entries.map((entry) => entry.path));
+  const entries = [
+    ...context.manifest.entries.filter(
+      (entry) => !changedPaths.has(entry.path),
+    ),
+    ...context.entries,
+  ];
   const manifest: WorkspaceInstallManifest = {
     ...context.manifest,
     entries,

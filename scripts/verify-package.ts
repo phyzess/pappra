@@ -341,7 +341,7 @@ try {
     '--json',
   ]);
   if (init.error) throw init.error;
-  assert.equal(init.status, 1, init.stderr);
+  assert.equal(init.status, 0, init.stderr);
   const initValue = parseInstalled(init.stdout);
   assert.equal(initValue.ok, true);
   assert.equal(initValue.initComplete, false);
@@ -516,7 +516,7 @@ try {
     },
   );
   if (editedInit.error) throw editedInit.error;
-  assert([0, 1].includes(editedInit.status ?? -1), editedInit.stderr);
+  assert.equal(editedInit.status, 0, editedInit.stderr);
   assert.equal(parseInstalled(editedInit.stdout).ok, true);
   assert.deepEqual(readFileSync(editedSentinelPath), userSentinel);
   const editedWorkspacePath = join(editedRoot, '.pappra', 'workspace.json');

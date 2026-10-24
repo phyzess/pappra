@@ -1806,9 +1806,10 @@ export async function runInitCommand(
         ],
       })}\n`,
     );
-    if (!applied.ok || applied.residualPaths.length > 0) return 1;
+    if (!applied.ok) return applied.status === 'failed' ? 3 : 1;
+    if (applied.residualPaths.length > 0) return 1;
     if (runtimeRequested) return ok ? 0 : 1;
-    return applied.status === 'external-actions-pending' ? 1 : 0;
+    return 0;
   }
 
   printPlan(output, bundle, runtimeOperation);
@@ -1850,7 +1851,7 @@ export async function runInitCommand(
     for (const action of initNextActions(bundle, runtimeOperation)) {
       output.stdout(`  next: ${action}\n`);
     }
-    return applied.status === 'external-actions-pending' ? 1 : 0;
+    return 0;
   }
 
   const runtimeFlow = wantsRuntime
@@ -1917,7 +1918,7 @@ export const initUsage =
   'wiring remain separate pending actions.\n' +
   '--no-runtime suppresses runtime verification, installation and binding for this invocation.\n' +
   'When a runtime action is still required the result is ok:true with status\n' +
-  'external-actions-pending and a nonzero exit; when the workspace already has a bound matching\n' +
+  'external-actions-pending and exit 0 for the requested configuration-only work; when the workspace already has a bound matching\n' +
   'runtime and no file changes are needed the result is ok:true, apply status no-changes and\n' +
   'exit 0, while initComplete stays false because this invocation verified no runtime.\n' +
   'A TTY run that collected selections without --apply prints the plan and asks one confirmation\n' +

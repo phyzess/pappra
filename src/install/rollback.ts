@@ -49,6 +49,9 @@ export interface WorkspaceRemovalResult {
 export interface RollbackWorkspaceOptions {
   readonly root: string;
   readonly installId: string;
+  /** Fault-injection seam after the rollback journal is durable; CLI never supplies it. */
+  readonly beforeRemoval?: () => Promise<void> | void;
+  readonly afterRemoval?: () => Promise<void> | void;
 }
 
 function diagnostic(
@@ -568,9 +571,15 @@ export async function rollbackWorkspaceInstall(
           owner: 'pappra',
           verifiedAt: journal.updatedAt,
         }));
-      pendingResidual = journal.entries
-        .filter((entry) => entry.status === 'pending')
-        .map((entry) => entry.path);
+      for (const entry of journal.entries.filter(
+        (entry) => entry.status === 'pending',
+      )) {
+        const target = join(options.root, entry.path);
+        const boundary = await ensureStatePathBoundary(options.root, target);
+        if (!boundary.ok || (await observePath(target)).kind !== 'missing') {
+          pendingResidual.push(entry.path);
+        }
+      }
       if (recovered.length > 0) {
         entries = recovered;
         journalRecovered = journal;
@@ -658,6 +667,7 @@ export async function rollbackWorkspaceInstall(
     );
   }
   await writeInstallJournal(file, current, options.root);
+  await options.beforeRemoval?.();
   const baseline: WorkspaceInstallManifest = manifest ?? {
     schema: 'pappra/install-manifest/1',
     workspaceRoot: options.root,
@@ -667,6 +677,7 @@ export async function rollbackWorkspaceInstall(
     updatedAt: now(),
   };
   const removal = await removeManifestEntries(options.root, baseline, entries);
+  await options.afterRemoval?.();
   let residual = [...removal.residual, ...pendingResidual];
   if (manifest !== null) {
     const remainingManifest: WorkspaceInstallManifest = {
