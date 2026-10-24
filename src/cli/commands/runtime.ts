@@ -21,10 +21,11 @@ export const runtimeUsage =
   '          [--apply] [--bind]\n' +
   '  status\n' +
   '  verify [--runtime-version <v>]\n' +
-  '  remove [--runtime-version <v>] --apply [--force]\n\n' +
+  '  remove [--runtime-version <v>] --apply --force\n\n' +
   'Install keeps a durable copy of the package outside the checkout. --from self packs the\n' +
   'package that is currently executing, which is what makes an npx/dlx bootstrap survive\n' +
-  'cache eviction. Writes require --apply; --bind records the copy in machine.json.\n';
+  'cache eviction. Writes require --apply; --bind records the copy in machine.json.\n' +
+  'Removal requires --force because references from other workspaces cannot be enumerated.\n';
 
 export interface RuntimeCommandOptions {
   readonly cwd: string;
@@ -285,7 +286,7 @@ async function runRemove(
 ): Promise<number> {
   const version = options.version ?? binding?.runtime?.version ?? null;
   if (version === null) {
-    output.stderr('pappra runtime remove: --version is required.\n');
+    output.stderr('pappra runtime remove: --runtime-version is required.\n');
     return 2;
   }
   if (!options.apply) {
@@ -314,10 +315,14 @@ async function runRemove(
   const removed = await removeRuntime({
     version,
     dataDir: resolveUserDataDir(),
-    // The current workspace was already checked above; callers that need to
-    // protect other checkouts pass --force only after checking them.
-    activeReferences: [],
+    // No global workspace registry exists. Unknown references are not an empty
+    // set; only the explicit CLI override authorizes removal without that check.
+    ...(options.force ? { activeReferences: [] } : {}),
   });
+  const nextAction =
+    removed.status === 'in-use' && !options.force
+      ? 'Check references in other workspaces, then pass --force only if removing their shared runtime is intended.'
+      : null;
   if (options.json) {
     output.stdout(
       `${JSON.stringify({
@@ -327,11 +332,13 @@ async function runRemove(
         version,
         removed,
         machineBindingRetained: boundHere,
+        ...(nextAction === null ? {} : { nextAction }),
       })}\n`,
     );
   } else {
     output.stdout(`Runtime ${version}: ${removed.status}\n`);
     printDiagnostics(output, removed.diagnostics);
+    if (nextAction !== null) output.stderr(`${nextAction}\n`);
   }
   return removed.ok ? 0 : 1;
 }

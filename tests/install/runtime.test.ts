@@ -423,6 +423,32 @@ test('passive runtime inspection does not execute the installed CLI smoke', asyn
   }
 });
 
+test('runtime content hashes do not depend on locale collation', async (context) => {
+  const root = makeTempDir('runtime-locale');
+  try {
+    const tarball = createRuntimeTarball(root, { version });
+    const dataDir = join(root, 'data');
+    const installed = await installRuntime({
+      version,
+      source: { kind: 'tarball', path: tarball },
+      dataDir,
+      offline: true,
+      timeoutMs: 60_000,
+    });
+    assert.equal(installed.ok, true);
+    context.mock.method(String.prototype, 'localeCompare', () => {
+      throw new Error('Locale collation is unavailable');
+    });
+    assert.equal(
+      (await inspectRuntimeStatePassive(version, dataDir)).status,
+      'content-match',
+    );
+  } finally {
+    context.mock.restoreAll();
+    cleanup(root);
+  }
+});
+
 test('passive runtime inspection rejects a package symlink outside the runtime root', async () => {
   const root = makeTempDir('runtime-passive-symlink');
   try {

@@ -41,6 +41,7 @@ import {
 } from '../infra/fs.js';
 import {
   acquireInstallLock,
+  ensureStatePathBoundary,
   readJsonDocument,
   releaseInstallLock,
   scanJournalDirectory,
@@ -185,7 +186,8 @@ async function hashPackageDirectory(directory: string): Promise<string> {
   const parts: string[] = [];
   const visit = async (current: string): Promise<void> => {
     const entries = (await readdir(current, { withFileTypes: true })).sort(
-      (left, right) => left.name.localeCompare(right.name),
+      (left, right) =>
+        Buffer.compare(Buffer.from(left.name), Buffer.from(right.name)),
     );
     for (const entry of entries) {
       const path = join(current, entry.name);
@@ -564,6 +566,7 @@ async function verifyInstalledRuntime(
   expectedVersion: string,
   expectedPackageName: string,
   timeoutMs: number,
+  verifiedDigest?: string,
 ): Promise<{
   readonly manifest: RuntimePackageManifest;
   readonly digest: string;
@@ -615,7 +618,7 @@ async function verifyInstalledRuntime(
   }
   return {
     manifest: packageManifest,
-    digest: await packageDigest(packageRoot),
+    digest: verifiedDigest ?? (await packageDigest(packageRoot)),
     executableRelative: relative(runtimeRoot, executablePath)
       .split(sep)
       .join('/'),
@@ -635,6 +638,50 @@ async function readRuntimeManifest(
     runtimeManifestSchema,
   );
   return read.value;
+}
+
+/** Repair verifies published content without executing it or ignoring its journal. */
+export async function verifyRuntimeForRepair(
+  runtimeRoot: string,
+  version: string,
+  packageName: string,
+  installId: string,
+): Promise<boolean> {
+  const manifest = await readRuntimeManifest(runtimeRoot);
+  if (
+    manifest === null ||
+    manifest.installId !== installId ||
+    manifest.runtimeRoot !== runtimeRoot ||
+    manifest.runtimeVersion !== version ||
+    manifest.packageName !== packageName ||
+    !isPathInside(runtimeRoot, manifest.executable)
+  )
+    return false;
+  const packageRoot = join(
+    runtimeRoot,
+    'node_modules',
+    ...packageName.split('/'),
+  );
+  const manifestObservation = await observePath(
+    join(runtimeRoot, 'install-manifest.json'),
+  );
+  const packageObservation = await observePath(packageRoot);
+  if (
+    manifestObservation.kind !== 'file' ||
+    packageObservation.kind !== 'directory'
+  )
+    return false;
+  for (const file of [packageRoot, manifest.executable]) {
+    if (!(await ensureStatePathBoundary(runtimeRoot, file)).ok) return false;
+    const real = await resolveRealpath(file);
+    if (real === null || !isPathInside(runtimeRoot, real)) return false;
+  }
+  const executable = await observePath(manifest.executable);
+  return (
+    executable.kind === 'file' &&
+    (await packageDigest(packageRoot).catch(() => null)) ===
+      manifest.packageDigest
+  );
 }
 
 interface RuntimeJournalScan {
@@ -758,6 +805,9 @@ async function completeExistingRuntime(
     version,
     packageName,
     timeoutMs,
+    // Content was checked before executing the smoke command. Reuse does not
+    // publish a new manifest, so hashing it again would discard the result.
+    digest,
   );
   if (verified === null) {
     return failureResult(

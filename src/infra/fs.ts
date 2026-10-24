@@ -85,9 +85,19 @@ export async function readFileBounded(
         { nextAction: 'Replace it with a regular file.' },
       );
     }
-    const buffer = Buffer.allocUnsafe(maxBytes + 1);
+    // Size the allocation to the opened file, rather than the caller's ceiling.
+    // Keep one extra byte to detect overflow, including files that grow after
+    // fstat; a small runtime dependency must not allocate the 64 MiB ceiling.
+    let buffer = Buffer.allocUnsafe(Math.min(stats.size, maxBytes) + 1);
     let total = 0;
-    while (total < buffer.length) {
+    while (total <= maxBytes) {
+      if (total === buffer.length) {
+        const grown = Buffer.allocUnsafe(
+          Math.min(maxBytes + 1, Math.max(4096, buffer.length * 2)),
+        );
+        buffer.copy(grown, 0, 0, total);
+        buffer = grown;
+      }
       const { bytesRead } = await handle.read(
         buffer,
         total,

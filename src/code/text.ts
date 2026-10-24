@@ -15,6 +15,8 @@ import { boundCodeItems } from './budget.js';
 
 const MAX_FILE_BYTES = 256 * 1024;
 const MAX_FILE_COUNT = 5000;
+// Scanning and emitted JSON have independent budgets.
+const MAX_SCAN_BYTES = 64 * 1024 * 1024;
 const EXCLUDES = [
   ':(exclude).codegraph',
   ':(exclude).pappra/local',
@@ -129,14 +131,18 @@ export async function runTextQuery(
   const items: CodeQueryItem[] = [];
   const evidence: EvidenceRef[] = [];
   const reasons: string[] = [];
-  let bytes = 0;
+  let scannedBytes = 0;
   let truncated =
     list.value.stdout.split('\0').filter(Boolean).length > paths.length;
+  if (truncated) reasons.push('file_limit');
   for (const path of paths) {
-    if (
-      items.length >= request.limits.maxResults ||
-      bytes >= request.limits.maxBytes
-    ) {
+    if (signal?.aborted) {
+      reasons.push('cancelled');
+      truncated = true;
+      break;
+    }
+    if (items.length >= request.limits.maxResults) {
+      reasons.push('result_limit');
       truncated = true;
       break;
     }
@@ -175,9 +181,9 @@ export async function runTextQuery(
       reasons.push('binary_skipped');
       continue;
     }
-    bytes += read.value.size;
-    if (bytes > request.limits.maxBytes) {
-      bytes = request.limits.maxBytes;
+    scannedBytes += read.value.size;
+    if (scannedBytes > MAX_SCAN_BYTES) {
+      reasons.push('scan_budget');
       truncated = true;
       break;
     }
@@ -199,12 +205,16 @@ export async function runTextQuery(
         });
         offset = lower.indexOf(needle, offset + Math.max(1, needle.length));
       }
-      if (offset !== -1) truncated = true;
+      if (offset !== -1) {
+        truncated = true;
+        reasons.push('result_limit');
+      }
     } else {
       const matches = structureMatches(text, request.query);
       for (const match of matches) {
         if (items.length >= request.limits.maxResults) {
           truncated = true;
+          reasons.push('result_limit');
           break;
         }
         items.push({ ...match, path });

@@ -554,6 +554,35 @@ test('text fallback rejects an intermediate symlink outside the checkout', async
   }
 });
 
+test('text fallback finds later matches after scanning beyond the output budget', async () => {
+  const root = makeSingleWorkspace();
+  try {
+    for (let index = 0; index < 6; index += 1) {
+      writeFileSync(join(root, `a-${index}.ts`), 'x'.repeat(200_000));
+    }
+    writeFileSync(join(root, 'z.ts'), 'export const removeRuntime = 1;\n');
+    const service = new CodeIntelligenceService(root);
+    const observed = await service.status({ repositoryId: 'app' });
+    assert.notEqual(observed.identity, null);
+    for (const mode of ['text', 'structure'] as const) {
+      const request = codeQueryRequestSchema.parse({
+        schema: 'pappra/code-query/1',
+        kind: mode === 'text' ? 'text' : 'symbol',
+        query: 'removeRuntime',
+        identity: observed.identity,
+        limits: { maxResults: 10, maxBytes: 1024, maxFiles: 100 },
+      });
+      const result = await runTextQuery(request, mode);
+      assert(result.ok);
+      assert.equal(result.value.items[0]?.path, 'z.ts');
+      assert(result.value.bytes <= 1024);
+      assert.equal(result.value.truncated, false);
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
 test('text fallback bounds emitted item JSON, not only scanned bytes', async () => {
   const root = makeSingleWorkspace();
   try {
