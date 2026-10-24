@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, unlink } from 'node:fs/promises';
+import { mkdir, unlink } from 'node:fs/promises';
 import { ensurePrivateState } from '../infra/private-state.js';
+import { publishPrivateLock } from '../infra/private-lock.js';
+import { captureProcessIdentity } from '../infra/process-identity.js';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
@@ -21,7 +23,7 @@ import {
   type Outcome,
 } from '../schemas/outcome.js';
 import { isPathInside } from '../schemas/paths.js';
-import { isTaskRecord } from '../collab/validation.js';
+import { isTaskRecord } from '../schemas/collaboration-state-validation.js';
 import {
   observePath,
   readFileBounded,
@@ -323,20 +325,23 @@ async function acquireTaskLock(
     };
   }
   const token = randomUUID();
-  let handle;
   try {
-    handle = await open(paths.lockPath, 'wx', 0o600);
-    await handle.writeFile(
+    await publishPrivateLock(
+      paths.lockPath,
       Buffer.from(
-        `${JSON.stringify({ token, pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+        `${JSON.stringify({ token, pid: process.pid, process_identity: captureProcessIdentity() ?? undefined, createdAt: new Date().toISOString() })}\n`,
       ),
+      async () => {
+        const current = await ensurePrivateTaskBoundary(
+          root,
+          taskId,
+          paths.lockPath,
+        );
+        if (!current.ok) throw new Error(current.message);
+      },
     );
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
     return { ok: true, path: paths.lockPath, token };
   } catch (error) {
-    await handle?.close().catch(() => undefined);
     return {
       ok: false,
       path: paths.lockPath,

@@ -105,6 +105,32 @@ function ignorePrivateState(root: string): void {
   ignorePaths(root, ['.pappra/']);
 }
 
+test('an undeclared embedded git checkout is an opaque reference instead of an incomplete outer patch', async () => {
+  const root = makeRepoWorkspace();
+  try {
+    ignorePrivateState(root);
+    const nested = join(root, 'embedded');
+    mkdirSync(nested);
+    createRepository(nested);
+    writeText(join(nested, '.env.local'), 'NESTED_PRIVATE_VALUE\n');
+    const saved = await new CheckpointService(root).save(
+      initialInput('embedded-repo'),
+    );
+    assert.equal(saved.ok, true, JSON.stringify(saved.diagnostics));
+    assert.equal(saved.checkpoint?.repositories[0]?.captureStatus, 'complete');
+    const directory = join(root, '.pappra/local/tasks/embedded-repo/patches');
+    const patch = readdirSync(directory).find((file) =>
+      file.endsWith('.patch'),
+    );
+    assert(patch);
+    const bytes = readFileSync(join(directory, patch));
+    assert.equal(bytes.includes('NESTED_PRIVATE_VALUE'), false);
+    assert.equal(bytes.includes(Buffer.from('R ')), true);
+  } finally {
+    cleanup(root);
+  }
+});
+
 test('saves a task context and checkpoint with a stable revision chain', async () => {
   const root = makeWorkspace();
   try {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { KnowledgeService } from '../../src/knowledge/index.js';
@@ -16,10 +16,7 @@ import {
   writeWorkspaceConfig,
 } from '../workspace/fixtures.js';
 
-const packageRoot = dirname(
-  fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
-);
-const cli = join(packageRoot, 'dist/cli/main.js');
+const cli = fileURLToPath(new URL('../../src/cli/main.js', import.meta.url));
 
 function invoke(args: string[], cwd: string, home: string) {
   const result = spawnSync(process.execPath, [cli, ...args], {

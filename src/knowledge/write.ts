@@ -179,7 +179,7 @@ function recordDiagnostics(
       ];
 }
 
-async function validateAndBuildRecord(
+export async function validateAndBuildRecord(
   context: KnowledgeContext,
   input: RegisterDocumentInput,
   location: ResolvedKnowledgeLocation,

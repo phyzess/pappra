@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { CheckpointService } from '../../src/continuity/index.js';
@@ -25,10 +25,7 @@ import {
   writeWorkspaceConfig,
 } from '../workspace/fixtures.js';
 
-const packageRoot = dirname(
-  fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
-);
-const cli = join(packageRoot, 'dist/cli/main.js');
+const cli = fileURLToPath(new URL('../../src/cli/main.js', import.meta.url));
 
 function invoke(args: string[], cwd: string, home: string) {
   const result = spawnSync(process.execPath, [cli, ...args], {
@@ -107,7 +104,7 @@ test('checkpoint and resume CLI share a single JSON contract without private pat
       root,
       home,
     );
-    assert.equal(resumed.status, 1, resumed.stderr);
+    assert.equal(resumed.status, 0, resumed.stderr);
     assert.equal(resumed.stderr, '');
     const packet = parse(resumed.stdout);
     assert.equal(packet.schema, 'pappra/resume-packet/1');
@@ -121,7 +118,7 @@ test('checkpoint and resume CLI share a single JSON contract without private pat
     assert.equal(JSON.stringify(packet).includes('private patch'), false);
 
     const blocked = invoke(['resume', 'task-cli', '--json'], root, home);
-    assert.equal(blocked.status, 1);
+    assert.equal(blocked.status, 0);
     const blockedPacket = parse(blocked.stdout);
     assert.equal(blockedPacket.executionAllowed, false);
     assert.equal(

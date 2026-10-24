@@ -60,6 +60,7 @@ export async function findCanonicalAlias(
   ignoreDocumentId: string | null = null,
 ): Promise<DocumentRecord | null> {
   for (const record of catalogs.records.values()) {
+    if (record.lifecycle === 'archived') continue;
     if (record.documentId === ignoreDocumentId) continue;
     const resolved = await resolveKnowledgeLocation(context, record.location);
     if (
@@ -78,6 +79,7 @@ export function findRecordByLocation(
 ): DocumentRecord | null {
   if (catalogs.locationConflicts.has(key)) return null;
   for (const record of catalogs.records.values()) {
+    if (record.lifecycle === 'archived') continue;
     const recordKey =
       record.location.kind === 'workspace'
         ? `workspace:${record.location.path}`

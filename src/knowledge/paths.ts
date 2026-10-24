@@ -24,7 +24,7 @@ export interface KnowledgePaths {
 export function knowledgePaths(root: string): KnowledgePaths {
   const localDir = join(root, '.pappra', 'local', 'knowledge');
   return {
-    sharedCatalog: join(root, '.pappra', 'knowledge', 'catalog.json'),
+    sharedCatalog: join(root, '.pappra', 'knowledge', 'records'),
     privateCatalog: join(localDir, 'catalog.json'),
     localDir,
     lockPath: join(localDir, 'apply.lock'),
@@ -36,6 +36,7 @@ const managedStatePrefixes = [
   '.pappra/local',
   '.pappra/generated',
   '.pappra/knowledge/catalog.json',
+  '.pappra/knowledge/records',
 ] as const;
 
 /**

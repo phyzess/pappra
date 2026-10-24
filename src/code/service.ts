@@ -1,3 +1,7 @@
+import {
+  createGitObservationScope,
+  type GitObservationScope,
+} from '../infra/git.js';
 import { sha256Digest } from '../infra/fs.js';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
@@ -64,6 +68,14 @@ export interface CodeStatusInput {
   readonly root: string;
   readonly repositoryId: string;
   readonly signal?: AbortSignal;
+  /**
+   * One operation's Git probe scope. Callers that run several service methods
+   * for a single command may pass one scope so workspace discovery and every
+   * identity probe share immutable repository observations. Omitted callers get
+   * a scope that lives only for this call: no result is ever cached across
+   * operations.
+   */
+  readonly observations?: GitObservationScope;
 }
 
 export interface CodePrepareInput extends CodeStatusInput {
@@ -123,7 +135,10 @@ interface WorkspaceView {
   readonly diagnostics: readonly Diagnostic[];
 }
 
-async function loadWorkspace(root: string): Promise<WorkspaceView> {
+async function loadWorkspace(
+  root: string,
+  observations: GitObservationScope,
+): Promise<WorkspaceView> {
   const config = await inspectWorkspaceConfig(root);
   const diagnostics: Diagnostic[] = [...config.diagnostics];
   if (config.value === null) {
@@ -137,6 +152,7 @@ async function loadWorkspace(root: string): Promise<WorkspaceView> {
     machine: machine.value,
     configPath: config.path,
     options: discoveryOptions,
+    observations,
   });
   diagnostics.push(...repositories.diagnostics);
   return {
@@ -204,7 +220,10 @@ function overlayRegistration(
 }
 
 async function observeCode(input: CodeStatusInput): Promise<ObservedCode> {
-  const view = await loadWorkspace(input.root);
+  const observations =
+    input.observations ??
+    createGitObservationScope({ workingTreeState: false });
+  const view = await loadWorkspace(input.root, observations);
   const diagnostics = [...view.diagnostics];
   const repository = selectRepository(view, input.repositoryId);
   if (repository === null) {
@@ -264,6 +283,7 @@ async function observeCode(input: CodeStatusInput): Promise<ObservedCode> {
     configStatus,
     excludedRoots,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
+    observations,
   });
   if (!identity.ok) {
     diagnostics.push(outcomeDiagnostic(identity, repository.root));
@@ -432,7 +452,15 @@ export class CodeIntelligenceService {
   }
 
   async prepare(input: CodePrepareInput): Promise<CodePrepareResult> {
-    const { observed, plan } = await this.planPrepare(input);
+    // Reuse probes within planning; refresh after external preparation because
+    // another writer or the engine may change HEAD while this call is awaiting.
+    const observations =
+      input.observations ??
+      createGitObservationScope({ workingTreeState: false });
+    const { observed, plan } = await this.planPrepare({
+      ...input,
+      observations,
+    });
     if (!input.apply) {
       return {
         schema: 'pappra/code-prepare-result/1',
@@ -604,6 +632,7 @@ export class CodeIntelligenceService {
         configStatus: afterConfig.value.status,
         excludedRoots: observed.excludedRoots,
         ...(input.signal === undefined ? {} : { signal: input.signal }),
+        observations: createGitObservationScope({ workingTreeState: false }),
       });
       if (!afterIdentity.ok) {
         return {

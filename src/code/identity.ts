@@ -1,7 +1,10 @@
 import { readlink } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
-import { inspectGitRepository } from '../infra/git.js';
-import { runGit } from '../infra/git.js';
+import {
+  inspectGitRepository,
+  runGit,
+  type GitObservationScope,
+} from '../infra/git.js';
 import { observePath, readFileBounded, sha256Digest } from '../infra/fs.js';
 import { diagnosticCodes } from '../schemas/errors.js';
 import { failed, succeeded, type Outcome } from '../schemas/outcome.js';
@@ -30,6 +33,12 @@ export interface ComputeCodeIdentityInput {
   readonly configStatus?: 'default' | 'observed' | 'unknown';
   readonly excludedRoots?: readonly string[];
   readonly signal?: AbortSignal;
+  /**
+   * One operation's Git probe scope. When supplied, the repository probe is
+   * shared with workspace discovery instead of being spawned a second time for
+   * the same checkout. Working-tree diffs are never taken from the scope.
+   */
+  readonly observations?: GitObservationScope;
 }
 
 interface WorkingTreeResult {
@@ -63,6 +72,8 @@ async function observeWorkingTree(
 
   const cached = await readDiff([
     'diff',
+    '--no-ext-diff',
+    '--no-textconv',
     '--binary',
     '--cached',
     '--',
@@ -71,6 +82,8 @@ async function observeWorkingTree(
   ]);
   const unstaged = await readDiff([
     'diff',
+    '--no-ext-diff',
+    '--no-textconv',
     '--binary',
     '--',
     '.',
@@ -210,7 +223,8 @@ async function observeWorkingTree(
 export async function computeCodeIdentity(
   input: ComputeCodeIdentityInput,
 ): Promise<Outcome<CodeIdentity>> {
-  const observed = await inspectGitRepository(input.root, {
+  const inspect = input.observations?.repository ?? inspectGitRepository;
+  const observed = await inspect(input.root, {
     timeoutMs: GIT_TIMEOUT_MS,
     ...(input.signal === undefined ? {} : { signal: input.signal }),
   });

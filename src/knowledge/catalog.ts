@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, rename, rm } from 'node:fs/promises';
+import { mkdir, open, readdir, rename, rm, unlink } from 'node:fs/promises';
 import { ensurePrivateState } from '../infra/private-state.js';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
 import { diagnosticCodes } from '../schemas/errors.js';
 import {
   DOCUMENT_CATALOG_SCHEMA,
   documentCatalogSchema,
+  documentRecordFileSchema,
   type DocumentCatalog,
   type DocumentLocation,
   type DocumentRecord,
@@ -38,6 +39,7 @@ export interface CatalogFileState {
   readonly catalog: DocumentCatalog | null;
   readonly diagnostics: readonly Diagnostic[];
   readonly valid: boolean;
+  readonly recordDigests?: ReadonlyMap<string, string>;
 }
 
 export interface KnowledgeCatalogs {
@@ -99,6 +101,7 @@ async function readCatalogFile(
   scope: CatalogScope,
   path: string,
 ): Promise<CatalogFileState> {
+  if (scope === 'shared') return readSharedRecords(context, path);
   let observation;
   try {
     observation = await observePath(path);
@@ -266,6 +269,104 @@ async function readCatalogFile(
   };
 }
 
+async function readSharedRecords(
+  context: KnowledgeContext,
+  path: string,
+): Promise<CatalogFileState> {
+  const diagnostics: Diagnostic[] = [];
+  const invalid = (message: string): CatalogFileState => ({
+    scope: 'shared',
+    path,
+    exists: true,
+    digest: null,
+    catalog: null,
+    diagnostics: [
+      catalogDiagnostic(
+        diagnosticCodes.document_catalog_invalid,
+        message,
+        path,
+        'Inspect the per-document records; malformed state is preserved. Legacy catalog.json requires an explicit reset, not an automatic migration.',
+      ),
+    ],
+    valid: false,
+  });
+  try {
+    const legacy = await observePath(join(dirname(path), 'catalog.json'));
+    if (legacy.kind !== 'missing')
+      return invalid(
+        'Legacy shared catalog.json is unsupported; preserve or export it and explicitly reset the shared catalog before using per-document records.',
+      );
+    const observation = await observePath(path);
+    if (observation.kind === 'missing')
+      return {
+        scope: 'shared',
+        path,
+        exists: false,
+        digest: null,
+        catalog: null,
+        diagnostics: [],
+        valid: true,
+      };
+    if (observation.kind !== 'directory')
+      return invalid('Shared document records must be a real directory.');
+    const names = (await readdir(path))
+      .filter((name) => name !== '.DS_Store' && name !== 'Thumbs.db')
+      .sort();
+    if (names.length > 2048)
+      return invalid('Shared document record limit exceeded (2048).');
+    const records: DocumentRecord[] = [];
+    const digests: string[] = [];
+    const recordDigests = new Map<string, string>();
+    let totalBytes = 0;
+    for (const name of names) {
+      if (/^[0-9a-f-]{36}\.json\.tmp-[0-9a-f-]{36}$/i.test(name)) continue;
+      if (!/^[0-9a-f-]{36}\.json$/i.test(name))
+        return invalid(`Unexpected file in shared records directory: ${name}`);
+      const file = join(path, name);
+      const read = await readTextFileBounded(file, DEFAULT_CATALOG_MAX_BYTES);
+      if (!read.ok)
+        return invalid(`Cannot safely read shared document record: ${name}`);
+      totalBytes += Buffer.byteLength(read.value.text);
+      if (totalBytes > DEFAULT_CATALOG_MAX_BYTES)
+        return invalid(
+          'Shared document records exceed the catalog byte budget.',
+        );
+      const parsed = documentRecordFileSchema.safeParse(
+        JSON.parse(read.value.text) as unknown,
+      );
+      if (
+        !parsed.success ||
+        `${parsed.data.record.documentId}.json` !== name ||
+        parsed.data.workspaceId !== context.config.workspaceId ||
+        parsed.data.record.visibility !== 'shareable'
+      )
+        return invalid(
+          `Invalid document identity, scope or schema in shared record: ${name}`,
+        );
+      records.push(parsed.data.record);
+      digests.push(`${name}:${read.value.digest}`);
+      recordDigests.set(parsed.data.record.documentId, read.value.digest);
+    }
+    return {
+      scope: 'shared',
+      path,
+      exists: true,
+      digest: sha256Digest(digests.join('\n')),
+      catalog: {
+        ...emptyCatalog(context, '1970-01-01T00:00:00.000Z'),
+        records,
+      },
+      diagnostics,
+      valid: true,
+      recordDigests,
+    };
+  } catch (error) {
+    return invalid(
+      `Cannot read shared document records: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
 function combineDiagnostics(
   shared: CatalogFileState,
   privateState: CatalogFileState,
@@ -305,6 +406,7 @@ export async function loadKnowledgeCatalogs(
       } else {
         records.set(record.documentId, record);
       }
+      if (record.lifecycle === 'archived') continue;
       const key = locationKey(record.location);
       const owner = locations.get(key);
       if (owner !== undefined && owner !== record.documentId) {
@@ -419,6 +521,108 @@ export async function writeCatalogFile(
     scope === 'shared'
       ? knowledgePaths(context.root).sharedCatalog
       : knowledgePaths(context.root).privateCatalog;
+  const parsed = documentCatalogSchema.safeParse(catalog);
+  if (!parsed.success || catalog.workspaceId !== context.config.workspaceId)
+    return failed(
+      diagnosticCodes.document_record_invalid,
+      'Refusing to write an invalid catalog or foreign workspace identity.',
+    );
+  if (scope === 'shared') {
+    try {
+      return await writeSharedRecords(
+        context,
+        path,
+        parsed.data,
+        expectedDigest,
+      );
+    } catch (error) {
+      return failed(
+        diagnosticCodes.fileUnreadable,
+        `Cannot commit shared document records: ${error instanceof Error ? error.message : String(error)}`,
+        {
+          nextAction:
+            'Inspect permissions and any individually committed records; rerun scan to reconcile without replacing document content.',
+        },
+      );
+    }
+  }
+  return writeCatalogBytes(
+    context,
+    path,
+    Buffer.from(`${JSON.stringify(parsed.data, null, 2)}\n`),
+    expectedDigest,
+    scope,
+  );
+}
+
+async function writeSharedRecords(
+  context: KnowledgeContext,
+  path: string,
+  catalog: DocumentCatalog,
+  expectedDigest: string | null,
+): Promise<Outcome<{ readonly path: string; readonly digest: string }>> {
+  const boundary = await ensureKnowledgePathBoundary(context.root, path);
+  if (!boundary.ok) return boundary;
+  const before = await readSharedRecords(context, path);
+  if (!before.valid || before.digest !== expectedDigest)
+    return failed(
+      diagnosticCodes.document_catalog_conflict,
+      'Shared document records changed before commit; reload before retrying.',
+    );
+  await mkdir(path, { recursive: true });
+  const previous = new Map(
+    before.catalog?.records.map((record) => [record.documentId, record]) ?? [],
+  );
+  for (const record of catalog.records) {
+    const old = previous.get(record.documentId);
+    previous.delete(record.documentId);
+    if (old && JSON.stringify(old) === JSON.stringify(record)) continue;
+    const recordPath = join(path, `${record.documentId}.json`);
+    const bytes = Buffer.from(
+      `${JSON.stringify({ schema: 'pappra/document-record-file/1', workspaceId: context.config.workspaceId, record }, null, 2)}\n`,
+    );
+    const written = await writeCatalogBytes(
+      context,
+      recordPath,
+      bytes,
+      before.recordDigests?.get(record.documentId) ?? null,
+      'shared',
+    );
+    if (!written.ok) return written;
+  }
+  for (const record of previous.values()) {
+    const file = join(path, `${record.documentId}.json`);
+    const boundary = await ensureKnowledgePathBoundary(context.root, file);
+    if (!boundary.ok) return boundary;
+    const current = await readTextFileBounded(file, DEFAULT_CATALOG_MAX_BYTES);
+    if (
+      !current.ok ||
+      JSON.stringify(
+        (JSON.parse(current.value.text) as { record: DocumentRecord }).record,
+      ) !== JSON.stringify(record)
+    )
+      return failed(
+        diagnosticCodes.document_catalog_conflict,
+        'Shared document record changed before removal.',
+      );
+    await unlink(file);
+  }
+  const after = await readSharedRecords(context, path);
+  return after.valid && after.digest !== null
+    ? succeeded({ path, digest: after.digest })
+    : failed(
+        diagnosticCodes.document_catalog_conflict,
+        'Shared catalog commit is incomplete; inspect the per-document files and retry.',
+      );
+}
+
+async function writeCatalogBytes(
+  context: KnowledgeContext,
+  path: string,
+  bytes: Buffer,
+  expectedDigest: string | null,
+  scope: CatalogScope,
+): Promise<Outcome<{ readonly path: string; readonly digest: string }>> {
   const boundary = await ensureKnowledgePathBoundary(context.root, path);
   if (!boundary.ok) return boundary;
   const current = await observePath(path);
@@ -429,22 +633,6 @@ export async function writeCatalogFile(
       { nextAction: 'Inspect the catalog path; it was not replaced.' },
     );
   }
-  if (catalog.workspaceId !== context.config.workspaceId) {
-    return failed(
-      diagnosticCodes.document_catalog_conflict,
-      'Refusing to write a catalog for a different workspace id.',
-      { nextAction: 'Inspect the workspace and catalog identity.' },
-    );
-  }
-  const parsed = documentCatalogSchema.safeParse(catalog);
-  if (!parsed.success) {
-    return failed(
-      diagnosticCodes.document_record_invalid,
-      `Refusing to write an invalid catalog: ${parsed.error.issues[0]?.message ?? 'unknown issue'}`,
-      { nextAction: 'Fix the record; no catalog bytes were written.' },
-    );
-  }
-  const bytes = Buffer.from(`${JSON.stringify(parsed.data, null, 2)}\n`);
   if (scope === 'private') {
     const prepared = await ensurePrivateState(context.root);
     if (!prepared.ok) return prepared;

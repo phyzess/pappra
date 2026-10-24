@@ -12,6 +12,8 @@ import {
 } from '../schemas/document.js';
 import { readTextFileBounded } from '../infra/fs.js';
 import { ensurePrivateState } from '../infra/private-state.js';
+import { publishPrivateLock } from '../infra/private-lock.js';
+import { captureProcessIdentity } from '../infra/process-identity.js';
 import type { KnowledgeContext } from './context.js';
 import { ensureKnowledgePathBoundary, knowledgePaths } from './paths.js';
 
@@ -56,18 +58,22 @@ export async function acquireKnowledgeLock(
     token: randomUUID(),
     operation,
     pid: process.pid,
+    ...(captureProcessIdentity() === null
+      ? {}
+      : { process_identity: captureProcessIdentity()! }),
     createdAt: new Date().toISOString(),
   };
-  let handle;
   try {
-    handle = await open(path, 'wx', 0o600);
-    await handle.writeFile(Buffer.from(`${JSON.stringify(lock, null, 2)}\n`));
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
+    await publishPrivateLock(
+      path,
+      Buffer.from(`${JSON.stringify(lock, null, 2)}\n`),
+      async () => {
+        const current = await ensureKnowledgePathBoundary(context.root, path);
+        if (!current.ok) throw new Error(current.message);
+      },
+    );
     return { ok: true, status: 'acquired', lock, path, message: null };
   } catch (error) {
-    await handle?.close().catch(() => undefined);
     const code =
       typeof error === 'object' &&
       error !== null &&

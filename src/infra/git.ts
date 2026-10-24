@@ -45,6 +45,7 @@ function sanitizedGitEnvironment(): NodeJS.ProcessEnv {
     'GIT_CEILING_DIRECTORIES',
     'GIT_CONFIG_COUNT',
     'GIT_CONFIG_PARAMETERS',
+    'GIT_EXTERNAL_DIFF',
   ]) {
     delete environment[key];
   }
@@ -262,6 +263,12 @@ export interface InspectGitRepositoryOptions {
   readonly timeoutMs?: number;
   readonly maxOutputBytes?: number;
   readonly signal?: AbortSignal;
+  /**
+   * Set to `false` when the caller derives working-tree state from its own
+   * diffs. The observation then reports `dirty: null` instead of spawning an
+   * additional `git status` scan.
+   */
+  readonly workingTreeState?: boolean;
 }
 
 function gitEvidence(ref: string, stdout: string): EvidenceRef {
@@ -405,16 +412,22 @@ export async function inspectGitRepository(
   }
 
   let dirty: boolean | null = null;
-  const statusResult = await run([
-    'status',
-    '--porcelain=v1',
-    '-z',
-    '--untracked-files=normal',
-  ]);
-  if (statusResult.ok) {
-    dirty = statusResult.value.stdout.length > 0;
+  if (options.workingTreeState === false) {
+    limitations.push('working tree state not requested');
   } else {
-    limitations.push(`working tree state unavailable: ${statusResult.message}`);
+    const statusResult = await run([
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--untracked-files=normal',
+    ]);
+    if (statusResult.ok) {
+      dirty = statusResult.value.stdout.length > 0;
+    } else {
+      limitations.push(
+        `working tree state unavailable: ${statusResult.message}`,
+      );
+    }
   }
 
   const kind: GitRepositoryKind = isBare
@@ -480,4 +493,56 @@ export async function filterGitIgnored(
     ignored.push(resolve(root, ...item.split('/')));
   }
   return succeeded(ignored);
+}
+
+export interface GitObservationScope {
+  readonly repository: (
+    root: string,
+    options?: InspectGitRepositoryOptions,
+  ) => Promise<Outcome<GitRepositoryObservation>>;
+}
+
+export interface GitObservationScopeOptions {
+  /**
+   * Default for `InspectGitRepositoryOptions.workingTreeState`; `true` keeps the
+   * `inspectGitRepository` behaviour. Callers that derive working-tree state from
+   * their own diffs opt out to save one `git status` scan per checkout.
+   */
+  readonly workingTreeState?: boolean;
+}
+
+/**
+ * Memoizes Git repository probes for exactly one operation.
+ *
+ * Repository identity (root, git dir, HEAD, branch) is immutable for the
+ * duration of a single command, so repeated inspections of the same checkout
+ * reuse the first observation instead of spawning equivalent Git processes.
+ * Working-tree state is *not* immutable: the scope therefore only lives inside
+ * one operation and must never be reused across operations or persisted. Callers
+ * that re-observe a tree after mutation (code prepare) keep using the scope for
+ * identity probes while the working-tree diff is always re-read.
+ */
+export function createGitObservationScope(
+  options: GitObservationScopeOptions = {},
+): GitObservationScope {
+  const defaultWorkingTreeState = options.workingTreeState ?? true;
+  const observations = new Map<
+    string,
+    Promise<Outcome<GitRepositoryObservation>>
+  >();
+  return {
+    repository(root, inspectOptions = {}) {
+      const workingTreeState =
+        inspectOptions.workingTreeState ?? defaultWorkingTreeState;
+      const key = JSON.stringify([resolve(root), workingTreeState]);
+      const cached = observations.get(key);
+      if (cached !== undefined) return cached;
+      const pending = inspectGitRepository(root, {
+        ...inspectOptions,
+        workingTreeState,
+      });
+      observations.set(key, pending);
+      return pending;
+    },
+  };
 }

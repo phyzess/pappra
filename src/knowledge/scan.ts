@@ -1,9 +1,11 @@
-import { discoverWorkspace } from '../workspace/discover.js';
+import { discoverDocuments } from '../workspace/documents.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { diagnosticCodes } from '../schemas/errors.js';
 import type { DocumentKind } from '../schemas/document.js';
-import { KnowledgeService } from './index.js';
+import { loadKnowledgeContext } from './context.js';
+import { loadKnowledgeCatalogs } from './catalog.js';
+import { registerDocumentBatch } from './register-batch.js';
 
 export interface DocumentScanCandidate {
   readonly path: string;
@@ -67,9 +69,26 @@ export async function scanDiscoveredDocuments(
   root: string,
   options: { readonly apply: boolean },
 ): Promise<DocumentScanFailure> {
-  const discovery = await discoverWorkspace(root);
-  const config = discovery.config;
-  const diagnostics: Diagnostic[] = [...discovery.diagnostics];
+  const loaded = await loadKnowledgeContext(root);
+  const config = loaded.context?.config ?? null;
+  const diagnostics: Diagnostic[] = [...loaded.diagnostics];
+  const discovery =
+    loaded.context === null
+      ? { documents: [], diagnostics: [], truncated: false }
+      : await discoverDocuments({
+          root: loaded.context.root,
+          config,
+          configPath: loaded.context.configPath,
+          repositories: loaded.context.repositories,
+          options: {
+            scanDepth: 64,
+            maxDocuments: 10_000,
+            maxDirectories: 10_000,
+            maxEntriesPerDirectory: 10_000,
+            gitTimeoutMs: 5000,
+          },
+        });
+  diagnostics.push(...discovery.diagnostics);
   if (discovery.truncated) {
     diagnostics.push(
       createDiagnostic({
@@ -83,7 +102,7 @@ export async function scanDiscoveredDocuments(
       }),
     );
   }
-  if (config === null) {
+  if (config === null || loaded.context === null) {
     return scanResult(
       root,
       options.apply ? 'apply' : 'plan',
@@ -97,11 +116,7 @@ export async function scanDiscoveredDocuments(
       false,
     );
   }
-  const service = new KnowledgeService(root);
-  const listed = await service.list({
-    includePrivate: true,
-    includeArchived: true,
-  });
+  const listed = await loadKnowledgeCatalogs(loaded.context);
   diagnostics.push(...listed.diagnostics);
   if (!listed.ok) {
     return scanResult(
@@ -118,14 +133,14 @@ export async function scanDiscoveredDocuments(
     );
   }
   const registered = new Set(
-    listed.records.flatMap((record) =>
+    [...listed.records.values()].flatMap((record) =>
       record.location.kind === 'workspace' ? [record.location.path] : [],
     ),
   );
   const sources = config.knowledge.sources;
   const visibility: 'private' | 'shareable' =
     config.knowledge.taskVisibility === 'shared' ? 'shareable' : 'private';
-  const candidates: DocumentScanCandidate[] = [];
+  const discoveredCandidates: DocumentScanCandidate[] = [];
   for (const document of discovery.documents ?? []) {
     const path = document.workspaceRelativePath;
     if (path === null) continue;
@@ -137,14 +152,26 @@ export async function scanDiscoveredDocuments(
       continue;
     }
     if (registered.has(path)) continue;
-    candidates.push({
+    discoveredCandidates.push({
       path,
       kind: classifyScannedDocumentKind(path),
       visibility,
     });
   }
+  const candidates = discoveredCandidates.slice(0, 300);
+  if (discoveredCandidates.length > candidates.length)
+    diagnostics.push(
+      createDiagnostic({
+        code: diagnosticCodes.discoveryLimitReached,
+        severity: 'warning',
+        message:
+          'This batch contains 300 new documents; rerun scan after applying to continue with the remaining documents.',
+        source: root,
+      }),
+    );
   const incomplete =
     discovery.truncated ||
+    discoveredCandidates.length > candidates.length ||
     diagnostics.some((entry) => entry.severity === 'error');
   const privateCommand =
     visibility === 'private' ? 'pappra docs list --include-private' : null;
@@ -177,14 +204,17 @@ export async function scanDiscoveredDocuments(
     );
   }
   const registeredNow: unknown[] = [];
-  for (const candidate of candidates) {
-    const result = await service.register({
+  const results = await registerDocumentBatch(
+    loaded.context,
+    candidates.map((candidate) => ({
       location: { kind: 'workspace', path: candidate.path },
       kind: candidate.kind,
       maturity: 'draft',
       owner: 'human',
       visibility: candidate.visibility,
-    });
+    })),
+  );
+  for (const result of results) {
     diagnostics.push(...result.diagnostics);
     if (result.ok) registeredNow.push(result.record);
   }

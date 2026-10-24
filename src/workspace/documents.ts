@@ -338,6 +338,18 @@ export async function discoverDocuments(
         }
         if (entry.isDirectory()) {
           if (depth < depthLimit) await visit(child, depth + 1);
+          else {
+            truncated = true;
+            diagnostics.push(
+              createDiagnostic({
+                code: diagnosticCodes.discoveryLimitReached,
+                severity: 'warning',
+                message: `Document directory depth limit reached: ${child}`,
+                source: child,
+                hint: 'Increase the explicit discovery depth or narrow the knowledge source.',
+              }),
+            );
+          }
           continue;
         }
         if (!entry.isFile() || !isMarkdown(child)) continue;
@@ -415,7 +427,7 @@ export async function discoverDocuments(
     if (docsObservation.kind === 'directory') {
       await scanDirectory(
         docs,
-        3,
+        Math.max(3, options.scanDepth),
         repository === null ? 'directory-scan' : 'repository-scan',
         `${declaredPrefix}:docs`,
         containmentRoot,
@@ -476,7 +488,7 @@ export async function discoverDocuments(
       } else if (resolvedObservation.kind === 'directory') {
         await scanDirectory(
           real,
-          3,
+          Math.max(3, options.scanDepth),
           'workspace-config',
           declaredBy,
           root,

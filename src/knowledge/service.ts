@@ -1,13 +1,14 @@
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
 import { diagnosticCodes } from '../schemas/errors.js';
-import type { DocumentRecord } from '../schemas/document.js';
+import type { DocumentLocation, DocumentRecord } from '../schemas/document.js';
 import type { Failure } from '../schemas/outcome.js';
 import { loadKnowledgeContext, type KnowledgeContext } from './context.js';
 import { loadKnowledgeCatalogs } from './catalog.js';
 import { inspectFreshness, findRecord, type FreshnessReport } from './refs.js';
 import { resolveKnowledgeLocation, readKnowledgeFile } from './paths.js';
 import { applyWrite, proposeWrite, registerDocument } from './write.js';
+import { relocateOrForgetDocument } from './relocate.js';
 import {
   archiveDocument,
   deleteExplicit,
@@ -139,11 +140,22 @@ function filteredDiagnostics(
   const diagnostics = [...context.diagnostics, ...catalogs.diagnostics];
   if (includePrivate) return diagnostics;
   const privatePrefix = `${context.root}/.pappra/local/knowledge`;
-  return diagnostics.filter(
+  const visible = diagnostics.filter(
     (entry) =>
       entry.source !== privatePrefix &&
       !entry.source.startsWith(`${privatePrefix}/`),
   );
+  if (!catalogs.ok && !visible.some((entry) => entry.severity === 'error'))
+    visible.push(
+      createDiagnostic({
+        code: diagnosticCodes.document_catalog_conflict,
+        severity: 'error',
+        message: 'A private knowledge catalog conflict blocks this operation.',
+        source: context.configPath,
+        hint: 'Run pappra docs list --include-private to inspect the conflict; use docs forget to remove an obsolete registration without deleting its file.',
+      }),
+    );
+  return visible;
 }
 
 export class KnowledgeService {
@@ -168,6 +180,36 @@ export class KnowledgeService {
       };
     }
     return registerDocument(loaded.context, input);
+  }
+
+  async relocate(
+    documentId: string,
+    location: DocumentLocation,
+  ): Promise<RegisterDocumentResult> {
+    const loaded = await getContext(this.root);
+    if (!loaded.ok)
+      return {
+        ok: false,
+        status: 'failed',
+        record: null,
+        diagnostics: loaded.diagnostics,
+      };
+    return relocateOrForgetDocument(loaded.context, documentId, location);
+  }
+
+  async forget(
+    documentId: string,
+    scope?: 'shared' | 'private',
+  ): Promise<RegisterDocumentResult> {
+    const loaded = await getContext(this.root);
+    if (!loaded.ok)
+      return {
+        ok: false,
+        status: 'failed',
+        record: null,
+        diagnostics: loaded.diagnostics,
+      };
+    return relocateOrForgetDocument(loaded.context, documentId, null, scope);
   }
 
   async read(documentId: string): Promise<ReadDocumentResult> {

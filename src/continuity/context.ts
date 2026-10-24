@@ -177,6 +177,8 @@ export async function snapshotRepository(
     cwd: repository.root,
     args: [
       'diff',
+      '--no-ext-diff',
+      '--no-textconv',
       '--binary',
       'HEAD',
       '--',
@@ -223,7 +225,7 @@ export async function snapshotRepository(
         continue;
       }
       let body: Buffer;
-      let entryKind: 'F' | 'L';
+      let entryKind: 'F' | 'L' | 'R';
       if (observation.kind === 'file') {
         const read = await readFileBounded(
           absolute,
@@ -243,6 +245,35 @@ export async function snapshotRepository(
         }
         body = Buffer.from(sha256Digest(target), 'utf8');
         entryKind = 'L';
+      } else if (observation.kind === 'directory') {
+        // Git reports an embedded, non-submodule checkout as one untracked
+        // directory. Capture its own Git identity, never recurse into its bytes.
+        const head = await runGit({
+          cwd: absolute,
+          args: ['rev-parse', '--show-toplevel', 'HEAD'],
+          timeoutMs: 5000,
+          maxOutputBytes: 8192,
+        });
+        const nestedStatus = await runGit({
+          cwd: absolute,
+          args: ['status', '--porcelain=v1', '-z', '--untracked-files=all'],
+          timeoutMs: 5000,
+          maxOutputBytes: 2 * 1024 * 1024,
+        });
+        if (
+          !head.ok ||
+          !nestedStatus.ok ||
+          head.value.stdout.split('\n')[0]?.replace(/\/$/, '') !==
+            absolute.replace(/\/$/, '')
+        ) {
+          captureStatus = 'partial';
+          continue;
+        }
+        body = Buffer.from(
+          sha256Digest(`${head.value.stdout}\n${nestedStatus.value.stdout}`),
+          'utf8',
+        );
+        entryKind = 'R';
       } else {
         captureStatus = 'partial';
         continue;

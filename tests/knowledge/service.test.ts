@@ -135,7 +135,7 @@ test('keeps private records out of the shared catalog and default views', async 
     assert.equal(registered.ok, true);
     assert.equal(registered.record?.visibility, 'private');
     assert.equal(
-      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      existsSync(join(root, '.pappra', 'knowledge', 'records')),
       false,
     );
     const defaultList = await service.list();
@@ -158,7 +158,7 @@ test('uses taskVisibility only as the default visibility and keeps shareable exp
     assert.equal(registered.ok, true);
     assert.equal(registered.record?.visibility, 'shareable');
     assert.equal(
-      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      existsSync(join(root, '.pappra', 'knowledge', 'records')),
       true,
     );
     assert.equal(
@@ -247,7 +247,7 @@ test('creates a new document inside newDocuments with a preview-first proposal',
     assert(proposed.proposal !== null);
     assert.equal(existsSync(join(root, 'knowledge', 'new.md')), false);
     assert.equal(
-      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      existsSync(join(root, '.pappra', 'knowledge', 'records')),
       false,
     );
     const applied = await service.applyWrite({
@@ -677,7 +677,6 @@ test('detects duplicate ids and locations across shared and private catalogs', a
     const service = new KnowledgeService(root);
     const registered = await service.register(input('docs/a.md'));
     assert(registered.record !== null);
-    const sharedPath = join(root, '.pappra', 'knowledge', 'catalog.json');
     const privatePath = join(
       root,
       '.pappra',
@@ -686,9 +685,10 @@ test('detects duplicate ids and locations across shared and private catalogs', a
       'catalog.json',
     );
     const record = registered.record;
-    const shared = JSON.parse(readFileSync(sharedPath, 'utf8')) as {
-      records: unknown[];
-      [key: string]: unknown;
+    const shared = {
+      schema: 'pappra/document-catalog/1',
+      workspaceId: baseWorkspaceConfig().workspaceId,
+      updatedAt: new Date().toISOString(),
     };
     writeFileSync(
       privatePath,
@@ -771,7 +771,7 @@ test('fails before catalog mutation when the new file cannot be created', async 
       assert.equal(applied.ok, false);
       assert.equal(existsSync(join(root, 'knowledge', 'unwritable.md')), false);
       assert.equal(
-        existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+        existsSync(join(root, '.pappra', 'knowledge', 'records')),
         false,
       );
     } finally {
@@ -852,7 +852,7 @@ test('sharing is an explicit private-to-shareable catalog move', async () => {
       1,
     );
     assert.equal(
-      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      existsSync(join(root, '.pappra', 'knowledge', 'records')),
       true,
     );
   } finally {
@@ -1014,7 +1014,7 @@ test('does not let shared records cite private sources', async () => {
       ),
     );
     assert.equal(
-      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      existsSync(join(root, '.pappra', 'knowledge', 'records')),
       false,
     );
   } finally {
@@ -1190,7 +1190,7 @@ test('preserves a same-inode user edit when exclusive creation sync fails', asyn
       ),
     );
     assert.equal(
-      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      existsSync(join(root, '.pappra', 'knowledge', 'records')),
       false,
     );
   } finally {
@@ -1228,7 +1228,7 @@ test('cleans an ordinary partial exclusive write and reports no residual', async
     assert(applied.journalPath !== null);
     assert.equal(existsSync(applied.journalPath), true);
     assert.equal(
-      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      existsSync(join(root, '.pappra', 'knowledge', 'records')),
       false,
     );
   } finally {
@@ -1320,7 +1320,7 @@ test('scan reports truncated discovery as incomplete coverage', async () => {
     'private',
   );
   try {
-    for (let index = 0; index < 205; index += 1) {
+    for (let index = 0; index < 305; index += 1) {
       writeText(join(root, 'docs', `doc-${index}.md`), `# Doc ${index}\n`);
     }
     const plan = await scanDiscoveredDocuments(root, { apply: false });
@@ -1335,7 +1335,7 @@ test('scan reports truncated discovery as incomplete coverage', async () => {
     );
     assert.equal(
       plan.diagnostics.some((entry) =>
-        entry.message.includes('truncated; scan coverage is incomplete'),
+        entry.message.includes('300 new documents'),
       ),
       true,
     );
@@ -1386,7 +1386,7 @@ test('scan refuses an invalid catalog without replacing it or registering', asyn
     assert.equal(applied.registered.length, 0);
     assert.deepEqual(readFileSync(catalogPath), before);
     assert.equal(
-      existsSync(join(root, '.pappra', 'knowledge', 'catalog.json')),
+      existsSync(join(root, '.pappra', 'knowledge', 'records')),
       false,
     );
   } finally {

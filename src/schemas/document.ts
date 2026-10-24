@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import {
+  isLocalProcessIdentity,
+  type LocalProcessIdentity,
+} from '../infra/process-identity.js';
+import {
   isPortableRelativePath,
   normalizePortableRelativePath,
 } from './paths.js';
@@ -131,6 +135,12 @@ export const documentRecordSchema = documentRecordBaseSchema.superRefine(
 
 export type DocumentRecord = z.infer<typeof documentRecordSchema>;
 
+export const documentRecordFileSchema = z.strictObject({
+  schema: z.literal('pappra/document-record-file/1'),
+  workspaceId: z.uuid(),
+  record: documentRecordSchema,
+});
+
 export const documentCatalogSchema = z.strictObject({
   schema: z.literal(DOCUMENT_CATALOG_SCHEMA),
   workspaceId: z.uuid(),
@@ -247,6 +257,9 @@ export const knowledgeLockSchema = z.strictObject({
   token: z.uuid(),
   operation: knowledgeOperationSchema,
   pid: z.number().int().positive(),
+  process_identity: z
+    .custom<LocalProcessIdentity>(isLocalProcessIdentity)
+    .optional(),
   createdAt: z.iso.datetime({ offset: true }),
 });
 

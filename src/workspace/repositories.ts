@@ -18,7 +18,8 @@ import {
 } from '../schemas/workspace.js';
 import type { MachineConfig } from '../schemas/machine.js';
 import {
-  inspectGitRepository,
+  createGitObservationScope,
+  type GitObservationScope,
   type GitRepositoryObservation,
 } from '../infra/git.js';
 import { observePath, resolveRealpath } from '../infra/fs.js';
@@ -35,6 +36,16 @@ export interface RepositoryDiscoveryInput {
   readonly machine: MachineConfig | null;
   readonly configPath: string;
   readonly options: NormalizedDiscoveryOptions;
+  /**
+   * One operation's Git probe scope. Discovery and a later identity probe of the
+   * same checkout must share it, otherwise identical repository probes are
+   * spawned twice. Callers that omit it get a scope scoped to this discovery.
+   */
+  readonly observations?: GitObservationScope;
+}
+
+function probeScope(input: RepositoryDiscoveryInput): GitObservationScope {
+  return input.observations ?? createGitObservationScope();
 }
 
 export interface RepositoryDiscoveryOutput {
@@ -260,7 +271,7 @@ async function resolveConfiguredRepository(
     return { repository: null, unresolved: unresolved(), diagnostics };
   }
 
-  const inspected = await inspectGitRepository(candidateRoot, {
+  const inspected = await probeScope(input).repository(candidateRoot, {
     timeoutMs: options.gitTimeoutMs,
   });
   if (!inspected.ok) {
@@ -313,6 +324,12 @@ export async function discoverRepositories(
   input: RepositoryDiscoveryInput,
 ): Promise<RepositoryDiscoveryOutput> {
   const { config, configPath, options, root } = input;
+  // One scope per discovery: explicit declarations, the root probe and any scan
+  // share the same immutable repository observations.
+  const decorated: RepositoryDiscoveryInput = {
+    ...input,
+    observations: input.observations ?? createGitObservationScope(),
+  };
   const diagnostics: Diagnostic[] = [];
   const repositories: DiscoveredRepository[] = [];
   const unresolved: UnresolvedRepository[] = [];
@@ -349,7 +366,7 @@ export async function discoverRepositories(
 
   if (config !== null) {
     for (const index of config.repositories.keys()) {
-      const resolved = await resolveConfiguredRepository(input, index);
+      const resolved = await resolveConfiguredRepository(decorated, index);
       diagnostics.push(...resolved.diagnostics);
       if (resolved.repository !== null) addRepository(resolved.repository);
       if (resolved.unresolved !== null) unresolved.push(resolved.unresolved);
@@ -359,7 +376,7 @@ export async function discoverRepositories(
   const rootGitEntry = await observePath(join(root, '.git'));
   if (rootGitEntry.kind === 'directory' || rootGitEntry.kind === 'file') {
     stopsAtRepositories = true;
-    const inspected = await inspectGitRepository(root, {
+    const inspected = await probeScope(decorated).repository(root, {
       timeoutMs: options.gitTimeoutMs,
     });
     if (inspected.ok) {
@@ -419,7 +436,7 @@ export async function discoverRepositories(
 
       const gitEntry = await observePath(join(directory, '.git'));
       if (gitEntry.kind === 'directory' || gitEntry.kind === 'file') {
-        const inspected = await inspectGitRepository(directory, {
+        const inspected = await probeScope(decorated).repository(directory, {
           timeoutMs: options.gitTimeoutMs,
         });
         if (inspected.ok) {
