@@ -179,10 +179,6 @@ export async function runResumeCommand(
   } else {
     printDiagnostics(output, result.diagnostics);
   }
-  return result.ok &&
-    result.packet !== null &&
-    result.packet.executionAllowed &&
-    result.packet.verificationStatus === 'current'
-    ? 0
-    : 1;
+  // Reading advisory handoff context does not acquire execution authority.
+  return result.ok && result.packet?.verificationStatus === 'current' ? 0 : 1;
 }

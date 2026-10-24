@@ -105,6 +105,7 @@ function parseOptions(args: readonly string[]) {
       watch: { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' },
       'no-runtime': { type: 'boolean' },
+      'allow-workspace-writes': { type: 'boolean' },
       reconfigure: { type: 'boolean' },
       hosts: { type: 'string' },
       'apply-host': { type: 'boolean' },
@@ -208,7 +209,7 @@ function parseOptions(args: readonly string[]) {
     };
   }
   if (command === 'docs') {
-    if (positionals.length > 3) {
+    if (positionals.length > (positionals[1] === 'relocate' ? 4 : 3)) {
       throw new Error(
         'Unknown command; docs accepts one action and one argument.',
       );
@@ -219,6 +220,7 @@ function parseOptions(args: readonly string[]) {
       command,
       docsAction: positionals[1] ?? null,
       docsArgument: positionals[2] ?? null,
+      docsTarget: positionals[3] ?? null,
       hostAction: null,
       hostSubAction: null,
       collaborationAction: null,
@@ -411,19 +413,19 @@ function hasContinuityOptions(
 const globalUsage =
   'pappra [--help | --version] [--json]\n' +
   'pappra task <pin|unpin|show> [taskId] [--auto-resume] [--json]\n' +
-  'pappra mcp [--root <dir>] [--help]\n' +
+  'pappra mcp [--root <dir>] [--allow-workspace-writes] [--help]\n' +
   'pappra onboard [--root <dir>] [--config <file>] [--hosts <list>] [--yes]\n' +
   '               [--apply-host] [--dry-run] [--print-handoff] [--json]\n' +
   'pappra init [--config <file> | --yes] [--apply] [--json] [--print-choices]\n' +
   '              [--install-runtime (--runtime-tarball <file> | --runtime-version <version>)]\n' +
   'pappra doctor [--root <path>] [--json]\n' +
   'pappra repair [--root <path>] [--runtime-version <v>] [--install-id <uuid>] [--apply] [--json]\n' +
-  'pappra docs <list|check|archive|scan> [options]\n' +
+  'pappra docs <list|check|archive|scan|relocate|forget> [options]\n' +
   'pappra checkpoint --task <id> [options] [--json]\n' +
   'pappra resume <taskId> [--session <id>] [--json]\n' +
   'pappra code <status|prepare|query> --repo <id> [options] [--json]\n' +
-  'pappra host <detect|describe|plan|install|verify> --host <name> [options] [--json]\n' +
-  'pappra runtime <install|status|verify|remove> [options] [--json]\n' +
+  'pappra host <detect|describe|probe|plan|install|verify|uninstall|bundle|mcp> --host <name> [options] [--json]\n' +
+  'pappra runtime <install|status|verify|remove|gc> [options] [--json]\n' +
   'pappra session <plan|start|status|fence|stop> --config <abs managed-pi.json> [--json]\n' +
   `${collaborationCommandLine}`;
 
@@ -441,6 +443,9 @@ export async function runCli(
           'runtime-version': { type: 'string' },
           'install-id': { type: 'string' },
           apply: { type: 'boolean' },
+          'quarantine-unowned-locks': { type: 'boolean' },
+          'reset-local': { type: 'boolean' },
+          'all-writers-stopped': { type: 'boolean' },
           json: { type: 'boolean' },
           help: { type: 'boolean', short: 'h' },
         },
@@ -469,6 +474,11 @@ export async function runCli(
             ? {}
             : { installId: parsedRepair.values['install-id'] }),
           apply: parsedRepair.values.apply === true,
+          quarantineUnownedLocks:
+            parsedRepair.values['quarantine-unowned-locks'] === true,
+          resetLocal: parsedRepair.values['reset-local'] === true,
+          allWritersStopped:
+            parsedRepair.values['all-writers-stopped'] === true,
           json: parsedRepair.values.json === true,
         },
         output,
@@ -535,6 +545,15 @@ export async function runCli(
     taskArgument,
   } = parsed;
   const json = values.json === true;
+  if (values['allow-workspace-writes'] === true && command !== 'mcp') {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--allow-workspace-writes is a trusted MCP server startup option only.',
+    );
+    return 2;
+  }
   const applyRequested = values.apply === true;
 
   if (command === 'collab' && collaborationAction === 'role-run') {
@@ -1672,7 +1691,7 @@ export async function runCli(
         output,
         json,
         'invalid_arguments',
-        'docs only accepts list/check/archive/scan, --include-private, --include-archived, --apply (scan only), --help, and --json.',
+        'docs accepts list/check/archive/scan/relocate/forget, --include-private, --include-archived, --apply, --help, and --json.',
       );
       return 2;
     }
@@ -1691,6 +1710,8 @@ export async function runCli(
         cwd: process.cwd(),
         action: docsAction,
         argument: docsArgument,
+        targetPath: 'docsTarget' in parsed ? parsed.docsTarget : null,
+        scope: values.scope ?? null,
         json,
         includePrivate: values['include-private'] === true,
         includeArchived: values['include-archived'] === true,
@@ -1824,7 +1845,7 @@ export async function runCli(
         output,
         json,
         'invalid_arguments',
-        'mcp accepts only --root, --help, and --json.',
+        'mcp accepts --root, --allow-workspace-writes, --help, and --json.',
       );
       return 2;
     }
@@ -1848,7 +1869,12 @@ export async function runCli(
       return 2;
     }
     return runMcpCommand(
-      { cwd: process.cwd(), root: values.root ?? null, json },
+      {
+        cwd: process.cwd(),
+        root: values.root ?? null,
+        json,
+        allowWorkspaceWrites: values['allow-workspace-writes'] === true,
+      },
       output,
     );
   }
@@ -2000,7 +2026,7 @@ export async function runCli(
         output,
         json,
         'invalid_arguments',
-        'runtime accepts only --from, --tarball, --version, --apply, --bind, --force, --help, and --json.',
+        'runtime accepts only --from, --tarball, --runtime-version, --apply, --bind, --force, --help, and --json.',
       );
       return 2;
     }
@@ -2008,7 +2034,8 @@ export async function runCli(
       runtimeAction === 'install' ||
       runtimeAction === 'status' ||
       runtimeAction === 'verify' ||
-      runtimeAction === 'remove'
+      runtimeAction === 'remove' ||
+      runtimeAction === 'gc'
         ? runtimeAction
         : null;
     return runRuntimeCommand(
@@ -2271,6 +2298,7 @@ export async function runCli(
       'describe',
       'plan',
       'install',
+      'uninstall',
       'verify',
       'bundle',
       'mcp',
@@ -2311,7 +2339,10 @@ export async function runCli(
       values['max-bytes'] !== undefined ||
       values.rebuild === true ||
       hasContinuityOptions(values) ||
-      (values.apply === true && action !== 'install' && action !== 'mcp') ||
+      (values.apply === true &&
+        action !== 'install' &&
+        action !== 'uninstall' &&
+        action !== 'mcp') ||
       (values.mode !== undefined && action !== 'install') ||
       (values.marketplace === true && action !== 'bundle') ||
       (values['bootstrap-config'] !== undefined &&
@@ -2337,6 +2368,7 @@ export async function runCli(
       (values.scope !== undefined &&
         action !== 'plan' &&
         action !== 'install' &&
+        action !== 'uninstall' &&
         action !== 'verify') ||
       (values['host-root'] !== undefined && action === null) ||
       (values['host-version'] !== undefined && action === null) ||
@@ -2358,7 +2390,7 @@ export async function runCli(
         output,
         json,
         'invalid_arguments',
-        'host requires detect/describe/plan/install/verify/bundle, --host, and action-compatible options.',
+        'host requires detect/describe/probe/plan/install/verify/uninstall/bundle/mcp, --host, and action-compatible options.',
       );
       return 2;
     }
@@ -2417,11 +2449,11 @@ export async function runCli(
   if (values.help) {
     if (json) {
       output.stdout(
-        `${JSON.stringify({ ...info, usage: globalUsage, commands: ['init', 'doctor', 'docs', 'checkpoint', 'resume', 'code', 'host', 'collab', 'session'] })}\n`,
+        `${JSON.stringify({ ...info, usage: globalUsage, commands: ['init', 'onboard', 'doctor', 'repair', 'docs', 'checkpoint', 'resume', 'code', 'host', 'runtime', 'task', 'mcp', 'collab', 'session'] })}\n`,
       );
     } else {
       output.stdout(
-        `${info.name} ${info.version}\n${info.description}\n\nUsage:\n  ${globalUsage.replaceAll('\n', '\n  ')}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n      --json     Output JSON\n\nCommands:\n  init           Plan workspace initialization\n  doctor         Read-only workspace and installation diagnostics\n  docs           List, check, and archive registered documents\n`,
+        `${info.name} ${info.version}\n${info.description}\n\nUsage:\n  ${globalUsage.replaceAll('\n', '\n  ')}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n      --json     Output JSON\n\nCommands:\n  init           Plan workspace initialization\n  onboard        Discover and connect supported hosts\n  doctor         Read-only workspace and installation diagnostics\n  repair         Inspect and repair interrupted state\n  docs           Scan, relocate, forget and inspect knowledge\n  runtime        Install, verify and remove durable runtimes\n  task           Select a private task and auto-resume preference\n  mcp            Serve workspace tools over stdio\n`,
       );
       output.stdout(
         '  checkpoint     Save a private task checkpoint\n  resume         Read a bounded recovery packet without starting an agent\n  code           Inspect or prepare selected code intelligence\n  host           Detect, plan, install, or verify a selected host integration\n  collab         Prepare, run, query, message, preflight, state, recovery and bindings\n  session        Launch and control an owned visible native Pi session\n',
@@ -2431,7 +2463,7 @@ export async function runCli(
   }
   if (json) {
     output.stdout(
-      `${JSON.stringify({ ...info, usage: globalUsage, commands: ['init', 'doctor', 'docs', 'checkpoint', 'resume', 'code', 'host', 'collab', 'session'] })}\n`,
+      `${JSON.stringify({ ...info, usage: globalUsage, commands: ['init', 'onboard', 'doctor', 'repair', 'docs', 'checkpoint', 'resume', 'code', 'host', 'runtime', 'task', 'mcp', 'collab', 'session'] })}\n`,
     );
   } else {
     output.stdout(

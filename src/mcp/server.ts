@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import path from 'node:path';
 import { discoverWorkspace } from '../workspace/discover.js';
 import {
   inspectMachineConfig,
@@ -13,14 +14,25 @@ import { CodeIntelligenceService } from '../code/index.js';
 import { HOST_SUPPORT } from '../hosts/integration/support.js';
 import { getPackageInfo } from '../package-info.js';
 import { scanDiscoveredDocuments } from '../knowledge/scan.js';
-import { ensureDefaultRuntime } from '../app/init.js';
 import { prepareCollaboration } from '../app/collaboration.js';
 import { collaborationGoalSchema } from '../schemas/collaboration.js';
+import { canonicalizeTarget } from '../collab/canonical.js';
+import { isPathInside } from '../schemas/paths.js';
 
 export const MCP_SERVER_NAME = 'pappra';
 
 export interface PappraMcpServerOptions {
   readonly root: string;
+  /** Trusted server-launch policy, never accepted from tool arguments. */
+  readonly allowWorkspaceWrites?: boolean;
+}
+
+function cliRequired(command: string): ToolPayload {
+  return {
+    ok: false,
+    status: 'cli_required',
+    message: `${command} requires an authorized CLI invocation. A tool-supplied apply flag is not user approval.`,
+  };
 }
 
 interface ToolPayload {
@@ -57,12 +69,13 @@ async function errorResult(
 
 /**
  * Builds the stdio MCP server for one workspace. Tools are read-only here; write
- * operations are added separately and must stay behind apply/confirm gates.
+ * operations require a trusted launch policy; tool flags only select preview/apply.
  */
 export function createPappraMcpServer(
   options: PappraMcpServerOptions,
 ): McpServer {
   const root = options.root;
+  const allowWorkspaceWrites = options.allowWorkspaceWrites === true;
   const server = new McpServer({
     name: MCP_SERVER_NAME,
     version: getPackageInfo().version,
@@ -301,7 +314,7 @@ export function createPappraMcpServer(
     {
       title: 'Write a task checkpoint',
       description:
-        'Writes an advisory checkpoint for handoff. Requires apply: true; a checkpoint is context, not permission to execute.',
+        'Writes an advisory checkpoint only when trusted server startup enables workspace writes. apply selects persistence and never grants authorization.',
       inputSchema: {
         task: z.string().min(1).max(256),
         objective: z.string().min(1).max(4000),
@@ -318,16 +331,17 @@ export function createPappraMcpServer(
         nativeSession: z.string().min(1).max(256).optional(),
         apply: z.boolean(),
       },
-      annotations: { readOnlyHint: false },
+      annotations: { readOnlyHint: !allowWorkspaceWrites },
     },
     async (args) =>
       errorResult(async () => {
+        if (!allowWorkspaceWrites) return cliRequired('pappra checkpoint');
         if (args.apply !== true) {
           return {
             ok: false,
-            status: 'confirmation_required',
+            status: 'preview',
             message:
-              'checkpoint writes state; call again with apply: true after the user agrees.',
+              'Preview only. The trusted host has enabled workspace writes; apply selects persistence, not authorization.',
           };
         }
         const nativeRefs =
@@ -390,12 +404,14 @@ export function createPappraMcpServer(
     {
       title: 'Scan knowledge sources',
       description:
-        'Registers documents discovered under the configured knowledge sources. Without apply it only reports candidates.',
+        'Previews discovered knowledge documents. Applying requires trusted server startup workspace-write policy; tool flags do not grant it.',
       inputSchema: { apply: z.boolean().optional() },
-      annotations: { readOnlyHint: false },
+      annotations: { readOnlyHint: !allowWorkspaceWrites },
     },
     async (args) =>
       errorResult(async () => {
+        if (args.apply === true && !allowWorkspaceWrites)
+          return cliRequired('pappra docs scan --apply');
         const result = await scanDiscoveredDocuments(root, {
           apply: args.apply === true,
         });
@@ -408,21 +424,23 @@ export function createPappraMcpServer(
     {
       title: 'Prepare a repository code index',
       description:
-        'Registers the selected repository index and optionally runs the external engine. Without apply it only reports the plan.',
+        'Previews repository index preparation. Engine execution requires an authorized CLI command.',
       inputSchema: {
         repo: z.string().min(1).max(128),
         apply: z.boolean().optional(),
         rebuild: z.boolean().optional(),
       },
-      annotations: { readOnlyHint: false },
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       errorResult(async () => {
+        if (args.apply === true)
+          return cliRequired('pappra code prepare --apply');
         const service = new CodeIntelligenceService(root);
         const result = await service.prepare({
           root,
           repositoryId: args.repo,
-          apply: args.apply === true,
+          apply: false,
           rebuild: args.rebuild === true,
         });
         return {
@@ -441,33 +459,21 @@ export function createPappraMcpServer(
     {
       title: 'Install the durable runtime',
       description:
-        'Installs and binds a durable runtime copy. Requires apply: true; only the running package is allowed. Other sources require the user to run the CLI.',
+        'Reports CLI guidance for runtime installation; MCP never installs or executes package code. Only from:self is accepted.',
       inputSchema: z.strictObject({
         from: z.literal('self').optional(),
         apply: z.boolean(),
       }),
-      annotations: { readOnlyHint: false },
+      annotations: { readOnlyHint: true },
     },
     async (args) =>
       errorResult(async () => {
         const from = args.from ?? 'self';
         const version = getPackageInfo().version;
-        if (args.apply !== true) {
-          return {
-            ok: false,
-            status: 'confirmation_required',
-            message:
-              'runtime_install writes a durable copy and machine.json; call again with apply: true.',
-            version,
-            from,
-          };
-        }
-        const result = await ensureDefaultRuntime(root, version);
         return {
-          ok: result.ok && result.completion,
-          completion: result.completion,
-          runtime: result.runtime,
-          diagnostics: result.diagnostics,
+          ...cliRequired('pappra runtime install --from self --apply'),
+          version,
+          from,
         };
       }),
   );
@@ -482,10 +488,36 @@ export function createPappraMcpServer(
         domainRoot: z.string().min(1).max(4096),
         goal: collaborationGoalSchema,
       }),
-      annotations: { readOnlyHint: false },
+      annotations: { readOnlyHint: !allowWorkspaceWrites },
     },
     async (args) =>
       errorResult(async () => {
+        if (!allowWorkspaceWrites) return cliRequired('pappra collab prepare');
+        const workspace = canonicalizeTarget(path.resolve(root)).path;
+        const privateDomain = path.join(
+          workspace,
+          '.pappra',
+          'local',
+          'collaboration',
+        );
+        const domain = canonicalizeTarget(path.resolve(args.domainRoot)).path;
+        if (
+          !isPathInside(privateDomain, domain) ||
+          !isPathInside(
+            workspace,
+            canonicalizeTarget(args.goal.assignee.cwd).path,
+          ) ||
+          args.goal.resources.some(
+            (resource) =>
+              !isPathInside(workspace, canonicalizeTarget(resource.path).path),
+          )
+        )
+          return {
+            ok: false,
+            status: 'scope_refused',
+            message:
+              'MCP preparation is limited to a private workspace collaboration domain and workspace-local resources; use the authorized CLI for other scopes.',
+          };
         const result = await prepareCollaboration(args.goal, {
           domainRoot: args.domainRoot,
         });
@@ -567,8 +599,11 @@ export function createPappraMcpServer(
   return server;
 }
 
-export async function runMcpServer(root: string): Promise<void> {
-  const server = createPappraMcpServer({ root });
+export async function runMcpServer(
+  root: string,
+  allowWorkspaceWrites = false,
+): Promise<void> {
+  const server = createPappraMcpServer({ root, allowWorkspaceWrites });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

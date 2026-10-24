@@ -7,6 +7,7 @@ import {
   docsCheckReportSchema,
   docsListReportSchema,
   type DocumentRecord,
+  documentLocationSchema,
 } from '../../schemas/document.js';
 import {
   KnowledgeService,
@@ -16,11 +17,13 @@ import {
 import type { CliOutput } from '../output.js';
 
 export const docsUsage =
-  'pappra docs <list|check|archive|scan> [options]\n' +
+  'pappra docs <list|check|archive|scan|relocate|forget> [options]\n' +
   '  list   [--include-private] [--include-archived] [--json]\n' +
   '  check  [--include-private] [--json]\n' +
   '  archive <documentId> [--json]\n' +
   '  scan   [--apply] [--json]\n\n' +
+  '  relocate <documentId> <workspace-relative-path> [--apply] [--json]\n' +
+  '  forget <documentId> [--scope private|shared] [--apply] [--json]\n\n' +
   'scan registers existing documents discovered under knowledge.sources; newDocuments is\n' +
   'only the destination for future authored documents. Without --apply scan only reports\n' +
   'candidates.';
@@ -29,6 +32,8 @@ export interface DocsCommandOptions {
   readonly cwd: string;
   readonly action: string | null;
   readonly argument: string | null;
+  readonly targetPath?: string | null;
+  readonly scope?: string | null;
   readonly json: boolean;
   readonly includePrivate: boolean;
   readonly includeArchived: boolean;
@@ -142,7 +147,7 @@ export async function runDocsCommand(
     if (options.json) {
       output.stdout(
         `${JSON.stringify({
-          commands: ['list', 'check', 'archive', 'scan'],
+          commands: ['list', 'check', 'archive', 'scan', 'relocate', 'forget'],
           usage: docsUsage,
         })}\n`,
       );
@@ -151,23 +156,44 @@ export async function runDocsCommand(
     }
     return 0;
   }
+  if (
+    options.scope !== undefined &&
+    options.scope !== null &&
+    (options.action !== 'forget' ||
+      !['private', 'shared'].includes(options.scope))
+  )
+    return invalidArguments(
+      output,
+      options.json,
+      'Only docs forget accepts --scope private|shared.',
+    );
   const resolution = await resolveWorkspaceRoot({ startPath: options.cwd });
   const serviceRoot = resolution.root ?? options.cwd;
-  if (!['list', 'check', 'archive', 'scan'].includes(options.action)) {
+  if (
+    !['list', 'check', 'archive', 'scan', 'relocate', 'forget'].includes(
+      options.action,
+    )
+  ) {
     return invalidArguments(
       output,
       options.json,
       `unknown docs action: ${options.action}`,
     );
   }
-  if (options.action === 'archive' && options.argument === null) {
+  if (
+    ['archive', 'relocate', 'forget'].includes(options.action) &&
+    options.argument === null
+  ) {
     return invalidArguments(
       output,
       options.json,
-      'docs archive requires a documentId',
+      `docs ${options.action} requires a documentId`,
     );
   }
-  if (options.action !== 'archive' && options.argument !== null) {
+  if (
+    !['archive', 'relocate', 'forget'].includes(options.action) &&
+    options.argument !== null
+  ) {
     return invalidArguments(
       output,
       options.json,
@@ -177,11 +203,62 @@ export async function runDocsCommand(
   if (options.action === 'scan') {
     return runDocsScan(options, output, serviceRoot);
   }
+  if (
+    (options.action === 'relocate' || options.action === 'forget') &&
+    options.argument !== null
+  ) {
+    const location =
+      options.action === 'relocate'
+        ? documentLocationSchema.safeParse({
+            kind: 'workspace',
+            path: options.targetPath,
+          })
+        : null;
+    if (location && !location.success)
+      return invalidArguments(
+        output,
+        options.json,
+        'docs relocate requires a normalized workspace-relative target path.',
+      );
+    if (!options.apply) {
+      const plan = {
+        schema: 'pappra/docs-metadata-plan/1',
+        ok: true,
+        action: options.action,
+        documentId: options.argument,
+        scope: options.scope ?? null,
+        location: location?.success ? location.data : null,
+        applied: false,
+      };
+      output.stdout(
+        options.json
+          ? `${JSON.stringify(plan)}\n`
+          : `Plan only: ${options.action} ${options.argument}; document content is preserved. Rerun with --apply.\n`,
+      );
+      return 0;
+    }
+    const service = new KnowledgeService(serviceRoot);
+    const result = location?.success
+      ? await service.relocate(options.argument, location.data)
+      : await service.forget(
+          options.argument,
+          options.scope === 'private' || options.scope === 'shared'
+            ? options.scope
+            : undefined,
+        );
+    output.stdout(
+      options.json
+        ? `${JSON.stringify({ schema: 'pappra/docs-metadata-result/1', action: options.action, ...result })}\n`
+        : `${options.action}: ${result.ok ? 'applied' : result.status}\n`,
+    );
+    if (!options.json) printDiagnostics(output, result.diagnostics);
+    return result.ok ? 0 : 1;
+  }
   if (options.apply) {
     return invalidArguments(
       output,
       options.json,
-      'only docs scan accepts --apply',
+      'only docs scan, relocate and forget accept --apply',
     );
   }
   if (options.action === 'archive' && options.argument !== null) {

@@ -24,8 +24,8 @@ import {
 import type { Assignment, CapabilityCard } from '../../src/collab/contracts.js';
 import { preflight } from '../../src/collab/preflight.js';
 
-async function connect(root: string) {
-  const server = createPappraMcpServer({ root });
+async function connect(root: string, allowWorkspaceWrites = true) {
+  const server = createPappraMcpServer({ root, allowWorkspaceWrites });
   const client = new Client({ name: 'pappra-test', version: '0.0.0' });
   const [clientTransport, serverTransport] =
     InMemoryTransport.createLinkedPair();
@@ -96,6 +96,8 @@ test('mcp lists the read-only tool set and answers workspace_status', async () =
         'code_query',
         'runtime_status',
         'collab_start',
+        'runtime_install',
+        'code_prepare',
       ]);
       for (const tool of tools.tools) {
         assert.equal(
@@ -172,6 +174,97 @@ test('mcp tools report typed failures instead of throwing', async () => {
   }
 });
 
+test('tool apply flags cannot enable the default read-only server policy', async () => {
+  const root = makeTempDir('mcp-server-policy');
+  try {
+    const { client, server } = await connect(root, false);
+    try {
+      for (const [name, arguments_] of [
+        [
+          'checkpoint',
+          { task: 'task', objective: 'untrusted apply', apply: true },
+        ],
+        ['docs_scan', { apply: true }],
+        ['code_prepare', { repo: 'app', apply: true }],
+        ['runtime_install', { from: 'self', apply: true }],
+        [
+          'collab_prepare',
+          {
+            domainRoot: join(root, 'outside-domain'),
+            goal: explicitGoal(root),
+          },
+        ],
+      ] as const) {
+        const result = textPayload(
+          await client.callTool({ name, arguments: arguments_ }),
+        );
+        assert.equal(result.status, 'cli_required', name);
+      }
+      const tools = await client.listTools();
+      assert(
+        tools.tools.every((tool) => tool.annotations?.readOnlyHint === true),
+      );
+      assert.equal(existsSync(join(root, '.pappra')), false);
+      assert.equal(existsSync(join(root, 'outside-domain')), false);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('trusted workspace-write policy never allows arbitrary collaboration paths or package execution', async () => {
+  const root = makeTempDir('mcp-write-scope');
+  const outside = makeTempDir('mcp-outside-scope');
+  try {
+    createRepository(root);
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    writeMachineConfig(root, baseMachineConfig(root));
+    const { client, server } = await connect(root, true);
+    try {
+      const refused = textPayload(
+        await client.callTool({
+          name: 'collab_prepare',
+          arguments: {
+            domainRoot: join(outside, 'domain'),
+            goal: explicitGoal(root),
+          },
+        }),
+      );
+      assert.equal(refused.status, 'scope_refused');
+      assert.equal(existsSync(join(outside, 'domain')), false);
+      for (const [name, args] of [
+        ['runtime_install', { from: 'self', apply: true }],
+        ['code_prepare', { repo: 'app', apply: true }],
+      ] as const) {
+        assert.equal(
+          textPayload(await client.callTool({ name, arguments: args })).status,
+          'cli_required',
+        );
+      }
+      const outsideGoal = explicitGoal(root, { cwd: outside });
+      assert.equal(
+        textPayload(
+          await client.callTool({
+            name: 'collab_prepare',
+            arguments: { domainRoot: mcpDomain(root), goal: outsideGoal },
+          }),
+        ).status,
+        'scope_refused',
+      );
+      assert.equal(domainHasTasks(root), false);
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    cleanup(root);
+    cleanup(outside);
+  }
+});
+
 test('code_query exposes text results and output budget reasons over MCP', async () => {
   const root = makeTempDir('mcp-code-query');
   try {
@@ -237,7 +330,7 @@ test('mcp write tools require apply and then persist', async () => {
           arguments: { task: 'mcp-task', objective: 'via mcp', apply: false },
         }),
       );
-      assert.equal(refused.status, 'confirmation_required');
+      assert.equal(refused.status, 'preview');
 
       const saved = textPayload(
         await client.callTool({
@@ -411,8 +504,12 @@ function explicitGoal(
   return goal;
 }
 
+function mcpDomain(root: string): string {
+  return join(root, '.pappra', 'local', 'collaboration', 'domain');
+}
+
 function domainHasTasks(root: string): boolean {
-  return existsSync(join(root, 'domain', 'tasks'));
+  return existsSync(join(mcpDomain(root), 'tasks'));
 }
 
 test('runtime_install rejects arbitrary sources and version overrides before mutation', async () => {
@@ -441,7 +538,7 @@ test('runtime_install rejects arbitrary sources and version overrides before mut
       }),
     );
     assert.equal(preview.from, 'self');
-    assert.equal(preview.status, 'confirmation_required');
+    assert.equal(preview.status, 'cli_required');
   } finally {
     await client.close();
     await server.close();
@@ -473,7 +570,7 @@ test('collab_prepare builds explicit goal bundles without synthesizing cards', a
         await client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             goal: explicitGoal(root, { roles: ['reviewer', 'implementer'] }),
           },
         }),
@@ -561,7 +658,7 @@ test('collab_prepare refuses legacy and unknown input before any write', async (
         client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             objective: 'via mcp',
             task: 'mcp-goal',
             acceptance: ['prepared references verify'],
@@ -578,7 +675,7 @@ test('collab_prepare refuses legacy and unknown input before any write', async (
         client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             goal: explicitGoal(root),
             objective: 'legacy leftover',
           },
@@ -589,7 +686,7 @@ test('collab_prepare refuses legacy and unknown input before any write', async (
         client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             goal: { ...explicitGoal(root), extra: true },
           },
         }),
@@ -598,7 +695,7 @@ test('collab_prepare refuses legacy and unknown input before any write', async (
       const missing = await refusalText(
         client.callTool({
           name: 'collab_prepare',
-          arguments: { domainRoot: join(root, 'domain') },
+          arguments: { domainRoot: join(mcpDomain(root)) },
         }),
       );
       assert.match(missing, /expected object, received undefined at goal/);
@@ -632,7 +729,7 @@ test('collab_prepare maps supported runners and refuses invalid metadata without
           await client.callTool({
             name: 'collab_prepare',
             arguments: {
-              domainRoot: join(root, 'domain'),
+              domainRoot: join(mcpDomain(root)),
               goal: explicitGoal(root, { harness, taskId: `mcp-${harness}` }),
             },
           }),
@@ -651,7 +748,7 @@ test('collab_prepare maps supported runners and refuses invalid metadata without
       }
 
       const tasksBeforeInvalid = readdirSync(
-        join(root, 'domain', 'tasks'),
+        join(mcpDomain(root), 'tasks'),
       ).sort();
       for (const [index, harness] of [
         'gemini',
@@ -663,7 +760,7 @@ test('collab_prepare maps supported runners and refuses invalid metadata without
           await client.callTool({
             name: 'collab_prepare',
             arguments: {
-              domainRoot: join(root, 'domain'),
+              domainRoot: join(mcpDomain(root)),
               goal: explicitGoal(root, {
                 harness,
                 taskId: `mcp-unsupported-${index}`,
@@ -675,14 +772,14 @@ test('collab_prepare maps supported runners and refuses invalid metadata without
         assert.equal(unsupported.code, 'assignee_harness_unsupported', harness);
       }
       assert.deepEqual(
-        readdirSync(join(root, 'domain', 'tasks')).sort(),
+        readdirSync(join(mcpDomain(root), 'tasks')).sort(),
         tasksBeforeInvalid,
       );
       const missingCwd = textPayload(
         await client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             goal: explicitGoal(root, {
               cwd: join(root, 'missing-directory'),
               taskId: 'mcp-missing-cwd',
@@ -697,7 +794,7 @@ test('collab_prepare maps supported runners and refuses invalid metadata without
         await client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             goal: explicitGoal(root, {
               cwd: join(root, 'slice.txt'),
               taskId: 'mcp-file-cwd',
@@ -712,7 +809,7 @@ test('collab_prepare maps supported runners and refuses invalid metadata without
         client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             goal: explicitGoal(root, {
               roles: ['implementer', 'implementer'],
               taskId: 'mcp-duplicate-roles',
@@ -725,14 +822,14 @@ test('collab_prepare maps supported runners and refuses invalid metadata without
         client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             goal: explicitGoal(root, { roles: [], taskId: 'mcp-empty-roles' }),
           },
         }),
       );
       assert.match(emptyRoles, /goal\.roles/);
       assert.equal(domainHasTasks(root), true);
-      const tasks = readdirSync(join(root, 'domain', 'tasks'));
+      const tasks = readdirSync(join(mcpDomain(root), 'tasks'));
       assert.deepEqual(tasks.sort(), ['mcp-claude', 'mcp-codex', 'mcp-pi']);
     } finally {
       await client.close();
@@ -757,7 +854,7 @@ test('collab_start refuses a real controller on a foreign harness without launch
         await client.callTool({
           name: 'collab_prepare',
           arguments: {
-            domainRoot: join(root, 'domain'),
+            domainRoot: join(mcpDomain(root)),
             goal: explicitGoal(root, { harness: 'codex' }),
           },
         }),

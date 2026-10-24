@@ -51,12 +51,17 @@ test('help advertises the implemented init command', () => {
   assert('commands' in value);
   assert.deepEqual(value.commands, [
     'init',
+    'onboard',
     'doctor',
+    'repair',
     'docs',
     'checkpoint',
     'resume',
     'code',
     'host',
+    'runtime',
+    'task',
+    'mcp',
     'collab',
     'session',
   ]);
@@ -87,7 +92,8 @@ test('help exposes the full collaboration family and truthful MCP tool gates', (
   const mcp = invoke(['mcp', '--help']);
   assert.equal(mcp.status, 0, mcp.stderr);
   assert.match(mcp.stdout, /Read-only tools:/);
-  assert.match(mcp.stdout, /Gated write tools:/);
+  assert.match(mcp.stdout, /--allow-workspace-writes/);
+  assert.match(mcp.stdout, /trusted host/i);
   for (const tool of [
     'checkpoint',
     'docs_scan',
@@ -97,7 +103,11 @@ test('help exposes the full collaboration family and truthful MCP tool gates', (
     'collab_start',
   ])
     assert.match(mcp.stdout, new RegExp(tool), tool);
-  assert.match(mcp.stdout, /apply: true/);
+  assert.match(mcp.stdout, /apply only selects preview versus execution/);
+  assert.match(
+    mcp.stdout,
+    /runtime_install and code_prepare execution always require the authorized CLI/,
+  );
   assert.match(mcp.stdout, /confirm: true/);
   assert.doesNotMatch(mcp.stdout, /exposes\nread-only tools \(/);
 });
