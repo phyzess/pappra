@@ -16,7 +16,7 @@
   A plain `--apply` verifies/reuses a runtime for the workspace target or
   installs the current package and binds it. `--no-runtime` suppresses runtime
   verification, installation and binding: when an action is still required the
-  result is `status:"external-actions-pending"` with a nonzero exit, while an
+  result is `status:"external-actions-pending"` with exit 0 for configuration-only work, while an
   already bound matching runtime with no file changes yields apply status
   `no-changes` and exit 0 with `initComplete:false`.
   A TTY wizard opens only when selections are needed; `--config` without
@@ -28,6 +28,9 @@
   for future authored documents and is not created by init.
 - `pappra runtime <install|status|verify|remove>` manages the durable runtime
   copy. `install --apply` defaults to `--from self`; writes require `--apply`.
+- `pappra repair` previews interrupted install journals; `--apply` explicitly recovers
+  proven workspace effects or a selected `--runtime-version`. Live/unknown owners and
+  changed files remain protected.
 - `pappra doctor` is passive: it does not install hooks, start hosts, or fix
   state. `runtime verify` is the active runtime check.
 - `pappra checkpoint` writes a task checkpoint; `pappra resume` reads a stored
@@ -47,7 +50,9 @@
   `{domainRoot, goal}`, not the retired flat objective fields, and synthesizes no card.
   Preparation maps `pi`/`codex`/`claude` to `pi-cli`/`codex-exec`/`claude-cli`;
   real controllers remain `fixture|pi-rpc` with `pi-rpc` only for Pi. `collab_start`
-  still requires confirmation and runtime evidence.
+  returns `cli_required` and never launches, even with `confirm:true`. The user must
+  launch through the CLI with runtime evidence. MCP `runtime_install` only copies the
+  running package; tarball and registry sources require the CLI.
 - `pappra collab message <send|list|read|notify> --task-root <dir>` persists
   protocol messages, reads them back, and sends one explicit pointer-only Herdr
   notification. `send` and `notify` are plan-only without `--apply`; notification

@@ -20,6 +20,11 @@ local identity fails closed.
 
 ## Optional capabilities
 
+Collaboration (`collab*`, `collaboration`) and managed Pi entrypoints (`hosts/pi-*`)
+are experimental. Their wire schemas remain validated, but their exported TypeScript
+interfaces and host-version pins may change before 0.1.0. Store recovery primitives
+such as `breakLock` are low-level operations, not general application APIs.
+
 - `pappra/code`: selected-repository status, explicit preparation and bounded
   query. Text/structure fallback does not require a code-graph service.
 - `pappra/hosts`: optional host detection, hook adapters and lifecycle mappings.

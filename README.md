@@ -42,7 +42,7 @@ runtime may still be reused; when none is reusable the configuration is applied 
 setup fails afterwards with a nonzero exit. Pass `--no-runtime` to suppress runtime verification,
 installation and binding for that invocation. When a runtime action is still required afterwards,
 the configuration is applied, that action stays pending, and the result is `ok:true` with
-`status:"external-actions-pending"` and a nonzero exit rather than a claim that a runtime exists.
+`status:"external-actions-pending"` and exit `0` for the requested configuration-only work.
 A workspace that already has a bound runtime for its target and needs no file changes can instead
 report `ok:true`, apply status `no-changes` and exit `0`; `initComplete` then stays `false`,
 because that invocation verified no runtime.
@@ -59,6 +59,29 @@ npx @phyzess/pappra@beta runtime install --apply [--from self|tarball|registry]
 npx @phyzess/pappra@beta runtime status --json
 npx @phyzess/pappra@beta runtime verify --json
 ```
+
+Runtime content hashes now use UTF-8 byte ordering, independent of system locale.
+Older runtime manifests created with locale-based ordering may require an explicit
+reinstall after upgrading. Verification never rewrites a manifest to adopt an
+unexpected digest. Runtime removal refuses unknown cross-workspace references;
+`--force` is an explicit override after checking other workspaces.
+
+Interrupted installations can be inspected and recovered explicitly:
+
+```sh
+pappra repair --root /path/to/workspace --json
+pappra repair --root /path/to/workspace --apply
+pappra repair --runtime-version 0.1.0 --json
+pappra repair --runtime-version 0.1.0 --apply
+```
+
+`repair` previews incomplete journals and remaining install locks. Add `--install-id <uuid>`
+to select one incomplete journal. `--apply` reclaims a lock only when its recorded owner is
+provably dead, rolls back files with verified ownership, and restores journaled reconfiguration
+backups. For runtimes it removes only journal-owned staging, or finalizes an already published
+copy whose manifest and contents still match, without executing the runtime. Live or unknown
+owners, modified files, invalid journals and unproven backup paths are preserved and reported.
+Reconfiguration holds the same workspace lock and journal through replacements and creations.
 
 A workspace that already has a valid `.pappra/workspace.json` is never rewritten silently: a
 plain `init` reuses it and only plans missing local state. `--reconfigure` is the explicit opt-in
@@ -101,8 +124,8 @@ confirmation when configuration writes are planned; declining exits `130` with n
 read-only plan performs no runtime work and asks nothing. `--print-choices` prints the
 `pappra/init-choices/1` document and writes nothing, `--config` reads that document,
 `--yes`/`--no-interactive` derive selections non-interactively, and `--json` never prompts.
-Exit `0` means the requested work completed; a nonzero exit after a successful configuration
-write means a later step is still pending (for example a deferred required runtime action).
+Exit `0` means the requested work completed. `--no-runtime` deliberately defers runtime work
+and keeps `initComplete:false`; a failure in a requested runtime step returns nonzero.
 
 Optional examples have prerequisites rather than generated files: code-graph and
 host commands require the selected external CLI/support, and collaboration
