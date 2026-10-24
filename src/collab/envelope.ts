@@ -3,6 +3,8 @@ import { errorCode, parseJson, object, text, isMessage } from './validation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createNonce, digestText, messagesDir, nowIso } from './store.js';
+import { canonicalJson } from '../infra/json.js';
+export { canonicalJson } from '../infra/json.js';
 
 // Message envelopes and their idempotency rules.
 //
@@ -133,17 +135,6 @@ export function validateEnvelope(message: unknown): Message {
   }
   // Unknown extension fields are tolerated on purpose; unknown semantics are not inferred.
   return message;
-}
-
-/** Stable JSON with sorted object keys, used for content-identity digests. */
-export function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object')
-    return JSON.stringify(value ?? null);
-  if (Array.isArray(value))
-    return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
-  if (!object(value)) throw new Error('Canonical JSON requires an object');
-  const keys = Object.keys(value).sort();
-  return `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
 }
 
 /**

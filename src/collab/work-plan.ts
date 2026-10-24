@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import path from 'node:path';
 import { pathRelation } from './canonical.js';
 import { contentDigest, validateEnvelope } from './envelope.js';
@@ -132,9 +133,6 @@ const isString = (value: unknown): value is string =>
   value.length > 0 &&
   value.length <= MAX_STRING &&
   !value.includes('\u0000');
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isIdentity = (value: unknown): value is Record<string, unknown> =>
   isRecord(value) &&

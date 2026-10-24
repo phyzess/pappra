@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import * as core from '../../src/collab/index.js';
+import { breakLock } from '../../src/collab/store.js';
 import { exercise, scenarioNames, owner, clock } from './scenarios.js';
 
 export function sandbox() {
@@ -45,15 +46,14 @@ test('locks require explicit recovery and retain the previous holder evidence', 
     assert.equal(blocked.reason, 'lock_held');
     assert.equal(core.store.readLock(task).holder?.nonce, holder.nonce);
     assert.throws(
-      () =>
-        core.store.breakLock(task, { actor: 'operator', reason: 'no proof' }),
+      () => breakLock(task, { actor: 'operator', reason: 'no proof' }),
       /explicit confirmation/,
     );
     assert.throws(
       () => core.store.releaseLock(task, { ...holder, nonce: 'foreign' }),
       /different owner/,
     );
-    const broken = core.store.breakLock(task, {
+    const broken = breakLock(task, {
       actor: 'operator',
       reason: 'fixture holder stopped',
       confirmHolderStopped: true,

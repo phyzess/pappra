@@ -16,6 +16,7 @@ export function runNode(
   args: readonly string[],
   cwd = projectRoot,
   timeoutMs = 360_000,
+  env?: NodeJS.ProcessEnv,
 ): void {
   const result = spawnSync(process.execPath, [...args], {
     cwd,
@@ -25,6 +26,7 @@ export function runNode(
     // process time; keep a finite ceiling rather than allowing a wedged test
     // process to hang.
     timeout: timeoutMs,
+    ...(env === undefined ? {} : { env }),
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {

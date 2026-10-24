@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -597,10 +598,6 @@ interface AssistantRecord {
   readonly error: boolean;
   readonly aborted: boolean;
   readonly terminal: boolean;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function assistantRecord(record: unknown): AssistantRecord | null {

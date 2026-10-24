@@ -1,6 +1,8 @@
 import { claimResources } from '../../src/collab/resources.js';
 import { transact } from '../../src/collab/store.js';
 import { reserveLaunch } from '../../src/collab/admission.js';
+import fs from 'node:fs';
+import { join } from 'node:path';
 
 const [action, taskRoot, target, id] = process.argv.slice(2);
 if (!taskRoot) throw new Error('A fixture task root is required.');
@@ -33,10 +35,21 @@ if (action === 'claim' && target && id) {
       }),
     ),
   );
-} else if (action === 'fault') {
+} else if (action === 'fault' || action === 'commit') {
+  if (action === 'fault') {
+    const rename = fs.renameSync;
+    fs.renameSync = (from, to) => {
+      if (String(to) === join(taskRoot, 'task.json'))
+        process.kill(process.pid, 'SIGKILL');
+      return rename(from, to);
+    };
+  }
   transact(taskRoot, {
     apply: (record) => {
-      record.input_revision = 'must-not-commit';
+      record.input_revision =
+        action === 'fault'
+          ? 'must-not-commit'
+          : 'committed-without-environment-hook';
       return { record };
     },
   });

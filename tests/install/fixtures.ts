@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { npmCli } from '../../scripts/project.js';
 import { getPackageInfo } from '../../src/package-info.js';
+import { testSubprocessEnvironment } from '../../scripts/test-environment.js';
 
 export function makeTempDir(label: string): string {
   return mkdtempSync(join(tmpdir(), `pappra-${label}-`));
@@ -81,6 +82,7 @@ if (process.argv.includes('--version')) {
       shell: false,
       timeout: 30_000,
       maxBuffer: 1024 * 1024,
+      env: testSubprocessEnvironment(),
     },
   );
   if (packed.error) throw packed.error;

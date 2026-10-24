@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import path from 'node:path';
 import {
   contentDigest,
@@ -329,9 +330,6 @@ const failure = (
   message: string,
   nextAction: string | null,
 ): RolloverFailure => ({ ok: false, kind, code, message, nextAction });
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isText = (value: unknown, max = MAX_STRING): value is string =>
   typeof value === 'string' &&

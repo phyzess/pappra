@@ -25,7 +25,7 @@ export const RESOURCE_KINDS = Object.freeze(
 /**
  * Resolve the longest existing ancestor with realpath and append the not-yet-existing
  * suffix. Symlink aliases therefore collapse to one key. The suffix keeps the caller's
- * spelling, so a differently-cased non-existent target is not normalised.
+ * spelling for I/O; comparison keys account for the containing filesystem's case behavior.
  */
 export function canonicalizeTarget(input: string) {
   if (typeof input !== 'string' || input.trim().length === 0)
@@ -36,7 +36,7 @@ export function canonicalizeTarget(input: string) {
   let probe = path.normalize(input);
   for (;;) {
     try {
-      const real = fs.realpathSync(probe);
+      const real = fs.realpathSync.native(probe);
       return {
         path: path.join(real, ...missing.slice().reverse()),
         existing: missing.length === 0,
@@ -54,8 +54,50 @@ export function canonicalizeTarget(input: string) {
   }
 }
 
+/** Probe existing directory aliases without creating files or assuming all macOS volumes match. */
+function caseInsensitiveAt(input: string): boolean {
+  let probe = input;
+  for (;;) {
+    try {
+      const observed = fs.statSync(probe);
+      if (!observed.isDirectory()) {
+        probe = path.dirname(probe);
+        continue;
+      }
+      const name = path.basename(probe);
+      const flipped = name.replace(/[a-zA-Z]/, (letter) =>
+        letter === letter.toLowerCase()
+          ? letter.toUpperCase()
+          : letter.toLowerCase(),
+      );
+      if (flipped !== name) {
+        try {
+          const alias = fs.statSync(path.join(path.dirname(probe), flipped));
+          return alias.dev === observed.dev && alias.ino === observed.ino;
+        } catch {
+          return false;
+        }
+      }
+    } catch {
+      // Missing suffixes inherit the closest existing directory's behavior.
+    }
+    const parent = path.dirname(probe);
+    if (parent === probe) return process.platform === 'win32';
+    probe = parent;
+  }
+}
+
+function comparisonPath(input: string): string {
+  const resolved = canonicalizeTarget(input);
+  return caseInsensitiveAt(resolved.nearest_ancestor)
+    ? resolved.path.normalize('NFC').toUpperCase().toLowerCase()
+    : resolved.path;
+}
+
 /** `same`, `ancestor`, `descendant` or `disjoint` on path-segment boundaries. */
 export function pathRelation(left: string, right: string) {
+  left = comparisonPath(left);
+  right = comparisonPath(right);
   if (left === right) return 'same';
   const a = left.split(path.sep).filter(Boolean);
   const b = right.split(path.sep).filter(Boolean);
@@ -120,7 +162,7 @@ export function describeResource(input: ResourceInput): Resource {
   return {
     kind,
     scope,
-    key: `${kind}:${resolved.path}`,
+    key: `${kind}:${comparisonPath(resolved.path)}`,
     path: resolved.path,
     existing: resolved.existing,
     label: input.label ?? `${kind} ${resolved.path}`,

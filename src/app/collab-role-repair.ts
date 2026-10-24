@@ -1,4 +1,6 @@
+import { object as isRecord } from '../infra/validation.js';
 import { createHash } from 'node:crypto';
+import { canonicalJsonDigest } from '../infra/json.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { assertTaskStoreCurrent, openTaskStore } from './collab-task-store.js';
@@ -171,15 +173,12 @@ interface RepairJournal {
   readonly intents: RepairIntent[];
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 function stableDigest(value: unknown): string {
-  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  return canonicalJsonDigest(value);
 }
 
 function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return canonicalJson(left) === canonicalJson(right);
 }
 
 function validateJournal(value: unknown): RepairJournal | null {

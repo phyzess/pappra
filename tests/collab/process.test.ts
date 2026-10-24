@@ -21,32 +21,37 @@ import {
 import { object, parseJson } from '../../src/collab/validation.js';
 import { owner } from './scenarios.js';
 import { launchFixture } from './launch-fixture.js';
+import { testSubprocessEnvironment } from '../../scripts/test-environment.js';
 
 const worker = fileURLToPath(new URL('./worker.js', import.meta.url));
-function run(args: string[], fault = false) {
-  return new Promise<{ code: number | null; stdout: string; stderr: string }>(
-    (resolve, reject) => {
-      const child = spawn(process.execPath, [worker, ...args], {
-        env: {
-          ...process.env,
-          PAPPRA_FAULT: fault ? 'exit_before_rename' : '',
-        },
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false,
-        timeout: 15_000,
-      });
-      let stdout = '';
-      let stderr = '';
-      child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
-        stdout += chunk;
-      });
-      child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
-        stderr += chunk;
-      });
-      child.on('error', reject);
-      child.on('close', (code) => resolve({ code, stdout, stderr }));
-    },
-  );
+function run(args: string[], injected: NodeJS.ProcessEnv = {}) {
+  return new Promise<{
+    code: number | null;
+    signal: NodeJS.Signals | null;
+    stdout: string;
+    stderr: string;
+  }>((resolve, reject) => {
+    const child = spawn(process.execPath, [worker, ...args], {
+      env: testSubprocessEnvironment(injected, {
+        allowPappra: ['PAPPRA_FAULT'],
+      }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: false,
+      timeout: 15_000,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code, signal) =>
+      resolve({ code, signal, stdout, stderr }),
+    );
+  });
 }
 
 test('simultaneous processes can reserve one attempt only once', async () => {
@@ -117,8 +122,8 @@ test('an OS process killed before rename leaves the old revision, lock and trans
   try {
     const task = join(root, 'domain', 'tasks', 'sample');
     initTask(task, { taskId: 'sample', coordinator: owner });
-    const result = await run(['fault', task], true);
-    assert.equal(result.code, 70, result.stderr);
+    const result = await run(['fault', task]);
+    assert.equal(result.signal, 'SIGKILL', result.stderr);
     assert.equal(readRecord(task)?.state_revision, 1);
     assert.equal(readRecord(task)?.input_revision, null);
     assert.equal(readLock(task).held, true);
@@ -136,5 +141,27 @@ test('an OS process killed before rename leaves the old revision, lock and trans
   } finally {
     rmSync(root, { recursive: true, force: true });
     assert(!existsSync(root));
+  }
+});
+
+test('an inherited production fault environment variable cannot kill or interrupt a transaction', async () => {
+  const root = mkdtempSync(
+    join(realpathSync(tmpdir()), 'pappra-no-fault-env-'),
+  );
+  try {
+    const task = join(root, 'domain/tasks/sample');
+    initTask(task, { taskId: 'sample', coordinator: owner });
+    const result = await run(['commit', task], {
+      PAPPRA_FAULT: 'exit_before_rename',
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(readRecord(task)?.state_revision, 2);
+    assert.equal(
+      readRecord(task)?.input_revision,
+      'committed-without-environment-hook',
+    );
+    assert.equal(readLock(task).held, false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

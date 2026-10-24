@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import type {
   AppliedMessage,
   Identity,
@@ -62,9 +63,6 @@ export type SuccessionValidation =
       readonly exclusion: RouteExclusion;
     }
   | SuccessionFailure;
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isText = (value: unknown, max = 2048): value is string =>
   typeof value === 'string' &&

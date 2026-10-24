@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import { canonicalJsonDigest } from '../../src/infra/json.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
@@ -176,7 +177,8 @@ function fixture() {
             input_revision: revision,
             participant_id: 'next',
             assignee: next,
-            resources,
+            // Independent serializers may emit equivalent fields in another order.
+            resources: resources.map(({ path, access }) => ({ access, path })),
           },
           next_execution: nextExecution,
           approval: {
@@ -189,9 +191,7 @@ function fixture() {
             next_assignment_id: 'write',
             next_attempt: 2,
             next_input_revision: revision,
-            resources_digest: createHash('sha256')
-              .update(JSON.stringify(resources))
-              .digest('hex'),
+            resources_digest: canonicalJsonDigest(resources),
           },
         },
       ],

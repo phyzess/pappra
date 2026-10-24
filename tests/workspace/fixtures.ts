@@ -14,6 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
+import { testSubprocessEnvironment } from '../../scripts/test-environment.js';
 
 export const workspaceId = '87f86ed7-e827-48aa-94bf-72ee57ab4138';
 export const checkoutId = '11111111-1111-4111-8111-111111111111';
@@ -47,12 +48,7 @@ export function runGit(cwd: string, args: readonly string[]): string {
       shell: false,
       timeout: 15_000,
       maxBuffer: 4 * 1024 * 1024,
-      env: {
-        ...process.env,
-        GIT_OPTIONAL_LOCKS: '0',
-        GIT_TERMINAL_PROMPT: '0',
-        LC_ALL: 'C',
-      },
+      env: testSubprocessEnvironment(),
     },
   );
   if (result.error) throw result.error;

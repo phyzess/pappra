@@ -7,13 +7,16 @@ import type { Assignment, CapabilityCard } from '../../src/collab/contracts.js';
 import type { AdmissionOptions } from '../../src/collab/admission.js';
 import { owner } from './scenarios.js';
 
-export function launchFixture() {
+export function launchFixture(
+  options: { harness?: 'pi' | 'codex' | 'claude'; prompt?: string } = {},
+) {
+  const harness = options.harness ?? 'pi';
   const root = mkdtempSync(join(realpathSync(tmpdir()), 'pappra-launch-'));
   const taskRoot = join(root, 'domain', 'tasks', 'sample');
   const writer = {
     agent_id: 'writer',
     session_id: '12345678-1234-4234-8234-123456789012',
-    harness: 'pi',
+    harness,
     cwd: root,
     surface: 'rpc',
     configuration_id: 'fixture',
@@ -29,7 +32,10 @@ export function launchFixture() {
   const input = join(root, 'input.md');
   const promptFile = join(root, 'prompt.md');
   writeFileSync(input, 'Synthetic input.');
-  writeFileSync(promptFile, 'Synthetic prompt for the fake runtime only.');
+  writeFileSync(
+    promptFile,
+    options.prompt ?? 'Synthetic prompt for the fake runtime only.',
+  );
   const assignment: Assignment = {
     schema: 'harness-collab/assignment/1',
     task_id: 'sample',
@@ -49,7 +55,7 @@ export function launchFixture() {
       },
     ],
     runner: {
-      name: 'pi-cli',
+      name: harness === 'codex' ? 'codex-exec' : `${harness}-cli`,
       mode: 'fixture',
       profile: 'writer',
       omitted_capabilities: ['mcp'],
@@ -86,13 +92,13 @@ export function launchFixture() {
       },
     }),
   );
-  const options: AdmissionOptions = {
+  const admissionOptions: AdmissionOptions = {
     assignmentFile,
     capabilitiesFile,
     taskRoot,
     cwd: root,
     sessionId: writer.session_id,
-    harness: 'pi',
+    harness,
     profile: 'writer',
   };
   return {
@@ -104,7 +110,7 @@ export function launchFixture() {
     assignmentFile,
     capabilitiesFile,
     promptFile,
-    options,
+    options: admissionOptions,
     cleanup: () => rmSync(root, { recursive: true, force: true }),
   };
 }

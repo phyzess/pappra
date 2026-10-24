@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import { pathRelation } from '../collab/canonical.js';
 import {
   WORK_PLAN_EVALUATION_SCHEMA,
@@ -107,9 +108,6 @@ export interface RolePlanAggregation {
 }
 
 interface ParsedAssignment extends RolePlanAssignment {}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isBoundedString = (value: unknown): value is string =>
   typeof value === 'string' &&

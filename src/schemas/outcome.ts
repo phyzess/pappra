@@ -1,15 +1,19 @@
 import type { DiagnosticCode } from './errors.js';
 
 /** Expected rejection; unexpected exceptions are converted at application boundaries. */
-export type Outcome<T> =
-  | { readonly ok: true; readonly value: T }
-  | {
-      readonly ok: false;
-      readonly code: DiagnosticCode;
-      readonly message: string;
-      readonly retryable: boolean;
-      readonly nextAction: string | null;
-    };
+export interface ExpectedFailure {
+  readonly ok: false;
+  readonly code: DiagnosticCode;
+  readonly message: string;
+  readonly retryable: boolean;
+  readonly nextAction: string | null;
+}
+
+/** Value-bearing boundaries share one shape; protocol-specific failures retain their typed fields. */
+export type Outcome<
+  T,
+  Rejection extends { readonly ok: false } = ExpectedFailure,
+> = { readonly ok: true; readonly value: T } | Rejection;
 
 export interface FailureOptions {
   readonly retryable?: boolean;

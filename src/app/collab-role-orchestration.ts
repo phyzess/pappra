@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -118,10 +119,6 @@ export interface RoleOrchestrationDependencies {
   ) => Promise<WorkExecutionReport>;
   readonly execution_adapter?: WorkExecutionAdapter;
   readonly repair?: RoleRepairDependencies;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function digest(value: unknown): string {

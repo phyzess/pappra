@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Outcome } from '../schemas/outcome.js';
 import {
   assertMessageTaskCurrent,
   openMessageTask,
@@ -25,8 +26,7 @@ import { isPathInside } from '../schemas/paths.js';
  * and special files in those paths are refused instead of being followed.
  */
 export type TaskStoreFailure = MessageServiceFailure;
-export type TaskStoreResult<T> =
-  { readonly ok: true; readonly value: T } | TaskStoreFailure;
+export type TaskStoreResult<T> = Outcome<T, TaskStoreFailure>;
 
 class UnsafeNestedState extends Error {
   constructor(

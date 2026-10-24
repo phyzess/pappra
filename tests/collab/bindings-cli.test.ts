@@ -712,7 +712,9 @@ async function bindWithLockHook(
   const interceptingOpen = async (
     ...args: Parameters<typeof fsPromises.open>
   ) => {
-    if (!intercepted && String(args[0]) === lockPath) {
+    // Atomic lock publication opens a private staging file first. Intercept
+    // acquisition, before the guarded action, rather than the release read.
+    if (!intercepted && String(args[0]).startsWith(`${lockPath}.pending-`)) {
       intercepted = true;
       beforeLockOpen();
     }

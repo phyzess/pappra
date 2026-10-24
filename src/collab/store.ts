@@ -525,10 +525,6 @@ export function transact<T = unknown>(
       )}\n`,
       { flag: 'wx', mode: 0o600 },
     );
-    if (process.env.PAPPRA_FAULT === 'exit_before_rename') {
-      // Documented test-only fault injection: leave an uncommitted transaction behind.
-      process.exit(70);
-    }
     fs.renameSync(transactionFile, recordPath(taskRoot));
     fs.rmSync(metadataFile, { force: true });
     committed = true;

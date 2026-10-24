@@ -31,7 +31,16 @@ function hasFinalIgnoreAll(text: string): boolean {
  * ignore rules are preserved; an appended final wildcard prevents earlier
  * negations from exposing machine paths, checkpoints, or task metadata.
  */
-export async function ensurePrivateState(root: string): Promise<Outcome<null>> {
+export async function ensurePrivateState(
+  root: string,
+  directory: 'local' | 'local-archive' = 'local',
+): Promise<Outcome<null>> {
+  if (directory !== 'local' && directory !== 'local-archive')
+    return failed(
+      diagnosticCodes.initTargetUnsafe,
+      'Unknown private-state namespace.',
+      { nextAction: 'Use a supported private-state directory.' },
+    );
   const canonical = await resolveRealpath(root);
   if (canonical === null)
     return failed(
@@ -52,7 +61,7 @@ export async function ensurePrivateState(root: string): Promise<Outcome<null>> {
       }
     }
   };
-  const local = join(canonical, '.pappra', 'local');
+  const local = join(canonical, '.pappra', directory);
   const ignore = join(local, '.gitignore');
   try {
     for (const path of [canonical, join(canonical, '.pappra'), local]) {
@@ -188,8 +197,7 @@ export async function ensurePrivateState(root: string): Promise<Outcome<null>> {
       diagnosticCodes.initTargetUnsafe,
       `Cannot prepare private state: ${errorMessage(error)}`,
       {
-        nextAction:
-          'Restore real .pappra/local directories and a writable regular .gitignore; existing state and rules were preserved.',
+        nextAction: `Restore real .pappra/${directory} directories and a writable regular .gitignore; existing state and rules were preserved.`,
       },
     );
   }

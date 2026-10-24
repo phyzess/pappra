@@ -38,3 +38,43 @@ test('Git fixtures disable automatic maintenance without hiding .git changes', (
     cleanup(root);
   }
 });
+
+test('Git fixtures ignore inherited global/system config and Git routing variables', () => {
+  const root = makeTempDir('fixture-git-isolation');
+  const keys = [
+    'GIT_CONFIG_GLOBAL',
+    'GIT_CONFIG_SYSTEM',
+    'GIT_CONFIG_COUNT',
+    'GIT_CONFIG_KEY_0',
+    'GIT_CONFIG_VALUE_0',
+    'GIT_DIR',
+    'GIT_WORK_TREE',
+  ];
+  const previous = new Map(keys.map((key) => [key, process.env[key]]));
+  try {
+    const poisoned = join(root, 'poisoned.gitconfig');
+    writeFileSync(poisoned, 'not valid git configuration\n');
+    process.env.GIT_CONFIG_GLOBAL = poisoned;
+    process.env.GIT_CONFIG_SYSTEM = poisoned;
+    process.env.GIT_CONFIG_COUNT = '1';
+    process.env.GIT_CONFIG_KEY_0 = 'commit.gpgsign';
+    process.env.GIT_CONFIG_VALUE_0 = 'true';
+    process.env.GIT_DIR = join(root, 'unrelated-git-dir');
+    process.env.GIT_WORK_TREE = join(root, 'unrelated-work-tree');
+    createRepository(root);
+    assert.equal(existsSync(join(root, '.git')), true);
+    assert.equal(existsSync(join(root, 'unrelated-git-dir')), false);
+    assert.equal(runGit(root, ['config', '--global', '--list']), '');
+    assert.match(
+      runGit(root, ['log', '-1', '--format=%an <%ae>']),
+      /Fixture <fixture@example.com>/,
+    );
+  } finally {
+    for (const key of keys) {
+      const value = previous.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    cleanup(root);
+  }
+});

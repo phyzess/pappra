@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import { join, resolve } from 'node:path';
 import type { z } from 'zod';
 import type { Diagnostic, DiagnosticSeverity } from '../schemas/diagnostics.js';
@@ -81,10 +82,6 @@ function issueDiagnostics(
     );
   }
   return diagnostics;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /**
