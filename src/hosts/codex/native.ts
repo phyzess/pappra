@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import type { TaskRecord } from '../../collab/types.js';
-import { object, parseJson, errorCode } from '../../collab/validation.js';
+import { object, parseJson, errorCode } from '../../infra/validation.js';
 import {
   isRecord,
   type NativeRecord,

@@ -1,5 +1,5 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
-import { errorCode } from '../collab/validation.js';
+import { errorCode } from './validation.js';
 interface ProcessRow {
   pid: number;
   ppid: number;

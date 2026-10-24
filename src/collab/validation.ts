@@ -1,23 +1,6 @@
 import type { TaskRecord, LockHolder, Message, Notification } from './types.js';
-
-/** Decode external JSON as unknown; protocol validators establish the usable shape. */
-export function object(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-
-export function text(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-export function errorCode(error: unknown): string | undefined {
-  return object(error) && typeof error['code'] === 'string'
-    ? error['code']
-    : undefined;
-}
-
-export function parseJson(text: string): unknown {
-  return JSON.parse(text) as unknown;
-}
+import { object } from '../infra/validation.js';
+export { object, text, errorCode, parseJson } from '../infra/validation.js';
 
 type Fields = Record<string, unknown>;
 type Predicate = (value: unknown) => boolean;

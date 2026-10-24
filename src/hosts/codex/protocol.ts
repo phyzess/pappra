@@ -1,4 +1,4 @@
-import { object } from '../../collab/validation.js';
+import { object } from '../../infra/validation.js';
 
 export interface NativeItem {
   [key: string]: unknown;

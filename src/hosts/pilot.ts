@@ -13,7 +13,7 @@ import {
 } from '../collab/admission.js';
 import { createNonce, nowIso } from '../collab/store.js';
 import { sha256File as digestFile } from '../collab/envelope.js';
-import { object, parseJson } from '../collab/validation.js';
+import { object, parseJson } from '../infra/validation.js';
 import { isAssignment } from '../collab/contracts.js';
 const PHASES = new Set([
   'discovery',

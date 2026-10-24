@@ -1,6 +1,6 @@
 import type { ChildProcess } from 'node:child_process';
 import type { TaskRecord } from '../../collab/types.js';
-import { errorCode, object, parseJson } from '../../collab/validation.js';
+import { errorCode, object, parseJson } from '../../infra/validation.js';
 export interface ClaudeOptions {
   taskRoot: string;
   subtaskId: string;

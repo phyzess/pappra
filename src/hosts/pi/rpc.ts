@@ -4,7 +4,7 @@ import type {
   Identity,
   MessageInput,
 } from '../../collab/types.js';
-import { errorCode, object, parseJson } from '../../collab/validation.js';
+import { errorCode, object, parseJson } from '../../infra/validation.js';
 import { isAssignment } from '../../collab/contracts.js';
 import { isPiRecord, type PiRecord } from './protocol.js';
 export interface PiOptions {

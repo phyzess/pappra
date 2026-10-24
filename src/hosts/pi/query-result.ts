@@ -1,4 +1,4 @@
-import { object, parseJson, errorCode } from '../../collab/validation.js';
+import { object, parseJson, errorCode } from '../../infra/validation.js';
 import { isPiRecord, type PiRecord } from './protocol.js';
 export interface QueryOptions {
   session: string;

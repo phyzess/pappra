@@ -1,4 +1,4 @@
-import { object } from '../../collab/validation.js';
+import { object } from '../../infra/validation.js';
 export interface PiData {
   [key: string]: unknown;
   sessionId?: string;
