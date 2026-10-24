@@ -1471,7 +1471,7 @@ test('a corrupt registered message is read descriptor-bounded and charged before
       type: 'ACK',
       reply_to: 'msg-assign-work',
       task_id: TASK,
-      from: NEXT,
+      from: OLD,
       to: COORD,
       subtask_id: SUBTASK,
       attempt: 1,

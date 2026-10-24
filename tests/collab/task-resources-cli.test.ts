@@ -9,26 +9,33 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { claimResources, releaseClaim } from '../../src/collab/resources.js';
+import { buildMessage } from '../../src/collab/envelope.js';
+import { submitMessage } from '../../src/collab/messages.js';
 import { ledgerPath, readRecord, transact } from '../../src/collab/store.js';
 import { cleanup } from '../workspace/fixtures.js';
 import {
   CLAIMANT,
   OTHER,
   claimRequest,
-  makeTaskDomain,
+  makeTaskDomain as makeDomain,
   releaseRequest,
   snapshotTree,
   writeRequest,
 } from './task-resources-fixtures.js';
 
-const ROOT = join(
-  dirname(fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json'))),
-);
-const CLI = join(ROOT, 'dist/cli/main.js');
+const CLI = fileURLToPath(new URL('../../src/cli/main.js', import.meta.url));
+
+function makeTaskDomain(label: string, taskIds: readonly string[]) {
+  return makeDomain(label, taskIds, {
+    coordinators: Object.fromEntries(
+      taskIds.map((id) => [id, id === 'a' ? CLAIMANT : OTHER]),
+    ),
+  });
+}
 
 function run(args: readonly string[], cwd: string, timeout = 30_000) {
   return spawnSync(process.execPath, [CLI, ...args], {
@@ -638,6 +645,124 @@ test('release API retains a claim with a pending cancel', () => {
     assert.equal(refused.status, 1, refused.stderr);
     assert.equal(json(refused).reason, 'cancel_unconfirmed');
     assert.equal(readRecord(task)?.claims?.[0]?.released_at, null);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('public resource claims bind workers to their active assignment', () => {
+  const fixture = makeTaskDomain('resource-participant', ['a']);
+  const task = fixture.tasks.a!;
+  try {
+    const target = join(fixture.root, 'worker-target');
+    const unassigned = writeRequest(
+      fixture.root,
+      'unassigned.json',
+      claimRequest(OTHER, [{ path: target }]),
+    );
+    let before = snapshotTree(fixture.root);
+    const planned = run(
+      requestArgs('claim', task, unassigned, false),
+      fixture.root,
+    );
+    assert.equal(planned.status, 1, planned.stderr);
+    assert.equal(json(planned).code, 'assigned_holder_required');
+    const refused = run(
+      requestArgs('claim', task, unassigned, true),
+      fixture.root,
+    );
+    assert.equal(refused.status, 1, refused.stderr);
+    assert.equal(json(refused).reason, 'assigned_holder_required');
+    assert.deepEqual(snapshotTree(fixture.root), before);
+
+    const assigned = submitMessage(
+      task,
+      buildMessage({
+        type: 'ASSIGN',
+        task_id: 'a',
+        message_id: 'resource-assignment',
+        from: CLAIMANT,
+        to: OTHER,
+        subtask_id: 'worker',
+        attempt: 1,
+        owner_epoch: 1,
+        body: {
+          assignment_digest: 'sha256:fixture',
+          input_revision: 'input-a',
+        },
+      }),
+    );
+    assert.equal(assigned.ok, true);
+
+    const wrongSession = writeRequest(
+      fixture.root,
+      'wrong-session.json',
+      claimRequest(
+        { ...OTHER, session_id: 'another-session' },
+        [{ path: target }],
+        {
+          subtask_id: 'worker',
+          attempt: 1,
+        },
+      ),
+    );
+    before = snapshotTree(fixture.root);
+    const spoofed = run(
+      requestArgs('claim', task, wrongSession, true),
+      fixture.root,
+    );
+    assert.equal(spoofed.status, 1, spoofed.stderr);
+    assert.equal(json(spoofed).reason, 'holder_assignment_mismatch');
+    assert.deepEqual(snapshotTree(fixture.root), before);
+
+    const valid = writeRequest(
+      fixture.root,
+      'worker.json',
+      claimRequest(OTHER, [{ path: target }], {
+        subtask_id: 'worker',
+        attempt: 1,
+      }),
+    );
+    const applied = run(requestArgs('claim', task, valid, true), fixture.root);
+    assert.equal(applied.status, 0, `${applied.stdout}\n${applied.stderr}`);
+    assert.equal(json(applied).applied, true);
+
+    transact(task, {
+      apply: (record) => {
+        record.attempts[0]!.state = 'completed';
+        return { record };
+      },
+    });
+    before = snapshotTree(fixture.root);
+    const terminal = run(requestArgs('claim', task, valid, true), fixture.root);
+    assert.equal(terminal.status, 1, terminal.stderr);
+    assert.equal(json(terminal).reason, 'holder_attempt_not_active');
+    assert.deepEqual(snapshotTree(fixture.root), before);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('release requires an explicit holder before opening a transaction', () => {
+  const fixture = makeTaskDomain('resource-holder-required', ['a']);
+  const task = fixture.tasks.a!;
+  try {
+    const claimId = seedClaim(task, join(fixture.root, 'held'), CLAIMANT);
+    const before = snapshotTree(fixture.root);
+    // @ts-expect-error Runtime callers cannot release an unowned claim either.
+    const missing = releaseClaim(task, { claimId });
+    assert.deepEqual(missing, { ok: false, reason: 'holder_required' });
+    assert.deepEqual(snapshotTree(fixture.root), before);
+    const file = writeRequest(fixture.root, 'missing-holder.json', {
+      schema: 'pappra/collaboration-resource-request/1',
+      action: 'release',
+      claim_id: claimId,
+    });
+    const beforeInvalid = snapshotTree(fixture.root);
+    const invalid = run(requestArgs('release', task, file, true), fixture.root);
+    assert.equal(invalid.status, 2, invalid.stderr);
+    assert.deepEqual(snapshotTree(fixture.root), beforeInvalid);
+    assert.equal(releaseClaim(task, { claimId, holder: CLAIMANT }).ok, true);
   } finally {
     fixture.cleanup();
   }

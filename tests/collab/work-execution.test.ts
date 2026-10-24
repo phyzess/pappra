@@ -326,7 +326,7 @@ function reportAndDecision(
     owner_epoch: 1,
     body: { status: 'completed', input_revision: INPUT_REVISION },
   });
-  send(fixture, {
+  const decision: MessageInput = {
     message_id: `msg-answer-${assignmentId}-${decisionFrom.agent_id}`,
     type: 'ANSWER',
     task_id: TASK,
@@ -348,7 +348,25 @@ function reportAndDecision(
         decision: 'accepted',
       },
     },
-  });
+  };
+  if (
+    decisionFrom.agent_id === COORDINATOR.agent_id &&
+    decisionFrom.session_id === COORDINATOR.session_id
+  ) {
+    send(fixture, decision);
+  } else {
+    const message = buildMessage(decision);
+    const outcome = submitMessage(fixture.taskRoot, message);
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.reason, 'unauthorized_sender');
+    assert.equal(
+      readRecord(fixture.taskRoot)?.messages.some(
+        (entry) => entry.message_id === message.message_id,
+      ),
+      false,
+      'the forged decision must not enter authoritative acceptance evidence',
+    );
+  }
   return report;
 }
 
@@ -1043,7 +1061,7 @@ test('dependent work remains blocked for self-acceptance and unlocks only on coo
     assert.ok(
       rejected.nodes
         .find((node) => node.node_id === 'writer-2')
-        ?.blockers.includes('acceptance_self_review'),
+        ?.blockers.includes('acceptance_missing'),
     );
   } finally {
     rejectedFixture.cleanup();

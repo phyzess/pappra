@@ -1020,6 +1020,7 @@ export async function prepareCollaboration(
       for (const claimId of claimIds) {
         releaseClaim(taskRoot, {
           claimId,
+          holder: goal.assignee,
           reason: 'prepare resource claim failed',
         });
       }
@@ -1036,6 +1037,7 @@ export async function prepareCollaboration(
       for (const claimId of claimIds) {
         releaseClaim(taskRoot, {
           claimId,
+          holder: goal.assignee,
           reason: 'prepare resource epoch missing',
         });
       }
@@ -1058,6 +1060,7 @@ export async function prepareCollaboration(
       for (const claimId of claimIds) {
         releaseClaim(taskRoot, {
           claimId,
+          holder: goal.assignee,
           reason: 'prepare failed before assignment',
         });
       }
@@ -1074,6 +1077,7 @@ export async function prepareCollaboration(
       for (const claimId of claimIds) {
         releaseClaim(taskRoot, {
           claimId,
+          holder: goal.assignee,
           reason: 'prepare failed before assignment',
         });
       }
@@ -1134,6 +1138,7 @@ export async function prepareCollaboration(
       for (const claimId of claimIds) {
         releaseClaim(taskRoot, {
           claimId,
+          holder: goal.assignee,
           reason: 'prepare failed before assignment',
         });
       }
@@ -1175,6 +1180,7 @@ export async function prepareCollaboration(
     for (const claimId of claimIds) {
       releaseClaim(taskRoot, {
         claimId,
+        holder: goal.assignee,
         reason: 'assignment registration failed',
       });
     }

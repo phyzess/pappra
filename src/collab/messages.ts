@@ -4,6 +4,7 @@ import type {
   MessageEffect,
   Mutation,
   Failure,
+  Identity,
 } from './types.js';
 import {
   contentDigest,
@@ -72,6 +73,131 @@ function findMessage(record: TaskRecord, messageId: string) {
   );
 }
 
+function sameSender(sender: Identity, expected: Identity | null | undefined) {
+  return (
+    expected?.agent_id === sender.agent_id &&
+    expected.session_id === sender.session_id
+  );
+}
+
+/** An epoch identifies the generation of authority, not the agent holding it. */
+function authorizeSender(record: TaskRecord, message: Message): Failure | null {
+  let expected: Identity | null | undefined;
+  switch (message.type) {
+    case 'ASSIGN':
+    case 'CANCEL':
+      expected = record.coordinator;
+      break;
+    case 'HANDOFF': {
+      if (message.body.phase !== 'request') {
+        const handoff = record.handoffs.find(
+          (item) => item.handoff_id === message.body.handoff_id,
+        );
+        if (
+          handoff &&
+          (sameSender(message.from, handoff.from) ||
+            sameSender(message.from, handoff.to))
+        )
+          return null;
+        return { ok: false, reason: 'unauthorized_sender' };
+      }
+      if (message.body.kind === 'coordinator') {
+        expected = record.coordinator;
+        break;
+      }
+      expected = findAttempt(
+        record,
+        message.subtask_id,
+        message.attempt,
+      )?.assignee;
+      break;
+    }
+    case 'ACK':
+    case 'BLOCK':
+    case 'CANCELLED': {
+      const referenced = message.reply_to
+        ? findMessage(record, message.reply_to)
+        : null;
+      const subtaskId = message.subtask_id ?? referenced?.subtask_id ?? null;
+      const attempt = message.attempt ?? referenced?.attempt ?? null;
+      const target = findAttempt(record, subtaskId, attempt);
+      if (message.type === 'ACK') {
+        const handoff = record.handoffs.find(
+          (item) =>
+            (item.handoff_id === message.body.handoff_id ||
+              item.handoff_id === message.reply_to) &&
+            (item.kind === 'coordinator' ||
+              (item.subtask_id === subtaskId && item.attempt === attempt)) &&
+            !['completed', 'aborted'].includes(item.state) &&
+            sameSender(
+              item.from,
+              item.kind === 'coordinator'
+                ? record.coordinator
+                : target?.assignee,
+            ) &&
+            sameSender(message.from, item.to),
+        );
+        if (handoff) return null;
+      }
+      if (!target) return { ok: false, reason: 'unknown_attempt' };
+      if (
+        message.type === 'BLOCK' &&
+        sameSender(message.from, record.coordinator)
+      )
+        return null;
+      expected = target.assignee;
+      break;
+    }
+    case 'ANSWER': {
+      const referenced = message.reply_to
+        ? findMessage(record, message.reply_to)
+        : null;
+      if (!referenced) return { ok: false, reason: 'unknown_question' };
+      // Coordinator decisions and instructions are evidence consumed by work-plan
+      // and recovery validation. They are not clarification state transitions.
+      if (!['ASK', 'BLOCK'].includes(referenced.type)) {
+        return sameSender(message.from, record.coordinator)
+          ? null
+          : { ok: false, reason: 'unauthorized_sender' };
+      }
+      if (referenced.type === 'BLOCK' && referenced.body_kind === 'approval')
+        return { ok: false, reason: 'approval_not_auto_answerable' };
+      if (referenced.subtask_id && referenced.attempt) {
+        const target = findAttempt(
+          record,
+          referenced.subtask_id,
+          referenced.attempt,
+        );
+        if (
+          (referenced.type === 'BLOCK' && referenced.state !== 'applied') ||
+          !(
+            sameSender(referenced.from, target?.assignee) ||
+            (sameSender(referenced.from, record.coordinator) &&
+              referenced.to !== null &&
+              sameSender(referenced.to, target?.assignee))
+          )
+        )
+          return { ok: false, reason: 'stale_question' };
+      }
+      if (
+        (message.subtask_id && message.subtask_id !== referenced.subtask_id) ||
+        (message.attempt && message.attempt !== referenced.attempt) ||
+        !sameSender(message.to, referenced.from)
+      )
+        return { ok: false, reason: 'reply_identity_mismatch' };
+      expected = referenced.to;
+      break;
+    }
+    // REPORT classifies a previous owner's result as evidence without changing the
+    // current attempt. Questions and status exchanges confer no execution authority.
+    default:
+      return null;
+  }
+  return sameSender(message.from, expected)
+    ? null
+    : { ok: false, reason: 'unauthorized_sender' };
+}
+
 /**
  * Pure-ish apply function for `transact`: returns the outcome object or `{ok:false,...}`.
  */
@@ -106,6 +232,9 @@ export function applyMessage(
       reason: 'task_mismatch',
       expected: record.task_id,
     };
+
+  const authorization = authorizeSender(record, message);
+  if (authorization) return authorization;
 
   if (DISPATCH_TYPES.has(message.type)) {
     if (record.dispatch_frozen && message.type === 'ASSIGN') {
@@ -209,7 +338,7 @@ export function applyMessage(
           attempt,
         };
       const transition =
-        target.state === 'assigned'
+        target.state === 'assigned' && sameSender(message.from, target.assignee)
           ? transitionAttempt(record, {
               subtaskId,
               attempt,
@@ -279,6 +408,8 @@ export function applyMessage(
       const target =
         subtaskId && attempt ? findAttempt(record, subtaskId, attempt) : null;
       const transition =
+        referenced !== null &&
+        ['ASK', 'BLOCK'].includes(referenced.type) &&
         target &&
         target.state === 'needs_input' &&
         target.awaiting === 'clarification'
@@ -296,7 +427,15 @@ export function applyMessage(
               reason: 'no_open_clarification',
               state: target?.state ?? null,
             };
-      recordMessage(record, message, 'applied', 'clarification answer', clock);
+      recordMessage(
+        record,
+        message,
+        'applied',
+        referenced && ['ASK', 'BLOCK'].includes(referenced.type)
+          ? 'clarification answer'
+          : 'coordinator decision recorded; no task state change',
+        clock,
+      );
       return {
         record,
         op: 'answer',

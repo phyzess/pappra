@@ -91,6 +91,7 @@ function makeMessage(
   overrides: {
     readonly message_id?: string;
     readonly from?: Identity;
+    readonly to?: Identity;
     readonly body?: Record<string, unknown>;
     readonly subtask_id?: string | null;
     readonly attempt?: number | null;
@@ -104,7 +105,7 @@ function makeMessage(
       message_id: overrides.message_id ?? `msg-${type.toLowerCase()}-1`,
       task_id: 'smoke',
       from: overrides.from ?? coordinator,
-      to: worker,
+      to: overrides.to ?? worker,
       reply_to: overrides.reply_to ?? null,
       subtask_id: overrides.subtask_id ?? null,
       attempt: overrides.attempt ?? null,
@@ -546,6 +547,7 @@ test('clarification, approval and stale-report boundaries survive the message pa
     const approval = makeMessage('BLOCK', {
       message_id: 'msg-approval-1',
       from: worker,
+      to: coordinator,
       subtask_id: 'work',
       attempt: 1,
       body: { kind: 'approval' },
@@ -570,6 +572,7 @@ test('clarification, approval and stale-report boundaries survive the message pa
     const clarification = makeMessage('BLOCK', {
       message_id: 'msg-clarification-1',
       from: worker,
+      to: coordinator,
       subtask_id: 'work',
       attempt: 1,
       body: { kind: 'clarification' },

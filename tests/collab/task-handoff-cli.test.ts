@@ -438,11 +438,19 @@ test('confirmation boundary rejects absent, unregistered, wrong and replayed evi
     assert.equal(epoch.status, 1, epoch.stderr);
     assert.equal(json(epoch).code, 'confirmation_epoch_mismatch');
 
-    const wrongHandoff = seedConfirmation(fixture.task, {
-      handoffId: 'other-handoff',
-      messageId: 'msg-c5-wrong-handoff',
-      body: { handoff_id: 'other-handoff' },
+    const wrongHandoff = buildMessage({
+      message_id: 'msg-c5-wrong-handoff',
+      type: 'HANDOFF',
+      task_id: 'sample',
+      from: RECEIVER,
+      to: COORDINATOR,
+      subtask_id: 'work',
+      owner_epoch: 1,
+      body: { handoff_id: 'other-handoff', phase: 'confirmation' },
     });
+    // Invalid correlation is refused during apply; retain only the envelope to
+    // exercise the confirmation boundary's independent validation.
+    registerMessage(fixture.task, wrongHandoff);
     const handoffMismatch = applyFile(
       fixture,
       'confirm',

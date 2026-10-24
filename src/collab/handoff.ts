@@ -114,11 +114,52 @@ export function beginHandoff(
       actual: ownerEpoch ?? null,
     };
   }
-  if (kind === 'writer') {
-    const target = findAttempt(record, subtaskId, attempt);
-    if (!target) return { ok: false as const, reason: 'unknown_attempt' };
-    target.ownership = 'transferring';
+  const target =
+    kind === 'writer' ? findAttempt(record, subtaskId, attempt) : null;
+  if (kind === 'writer' && !target)
+    return { ok: false as const, reason: 'unknown_attempt' };
+  const authority = kind === 'writer' ? target?.assignee : record.coordinator;
+  if (
+    !authority ||
+    authority.agent_id !== from.agent_id ||
+    authority.session_id !== from.session_id
+  )
+    return { ok: false as const, reason: 'unauthorized_sender' };
+  const seen = new Set<string>();
+  for (const claimId of resources) {
+    if (seen.has(claimId))
+      return {
+        ok: false as const,
+        reason: 'duplicate_handoff_resource',
+        claim_id: claimId,
+      };
+    seen.add(claimId);
+    const matches = (record.claims ?? []).filter(
+      (claim) => claim.claim_id === claimId,
+    );
+    if (matches.length !== 1)
+      return {
+        ok: false as const,
+        reason: matches.length ? 'ambiguous_claim_id' : 'unknown_claim',
+        claim_id: claimId,
+      };
+    const claim = matches[0]!;
+    if (
+      claim.released_at ||
+      claim.holder?.agent_id !== from.agent_id ||
+      claim.holder?.session_id !== from.session_id ||
+      (kind === 'writer' &&
+        ((claim.subtask_id !== null && claim.subtask_id !== subtaskId) ||
+          (claim.attempt !== null && claim.attempt !== attempt)))
+    )
+      return {
+        ok: false as const,
+        reason: 'handoff_resource_not_owned',
+        claim_id: claimId,
+      };
   }
+  // Validate the entire inventory before reserving an attempt or freezing dispatch.
+  if (target) target.ownership = 'transferring';
   const at = nowIso(clock);
   const entry = {
     schema: 'harness-collab/handoff/1',

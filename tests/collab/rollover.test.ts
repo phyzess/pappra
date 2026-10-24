@@ -627,6 +627,7 @@ test('an ACK must be stored, current and fully correlated to the intent', () => 
     readonly epoch?: number | null;
     readonly body?: Record<string, unknown>;
     readonly tamper?: boolean;
+    readonly applyReason?: string;
   }[] = [
     { name: 'unregistered', reason: 'ack_not_registered', submit: false },
     {
@@ -658,6 +659,7 @@ test('an ACK must be stored, current and fully correlated to the intent', () => 
       name: 'wrong handoff',
       reason: 'ack_correlation_mismatch',
       submit: true,
+      applyReason: 'unauthorized_sender',
       body: { handoff_id: 'other-handoff' },
     },
     {
@@ -709,7 +711,18 @@ test('an ACK must be stored, current and fully correlated to the intent', () => 
           ...item.body,
         },
       });
-      if (item.submit) applyTo(record, ack);
+      if (item.submit) {
+        if (item.applyReason) {
+          const before = structuredClone(record);
+          assert.deepEqual(applyMessage(record, ack), {
+            ok: false,
+            reason: item.applyReason,
+          });
+          assert.deepEqual(record, before);
+          continue;
+        }
+        applyTo(record, ack);
+      }
       let supplied: Message = ack;
       if (item.tamper) {
         const copy = JSON.parse(JSON.stringify(ack)) as Message;

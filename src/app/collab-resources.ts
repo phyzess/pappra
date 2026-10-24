@@ -7,6 +7,7 @@ import type { Identity, ResourceInput } from '../collab/types.js';
 import {
   activeClaims,
   claimResources,
+  checkClaimParticipant,
   DomainLockHeldError,
   listDomainRecords,
   releaseClaim,
@@ -158,6 +159,23 @@ export async function planResourceRequest(
 ): Promise<TaskStoreResult<Record<string, unknown>>> {
   const opened = await openForResource(taskRoot, request.action);
   if (!opened.ok) return opened;
+  if (request.action === 'claim') {
+    const participant = checkClaimParticipant(
+      opened.value.record,
+      identityOf(request.holder),
+      request.subtask_id ?? null,
+      request.attempt ?? null,
+    );
+    if (!participant.ok)
+      return {
+        ok: false,
+        code: participant.reason,
+        message:
+          'The resource holder is not authorized for an active task assignment.',
+        nextAction:
+          'Use the current coordinator identity or the matching active assignment and holder.',
+      };
+  }
   return {
     ok: true,
     value: {
@@ -196,6 +214,7 @@ export async function applyResourceRequest(
         includeSharedGit: request.include_shared_git === true,
         subtaskId: request.subtask_id ?? null,
         attempt: request.attempt ?? null,
+        requireAssignedHolder: true,
       });
     } catch (error) {
       if (error instanceof DomainLockHeldError)

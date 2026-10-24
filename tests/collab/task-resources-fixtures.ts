@@ -37,7 +37,10 @@ export const OTHER: Identity = {
 export function makeTaskDomain(
   label: string,
   taskIds: readonly string[],
-  options: { readonly initialize?: readonly string[] } = {},
+  options: {
+    readonly initialize?: readonly string[];
+    readonly coordinators?: Readonly<Record<string, Identity>>;
+  } = {},
 ): TaskDomainFixture {
   const root = realpathSync(makeTempDir(label));
   const domainRoot = join(root, 'domain');
@@ -53,7 +56,7 @@ export function makeTaskDomain(
       initTask(taskRoot, {
         taskId,
         domainRoot,
-        coordinator: owner,
+        coordinator: { ...owner, ...options.coordinators?.[taskId] },
       });
   }
   return {

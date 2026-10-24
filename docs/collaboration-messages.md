@@ -68,6 +68,24 @@ a path is built.
 - Returns the registered message path and SHA-256 of the file.
 - Never notifies anyone and never claims native delivery or task acceptance.
 
+### Protocol sender authority
+
+The owner epoch identifies an authority generation; it does not authorize an arbitrary sender.
+Before mutating an attempt, the protocol matches both `agent_id` and `session_id` against the
+recorded role. `ASSIGN` and `CANCEL` require the current coordinator; `ACK` and
+`CANCELLED` require the current attempt's assignee. `BLOCK` accepts the current assignee or
+coordinator so coordinator approval gates remain enforceable. A registered handoff receiver may acknowledge
+that exact pending handoff without changing the source writer's attempt. Handoff requests require
+the corresponding coordinator or writer. An `ANSWER` must correlate with the recorded question,
+its intended recipient and the current assignee; a worker cannot unblock another attempt by
+creating and answering its own question. Coordinator `ANSWER` decisions replying to assignments or
+reports are recorded as evidence for downstream validation and cannot resolve a clarification. Rejected senders do not mutate attempts, uncertainty or
+resource ownership. Stale `REPORT` messages remain evidence rather than authority over current work.
+
+These are protocol consistency checks within a cooperative, same-user environment. Envelope fields
+are not independently authenticated credentials; copying another participant's complete known identity
+is outside the identity guarantees of this CLI.
+
 ## Notify
 
 - Only forwards an **already registered** message pointer:
@@ -213,21 +231,32 @@ pappra collab resource release --task-root /abs/tasks/<task-id> \
 
 Requests use `pappra/collaboration-resource-request/1`; the action must match the
 command, and the holder has explicit nonempty agent/session identity. A claim
-uses the existing canonical resource kinds and access semantics:
+uses the existing canonical resource kinds and access semantics. The holder
+must match the current coordinator, or an `assigned`, `accepted`, or `running`
+attempt's assignee with explicit `subtask_id` and `attempt`. A frozen dispatch
+refuses new worker claims. The participant check runs again inside the claim
+transaction; a plan does not reserve that authority:
 
 ```json
 {
   "schema": "pappra/collaboration-resource-request/1",
   "action": "claim",
   "holder": { "agent_id": "worker", "session_id": "session-1", "harness": "pi" },
+  "subtask_id": "implementation",
+  "attempt": 1,
   "resources": [{ "kind": "path", "path": "/abs/target" }],
   "access": "write",
   "include_shared_git": false
 }
 ```
 
-A release names one `claim_id` and the same holder; there is no unowned or mass
-release. Request JSON is bounded at 1 MiB and read through the special-file-safe
+A release names one `claim_id` and the same holder; the low-level release API
+also requires an explicit holder. There is no unowned or mass release.
+These checks enforce recorded protocol roles, not caller authentication: this
+same-user CLI has no trusted caller identity and cannot distinguish an actor
+that deliberately copies another known agent/session identity. A duplicate
+self-declared actor field would not establish that identity.
+Request JSON is bounded at 1 MiB and read through the special-file-safe
 loader. Without `--apply`, a plan validates only the strict request and the task
 namespace: it creates no reservation, lock, transaction or claim. With `--apply`,
 the namespace is revalidated and exactly the existing `claimResources` or

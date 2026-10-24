@@ -167,6 +167,7 @@ interface AnswerOptions {
   readonly to?: Identity;
   readonly messageId?: string;
   readonly replyTo?: string;
+  readonly protocolRefusal?: string;
   /** Explicit sender timestamp, used to prove that sender time never orders authority. */
   readonly createdAt?: string;
 }
@@ -175,7 +176,7 @@ function answer(flow: Flow, options: AnswerOptions): Message {
   const digest = options.reportMessage.content_digest;
   assert.equal(typeof digest, 'string', 'the report must carry a digest');
   const attempt = options.attempt ?? 1;
-  return flow.send({
+  const input: MessageInput = {
     message_id: options.messageId ?? flow.nextId('msg-answer'),
     type: 'ANSWER',
     task_id: TASK,
@@ -201,7 +202,16 @@ function answer(flow: Flow, options: AnswerOptions): Message {
         decision: options.decision ?? 'accepted',
       },
     },
-  });
+  };
+  if (options.protocolRefusal !== undefined) {
+    const message = buildMessage(input);
+    const outcome = submitMessage(flow.task, message);
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.reason, options.protocolRefusal);
+    flow.messages.push(message);
+    return message;
+  }
+  return flow.send(input);
 }
 
 function node(
@@ -533,13 +543,21 @@ test('acceptance must be current, addressed and issued by the coordinator', () =
   }[] = [
     {
       name: 'self review',
-      overrides: { from: WRITER_A, to: WRITER_A },
-      code: 'acceptance_self_review',
+      overrides: {
+        from: WRITER_A,
+        to: WRITER_A,
+        protocolRefusal: 'unauthorized_sender',
+      },
+      code: 'acceptance_untrusted',
     },
     {
       name: 'non coordinator',
-      overrides: { from: WRITER_B, to: WRITER_A },
-      code: 'acceptance_not_coordinator',
+      overrides: {
+        from: WRITER_B,
+        to: WRITER_A,
+        protocolRefusal: 'unauthorized_sender',
+      },
+      code: 'acceptance_untrusted',
     },
     {
       name: 'stale owner epoch',

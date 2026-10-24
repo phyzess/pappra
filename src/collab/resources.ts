@@ -331,9 +331,41 @@ function nextResourceEpoch(
   return epoch + 1;
 }
 
+/** Check recorded protocol roles; this is not authentication of a same-user caller. */
+export function checkClaimParticipant(
+  record: TaskRecord,
+  holder: Identity,
+  subtaskId: string | null,
+  attempt: number | null,
+) {
+  if (
+    record.coordinator?.agent_id === holder.agent_id &&
+    record.coordinator.session_id === holder.session_id
+  )
+    return { ok: true as const };
+  if (subtaskId === null || attempt === null)
+    return { ok: false as const, reason: 'assigned_holder_required' };
+  const assigned = record.attempts.find(
+    (item) => item.subtask_id === subtaskId && item.attempt === attempt,
+  );
+  if (
+    !assigned ||
+    assigned.assignee.agent_id !== holder.agent_id ||
+    assigned.assignee.session_id !== holder.session_id
+  )
+    return { ok: false as const, reason: 'holder_assignment_mismatch' };
+  if (!['assigned', 'accepted', 'running'].includes(assigned.state))
+    return { ok: false as const, reason: 'holder_attempt_not_active' };
+  if (record.dispatch_frozen)
+    return { ok: false as const, reason: 'dispatch_frozen' };
+  return { ok: true as const };
+}
+
 /**
  * Claim resources for one task. The domain lock serialises the decision so two tasks
  * cannot both observe an empty domain and then claim the same path.
+ * Trusted internal preparation may claim for an assignee before ASSIGN is recorded;
+ * public request adapters must enable requireAssignedHolder.
  */
 export function claimResources(
   taskRoot: string,
@@ -347,6 +379,7 @@ export function claimResources(
     note = null,
     subtaskId = null,
     attempt = null,
+    requireAssignedHolder = false,
   }: {
     resources: ResourceInput[];
     access?: string;
@@ -357,6 +390,7 @@ export function claimResources(
     note?: string | null;
     subtaskId?: string | null;
     attempt?: number | null;
+    requireAssignedHolder?: boolean;
   },
 ) {
   const record = readRecord(taskRoot);
@@ -365,6 +399,15 @@ export function claimResources(
     return { ok: false as const, reason: 'invalid_access' };
   if (!holder?.agent_id || !holder?.session_id)
     return { ok: false as const, reason: 'holder_required' };
+  if (requireAssignedHolder) {
+    const participant = checkClaimParticipant(
+      record,
+      holder,
+      subtaskId,
+      attempt,
+    );
+    if (!participant.ok) return participant;
+  }
   const domainRoot = record.domain_root;
   const domainLock = acquireDomainLock(domainRoot, {
     waitMs,
@@ -426,6 +469,15 @@ export function claimResources(
       waitMs,
       clock,
       apply: (current) => {
+        if (requireAssignedHolder) {
+          const participant = checkClaimParticipant(
+            current,
+            holder,
+            subtaskId,
+            attempt,
+          );
+          if (!participant.ok) return participant;
+        }
         const fresh = scanConflicts(
           [
             current,
@@ -479,12 +531,14 @@ export function releaseClaim(
     holder,
     reason,
     clock = Date.now(),
-  }: { claimId: string; holder?: Identity; reason?: string; clock?: number },
+  }: { claimId: string; holder: Identity; reason?: string; clock?: number },
 ) {
+  if (!holder?.agent_id || !holder?.session_id)
+    return { ok: false as const, reason: 'holder_required' };
   const record = readRecord(taskRoot);
   if (!record) return { ok: false as const, reason: 'not_initialised' };
   const outcome = transact(taskRoot, {
-    actor: holder?.agent_id ?? 'unattributed',
+    actor: holder.agent_id,
     purpose: 'release',
     clock,
     apply: (current) => {
@@ -511,9 +565,8 @@ export function releaseClaim(
       if (claim.released_at)
         return { ok: false as const, reason: 'already_released' };
       if (
-        holder &&
-        (claim.holder?.agent_id !== holder.agent_id ||
-          claim.holder?.session_id !== holder.session_id)
+        claim.holder?.agent_id !== holder.agent_id ||
+        claim.holder?.session_id !== holder.session_id
       ) {
         return {
           ok: false as const,
@@ -528,7 +581,7 @@ export function releaseClaim(
           detail: 'a cancel request does not prove the holder stopped',
         };
       claim.released_at = nowIso(clock);
-      claim.released_by = holder?.agent_id ?? 'unattributed';
+      claim.released_by = holder.agent_id;
       claim.release_reason = reason ?? null;
       return {
         record: current,
