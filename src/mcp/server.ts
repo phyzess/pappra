@@ -288,6 +288,8 @@ export function createPappraMcpServer(
           provider: result.result?.provider ?? null,
           coverage: result.result?.coverage ?? null,
           items: result.result?.items ?? [],
+          truncated: result.result?.truncated ?? false,
+          reasons: result.result?.reasons ?? [],
           health: result.health,
           diagnostics: result.diagnostics,
         };

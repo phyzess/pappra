@@ -172,6 +172,46 @@ test('mcp tools report typed failures instead of throwing', async () => {
   }
 });
 
+test('code_query exposes text results and output budget reasons over MCP', async () => {
+  const root = makeTempDir('mcp-code-query');
+  try {
+    createRepository(root);
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        repositories: [{ id: 'app', path: '.', access: 'write' }],
+      }),
+    );
+    writeMachineConfig(root, baseMachineConfig(root));
+    writeFileSync(join(root, 'needle.ts'), 'export const uniqueNeedle = 1;\n');
+    const { client, server } = await connect(root);
+    try {
+      const query = { repo: 'app', kind: 'text', query: 'uniqueNeedle' };
+      const found = textPayload(
+        await client.callTool({ name: 'code_query', arguments: query }),
+      );
+      assert.equal(found.ok, true);
+      assert.equal(found.provider, 'text');
+      assert.equal((found.items as { path: string }[])[0]?.path, 'needle.ts');
+      const bounded = textPayload(
+        await client.callTool({
+          name: 'code_query',
+          arguments: { ...query, maxBytes: 1 },
+        }),
+      );
+      assert.equal(bounded.ok, true);
+      assert.deepEqual(bounded.items, []);
+      assert.equal(bounded.truncated, true);
+      assert((bounded.reasons as string[]).includes('output_budget'));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  } finally {
+    cleanup(root);
+  }
+});
+
 test('mcp write tools require apply and then persist', async () => {
   const root = makeTempDir('mcp-write');
   try {
