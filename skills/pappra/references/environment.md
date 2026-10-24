@@ -31,6 +31,15 @@ $env.HERDR_ENV? == '1'
 - If the task requires visible delivery and it is unavailable, report the
   blocker. Do not start a hidden duplicate of the required participant.
 
+A failed inherited `pane current --current` lookup is not enough to conclude
+that native collaboration is unavailable. For a moved pane or a persistent
+app-server with stale inherited context, inspect the current task's known
+caller binding and the named live agent metadata. An unambiguous task-bound
+caller can use `pane current --pane <id>` and Pappra's `--caller-pane` route.
+Compare the actual harness, cwd and reported session where available; never
+choose a pane merely because it is focused. If identity remains ambiguous,
+report that exact gap and do not dispatch. Route evidence is not process proof.
+
 `pappra collab message notify` supports two caller routes. The default requires
 the inherited Herdr context; `--caller-pane <id>` names the sender pane
 explicitly for hosted or stale inherited contexts. Either way the pane is

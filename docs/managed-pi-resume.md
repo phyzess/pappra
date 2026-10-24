@@ -24,9 +24,10 @@ must establish all of the following before native session open:
 
 - The original process is absent according to the local OS. A live/reused PID or
   unknown process-death observation refuses admission.
-- The checkpoint belongs to the same OS boot and PID namespace, identified by a
-  hashed OS boot identifier (and Linux PID-namespace identity), not a hostname.
-  A copied remote checkpoint or another boot/container cannot prove local death.
+- New checkpoints identify the physical machine, OS boot, PID namespace and process birth.
+  On the same machine, a prior boot or a replaced process birth proves the original owner
+  is dead even when its PID has been reused. A different machine or inaccessible process
+  observation remains unknown; a hostname is never evidence of ownership.
 - The original task-owned runtime registration, private control descriptor and
   complete hash-chained source journal agree on scope/session/run identity.
 - A versioned complete-idle checkpoint covers the exact native transcript. Known
@@ -38,7 +39,9 @@ must establish all of the following before native session open:
 - One exclusive task-store reservation is established for this exact source run
   and checkpoint. Concurrent reservations owned by a live process are not bypassed.
   Failed startup and normal shutdown release their exact reservation; the next
-  attempt reclaims reservations whose owner is proven dead before checking capacity.
+  attempt reclaims reservations whose exact owner is proven dead before checking capacity,
+  including owners from a previous boot. Failed cleanup returns failure without masking
+  the original startup/runtime error.
 
 An in-process opaque authorization carries these verified pins to the SDK opener.
 The reopened session must retain the same UUID, cwd and transcript. Before native
@@ -57,6 +60,14 @@ have drifted, preserve the evidence and reconcile explicitly.
 For a Herdr-hosted source, resume stays in its recorded pane and retains the
 existing participant binding; it does not silently move a route to another pane.
 Journal and native-history reads are bounded at 32 MiB and 64 MiB respectively.
+Retirement uses the same 64 MiB native-history limit, so a valid resumed transcript
+does not become ineligible for a later handoff at an unrelated 8 MiB ceiling.
+
+The native SDK receives an opaque in-memory resume capability. Its private registry tracks
+reserved, registered and revoked state, and invokes the issuer's current task/namespace/
+transcript checks at every native admission boundary. Copying or serializing the capability
+cannot copy its authority. Issuance is an internal application port, absent from the public
+experimental Pi API; the native controller does not import application orchestration.
 
 A session with no real conversation may have no native transcript file: Pi 1.4
 does not persist setup/custom entries alone. Such startup does not manufacture a

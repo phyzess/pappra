@@ -18,7 +18,7 @@ Thus no documented installed API provides a correlated, fresh, complete inventor
 
 ## Local bridge boundary
 
-`src/hosts/integration/pi-session-transition-extension.ts` already reports `pi_native_quiescence_proof_unavailable`; its existing managed-tool freeze is not native or external-writer stop proof. `src/hosts/integration/pi-native-events.ts` tracks only supported in-process observations: queue and approvals remain `unknown`, in-flight completeness remains `unknown`, and `nativeStop` is always `false`. No adapter or test-only proof was added. The existing owned RPC controller in `src/hosts/pi/rpc.ts` can stop only the child it launched; its documented scope excludes arbitrary background/descendant writers and it is not the current extension-bound interactive source.
+`src/adapters/pi/session-transition-extension.ts` already reports `pi_native_quiescence_proof_unavailable`; its existing managed-tool freeze is not native or external-writer stop proof. The composition lives in the adapter layer while the observed primitives stay in `src/hosts/integration/pi-native-events.ts`, which tracks only supported in-process observations: queue and approvals remain `unknown`, in-flight completeness remains `unknown`, and `nativeStop` is always `false`. No additional native proof was added. The existing owned RPC controller in `src/hosts/pi/rpc.ts` can stop only the child it launched; its documented scope excludes arbitrary background/descendant writers and it is not the current extension-bound interactive source.
 
 ## Pinned sources
 
@@ -33,7 +33,7 @@ All installed Pi files below are from `/Users/zimm.yu/.local/share/pi-1.3.0/pi`:
 
 Local implementation pins:
 
-- `src/hosts/integration/pi-session-transition-extension.ts` — SHA-256 `19142bb7c141c17a36bf9fa293575328b3f3d4f07fe7d449e08b49940fa5d2bd`.
+- `src/adapters/pi/session-transition-extension.ts` — SHA-256 `97406458db100c62e929feb413b70086ed49df14e297194250a1e4219a297d2f` (composition moved out of `src/hosts`; primitives below are unchanged).
 - `src/hosts/integration/pi-native-events.ts` — SHA-256 `c2ddeeb3ba8c93b7de3b2ead85067f4ba2e673eda5a07da61224a971771c7107`.
 - `src/hosts/pi/rpc.ts` — SHA-256 `aae0f980b5a87a4757e0a77f929a79dca1efa35423a6710c0dd7b06dfb162124`.
 - `docs/pi-rpc.md` — SHA-256 `a6ffb4bedf6b3c74f0ded36aa3a370571ec219b221b0bdc5d258bd200743d543`.

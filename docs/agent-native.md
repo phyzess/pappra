@@ -115,13 +115,13 @@ conflict; `--force` replaces it.
 ## Task pin and auto-resume
 
 ```sh
-pappra task pin FIJI-123456 --auto-resume --json   # pin + enable the workspace switch
+pappra task pin FIJI-123456 --auto-resume --json   # pin + enable this checkout's preference
 pappra task show --json
 pappra task unpin
 ```
 
 The pin lives in `.pappra/local/current-task`; `--auto-resume` sets
-`continuity.autoResume` in `workspace.json` (backing up the previous file). Hooks include a
+the ignored `.pappra/local/task-preferences.json` (`pappra/task-preferences/1`). It does not modify shared `workspace.json`; cloning the shared workspace does not enable another user's preference. Hooks include a
 bounded resume packet only when both the switch and a pin exist; without a pin they keep the
 generic advisory text. Neither grants execution.
 

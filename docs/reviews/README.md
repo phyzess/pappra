@@ -1,14 +1,25 @@
-# Historical review archive
+# Review index
 
-These files record implementation reviews and their evidence at the time of writing.
-They are historical snapshots, not current requirements, operating instructions, or
-proof that today's checkout passes. A direction, revision, or acceptance note applies
-only to the change it reviewed; later implementation and tests may supersede it.
+This directory holds only the current review index. It is not a log and not a
+place for new review discussion: reviews belong in the issue or pull request
+that carries the change.
 
-Use the maintained guides linked from the root README for current behavior. In
-particular, older MCP launch-confirmation and configuration-only init exit-code
-descriptions have been superseded. Temporary paths and session identifiers in these
-notes refer to past local evidence and are not portable reproduction instructions.
+## Current contracts
 
-Keep new review discussions and transient execution logs in the issue or pull request.
-Retain repository documentation for current contracts, decisions and reproducible checks.
+Current behaviour is described by the maintained guides, not by review notes:
+
+- [API boundaries](../api.md) — package entrypoints, experimental surfaces, safety contract.
+- [Quick start](../quickstart.md) — install, init, runtime and optional surfaces.
+- Topic guides next to them (`collaboration-*.md`, `managed-pi-*.md`, `pi-rpc.md`).
+
+## Historical reviews
+
+Earlier direction, revision and acceptance notes are archived privately under `.pappra/local/review-archive/`. That location is machine-local
+and untracked by design: the notes are process evidence, not current
+requirements, and Git history still holds the exact bytes they were removed
+from. Copy them out of the archive only when reproducing a specific past
+decision.
+
+Anything in an archived note — an accepted direction, a superseded exit code, a
+temporary path or session identifier — applies to the change it reviewed and
+proves nothing about today's checkout.

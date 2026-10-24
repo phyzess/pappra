@@ -1,19 +1,33 @@
 # Collaboration delivery guide
 
-Pappra exposes bounded collaboration planning, work notification and recovery APIs through stable package exports. Keep planning, notification, recovery and session transition as separate operations: an intent, submitted notification, ACK or task-local retirement marker is not proof of completed work or native session takeover.
+Pappra exposes bounded collaboration planning, work notification and recovery APIs through the experimental package entrypoints. Keep planning, notification, recovery and session transition as separate operations: an intent, submitted notification, ACK or task-local retirement marker is not proof of completed work or native session takeover.
 
 ## Public consumer APIs
 
-The package root includes namespaced APIs for `collabWorkPlan`, `collabWorkPlanInspection`, `collabWorkExecution`, `collabRecovery`, `collabRecoveryProjection`, `collabRecoveryExecutor` and `collabSessionTransition`. Direct subpath imports are also available:
+The package root includes namespaced APIs for `collabWorkPlan`,
+`collabWorkPlanInspection`, `collabWorkExecution`, `collabRecovery`,
+`collabRecoveryProjection`, `collabRecoveryExecutor` and `collabSessionTransition`.
+Beta 0.1.0 publishes no per-surface subpaths for them; take each namespace from the
+curated experimental barrel:
 
 ```ts
-import { validateWorkPlan, evaluateWorkPlan } from '@phyzess/pappra/collab/work-plan';
-import { inspectWorkPlan } from '@phyzess/pappra/collab/work-plan-inspection';
-import { runWorkExecution } from '@phyzess/pappra/collab/work-execution';
-import { executeRecovery } from '@phyzess/pappra/collab/recovery-executor';
+import * as collab from '@phyzess/pappra/collab';
+import * as experimental from '@phyzess/pappra/experimental';
+
+const { validateWorkPlan, evaluateWorkPlan } = collab.workPlan;
+const { inspectWorkPlan } = experimental.collabWorkPlanInspection;
+const { runWorkExecution } = experimental.collabWorkExecution;
+const { executeRecovery } = experimental.collabRecoveryExecutor;
 ```
 
-Use `@phyzess/pappra/collab/recovery`, `@phyzess/pappra/collab/recovery-projection` and `@phyzess/pappra/collab/session-transition` for the related read-only inspection, guarded recovery and resumable transition APIs. Host-specific Pi APIs are exposed under `@phyzess/pappra/hosts/pi-recovery` and `@phyzess/pappra/hosts/pi-session-transition`. Existing package exports remain available.
+Read-only recovery inspection, guarded recovery and resumable session transition
+live in `experimental.collabRecovery`, `experimental.collabRecoveryProjection` and
+`experimental.collabSessionTransition`. Host-specific Pi APIs live in
+`@phyzess/pappra/experimental/pi` (`piRecovery`, `piSessionTransition`,
+`piManaged`, `piManagedSdk`). The earlier `pappra/collab/*`, `pappra/hosts/pi-*` and
+`pappra/collaboration` specifiers are removed and fail with
+`ERR_PACKAGE_PATH_NOT_EXPORTED`; [API boundaries](api.md) carries the migration and
+reset policy.
 
 ## Parallel work on existing assignments
 

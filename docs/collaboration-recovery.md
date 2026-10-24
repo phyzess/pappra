@@ -11,7 +11,7 @@ verifies the live target before dispatching.
 - **R2 — executor (durable).** `executeRecovery` (`src/app/collab-recovery-executor.ts`) turns one
   actionable projection into at most one issued continuation/review wake, guarded by an atomic durable
   reservation keyed on the canonical cause.
-- **R3 — opt-in Pi controller.** `recoveryExtension` (`src/hosts/integration/pi-recovery-extension.ts`)
+- **R3 — opt-in Pi controller.** `recoveryExtension` (`src/adapters/pi/recovery-extension.ts`)
   reconciles on supported startup/settled/manual triggers, gated by the actual host session.
 - **CLI handler.** `runCollaborationRecoveryRunCommand` (`src/cli/commands/collaboration-recovery-run.ts`)
   exposes a `plan`/`apply` boundary for the integration router.

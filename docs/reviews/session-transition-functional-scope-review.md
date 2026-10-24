@@ -1,9 +1,0 @@
-# Session transition controller scope review
-
-The reported eight-file snapshot passes independent strict scoped compilation, all nine supplied tests and one additional real-task concurrent-apply regression (one freeze call, no premature bootstrap). Retained output: `/private/tmp/session-transition-review.MvHnRK`. Report/output/source digests and all 28 protected pins match. Report SHA-256: `83537cc92c3549c3270734a7b724f5bde9af9f470af129a9907b4e8a5d707d0e`.
-
-The controller correctly blocks the installed Pi path without complete session-bound quiescence proof. CLI-only apply requires the host adapter. Injected supported-adapter tests cover source preparation, exact receiver ACK, claim transfer, successor-only task binding, admitted first-work report, then reversible retirement; they are evidence of controller ordering, not actual Pi support. Unknown freeze is not replayed, and source/successor authority drift blocks effects.
-
-Scoped controller checks pass. Full functional/production takeover acceptance remains **pending**, including actual native source quiescence, production successor launch/ACK, effective removal of the predecessor route, first authorized work and archive/retirement. Writing a new successor-only binding artifact does not establish removal of all old external routes or native archival. No full regression, package, installation or live transition campaign was run.
-
-The next task must close the host capability dependency or establish the supported alternative and exact remaining upstream requirements. It must use a fresh visible Pi session with an explicit Pi-configured OpenRouter provider/model and a bounded handoff, per the user's cost/context policy. Do not weaken existing core inventory/transfer guards or reuse the old implementation/investigation context for the new task. Existing sessions remain retained for their pending results; no native archive is inferred from task metadata.

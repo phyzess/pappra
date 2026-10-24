@@ -7,6 +7,15 @@ keeps them separate and never infers one from another.
 
 ## MCP collaboration preparation
 
+The default MCP server is read-only. A trusted host must enable
+`pappra mcp --allow-workspace-writes` at server startup before checkpoint,
+knowledge registration or workspace-private collaboration preparation can write.
+Tool `apply`/`confirm` fields never grant that policy. Runtime installation,
+external engine preparation and process launch require the authorized CLI.
+MCP preparation domains resolve under `.pappra/local/collaboration`, with cwd
+and resources inside the workspace; use the CLI for explicitly authorized
+external domains. The CLI workflow below is independent of MCP write policy.
+
 MCP `collab_prepare` uses the same strict `pappra/collaboration-goal/1` as the installed CLI and accepts exactly `{ domainRoot, goal }`:
 
 ```json

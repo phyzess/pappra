@@ -78,13 +78,34 @@ pappra repair --runtime-version 0.1.0 --json
 pappra repair --runtime-version 0.1.0 --apply
 ```
 
-`repair` previews incomplete journals and remaining install locks. Add `--install-id <uuid>`
+`repair` finds the nearest workspace from a subdirectory and previews incomplete journals plus
+install, knowledge and checkpoint writer locks. Add `--install-id <uuid>`
 to select one incomplete journal. `--apply` reclaims a lock only when its recorded owner is
 provably dead, rolls back files with verified ownership, and restores journaled reconfiguration
 backups. For runtimes it removes only journal-owned staging, or finalizes an already published
 copy whose manifest and contents still match, without executing the runtime. Live or unknown
 owners, modified files, invalid journals and unproven backup paths are preserved and reported.
 Reconfiguration holds the same workspace lock and journal through replacements and creations.
+Files created before their inode reached the journal remain in place, with an explicit
+preservation audit; their ownership is not adopted. Lock publication is atomic, so a new
+writer never exposes an empty named owner record. `doctor` reports dead or unknown writers
+and points to the same repair surface.
+
+For copied or moved beta workspaces, stop every affected writer before explicitly starting
+fresh local state; this preserves the old bytes instead of migrating machine bindings:
+
+```sh
+pappra repair --reset-local --json                 # read-only plan
+pappra repair --reset-local --all-writers-stopped --apply
+pappra init --yes --apply
+```
+
+The old tree remains under ignored `.pappra/local-archive/<id>`. Reset has its own recoverable
+journal and refuses verified live owners. The stopped-writers flag is an operator assertion
+for unknown/imported ownership, not process stop proof. For a single malformed or empty lock,
+`repair --quarantine-unowned-locks --apply` provides the same explicit stop-all-writers
+precondition and preserves the lock plus a receipt in private quarantine. Never use either
+escape while a writer is alive or paused.
 
 Every first private-state write creates `.pappra/local/.gitignore` with a final `*`
 rule, including writes performed without init. Checkpoint payloads retain tracked
@@ -189,6 +210,11 @@ The check runs the source policy, type checks, formatting, deterministic tests a
 ## Status and limits
 
 Pappra is development software (`0.1.0-beta.14`) published as `@phyzess/pappra` under the `beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing (OIDC), so no npm token is stored in this repository. Pin either the moving `beta` tag or an exact version such as `@phyzess/pappra@0.1.0-beta.14`, because pre-release versions are never republished.
+
+The deterministic runner removes inherited `PAPPRA_*` controls and isolates global/system
+Git configuration. Test cases inject required Pappra variables explicitly. Native provider
+acceptance is run separately against its selected test file, rather than enabled by ambient
+opt-in flags during `pnpm check`.
 
 The deterministic suite covers synthetic workspaces, fixtures and local process boundaries. It does not establish real-model behavior, native host callability on every platform, CodeGraph completeness, Windows/Linux parity or production performance. A host adapter version pin is an observed support claim, not proof that a particular native installation will load or run correctly.
 

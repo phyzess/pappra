@@ -39,6 +39,27 @@ pappra code prepare --repo <repo> --apply --json
 pinned support matrix. Host trust is never approved automatically: Codex needs one hook
 approval, Pi a project-trust approval, Claude a reload/trust step if prompted.
 
+## Fresh beta local state after a copy or move
+
+There is no compatibility migration for old beta machine bindings. If private state was
+copied accidentally, stop every writer that could still use it, then preview and explicitly
+archive that state:
+
+```sh
+pappra repair --reset-local --json
+pappra repair --reset-local --all-writers-stopped --apply
+pappra init --yes --apply
+```
+
+The old `.pappra/local` is atomically moved to `.pappra/local-archive/<id>` under a private
+ignore-all rule; nothing in that tree is deleted or rewritten. A journal outside the moved
+tree permits recovery after interruption before fresh local publication. Shared workspace
+configuration and shared knowledge remain untouched. Verified live private writers and
+managed registrations refuse reset; PID-only imported metadata remains unknown and is
+covered only by the explicit operator assertion. This command neither stops nor adopts a
+process. Host settings installed elsewhere are separate from private local state and may
+need their own install/verify operation.
+
 ## If the workspace root is not a Git repository
 
 That is supported. Checkpoints and configuration do not require repository identity; only

@@ -51,7 +51,7 @@ For `target.choice: "sibling"`, apply:
 3. Without `managed_runtime`, starts legacy native Pi in that pane with the exact UUID and accepted gate entry, equivalent to:
 
    ```text
-   herdr agent start <name> --kind pi --pane <created-pane-id> --timeout 45000 -- --session-id <successor-uuid> --name <name> --extension <absolute-entry>
+   herdr agent start <name> --kind pi --pane <created-pane-id> --timeout 180000 -- --session-id <successor-uuid> --name <name> --extension <absolute-entry>
    ```
 
    Legacy launch preserves daily settings and uses the daily default unless an explicit OpenRouter model was admitted. It does **not** prove inheritance of another session's mutable selected model.
@@ -63,6 +63,15 @@ For `target.choice: "sibling"`, apply:
 5. Notifies the registered message pointer once through the existing message protocol. A successful prompt submission is reported as `submitted`, not as consumed or accepted.
 
 If readiness fails or is unknown before startup, cleanup is limited to the pane returned by this request's successful split. Before `pane close`, apply rechecks the owned pane identity/cwd, confirms there is no agent, and requires the expected available-shell process facts. It never closes a reused or unrelated pane. After a managed CLI may have been submitted, unknown/late/mismatched startup is not auto-closed or reissued; the reservation remains for reconciliation and no binding or notification is written.
+
+`target.start_timeout_ms` optionally sets the startup budget from 1 to 600,000 ms; the
+default is 180,000 ms for both native and managed SDK starts. Session transitions verify
+the successor SDK package version and pinned private source before freezing the source,
+and recheck immediately before the first freeze. An interrupted reservation can be
+reclaimed only when its exact owner is proven dead and it still has no native intent,
+receipt or created pane. Ambiguous split/start outcomes remain for reconciliation. A
+known failed start releases its reservation only after the exact owned pane is verified
+empty and closed.
 
 For `target.choice: "reuse"`, the task-local binding, live Herdr occupant, exact native session/cwd and a fresh runtime capability card must match. The existing participant receives the one registered message. Reuse does not inspect process-info, wait for a shell, split, start, or close anything. A mismatch returns `unsupported_reuse`; it never falls back to a sibling launch.
 

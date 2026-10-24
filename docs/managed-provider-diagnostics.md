@@ -43,4 +43,4 @@ checkpoint, task-authority and unresolved-effect gates.
 
 These observations help diagnose a future recurrence of the historical generic
 connection errors. They cannot recover details that the original transcripts did
-not preserve. See [the historical investigation](reviews/pi-connection-errors-v6.md).
+not preserve. See [the historical investigation](reviews/README.md).

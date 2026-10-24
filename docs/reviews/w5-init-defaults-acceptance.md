@@ -1,7 +1,0 @@
-# W5 acceptance: common init defaults
-
-Accepted within the pinned shared-default scope. Report correlation, all output/input/assignment/direction digests and all 87 current combined-manifest files verified. Exactly four files changed from the assignment baseline: app init, CLI init, wizard tests and fake UI fixture; the other 83 remain unchanged.
-
-`deriveCommonInitDefaults` is a small pure helper used by both derivation and fresh interactive collection. It centralizes name, root rule/docs sources, destination/privacy, symbols/preparation and exclusions. README remains selectable rather than independently preselected by the wizard. Exclusions now have an actual initial value and user edits replace it. Repository, validation, graph and host mode differences remain explicit; the interactive path does not call derivation's host/version probes. Existing-config reuse remains unchanged pending W6.
-
-Independent test compilation, all 37 init plan/wizard/CLI/apply tests and type checking passed. Source review confirms common defaults do not run commands or write; tests observe actual initial values, preserve explicit edits and cancellation, and check equivalent explicit-choice plan scopes. No full-suite/package repetition was warranted. New-assignment coordinator and receiver readiness evidence was verified separately. This accepts the defaults portion of batch 4; field-local validation, prefilled reconfiguration and full wizard/preview experience remain outstanding.

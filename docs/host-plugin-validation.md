@@ -249,3 +249,36 @@ require their own registration step:
 state and the exact commands, while `--mode project-settings` remains the automatic
 workspace wiring. `HOST_PLUGIN_HOOKS` in `src/hosts/integration/support.ts` records the
 evidence that gates this message.
+
+## Version observation and reversible wiring
+
+Installation and verification run the selected PATH executable with `--version`; a
+caller-supplied `--host-version` string is not runtime evidence. File wiring accepts the
+explicitly observed event versions Pi 1.3.0/1.4.0, Codex 0.163.0/0.164.0 and Claude Code
+2.1.292/2.1.308. It does not admit arbitrary future versions or relax the separate managed
+SDK's exact 1.4.0/private-source contract. A successful version probe or hook-payload replay
+does not establish interactive host trust, loading or model callability.
+
+Claude `PostCompact` is observation-only: Pappra records the local event and emits no
+SessionStart-shaped `additionalContext` response. The [official hook reference](https://code.claude.com/docs/en/hooks#postcompact)
+documents this event as a post-compaction observer without decision control. Startup/resume
+advisories include checkpoint content only when task, workspace ID and stored identity checks
+match the current workspace. Copied foreign-workspace checkpoints are not injected.
+
+`host uninstall --host <name> [--host-root <dir>] [--scope user]` previews by default;
+`--apply` detaches recognized managed hooks and removes unchanged known assets. User hooks,
+unrelated settings bytes, formatting and file permissions are preserved. Edited or unsafe
+assets remain explicit residuals together with their ownership manifest; an edited Pi
+extension retains its runtime companion. Uninstall does not require a callable host binary.
+
+Host locks are published as complete, fsynced process-identity records. A proven dead owner
+can be reclaimed without an age lease. An unknown legacy lock is preserved by default;
+after stopping **all** writers using that host root, `host uninstall ... --force --apply`
+asserts that stop and archives the exact lock bytes plus a receipt under ignored private
+`.pappra/local/host-lock-archive` before removing the unchanged original. A verified live
+owner is refused even with `--force`; that flag never authorizes deleting edited assets.
+
+Project Claude hook commands and Pi extension imports are relative to their project root;
+their copied manifests can be verified and reinstalled after moving a checkout. `doctor`
+observes installed manifests under all known host roots, independently of selected-host
+preferences, and still reports native trust/reload/callability as unverified.
