@@ -906,6 +906,8 @@ async function handleControl(
 ) {
   let text = '';
   let handled = false;
+  // A disconnected client cannot crash or fence the owned session.
+  socket.on('error', () => socket.destroy());
   socket.setTimeout(75_000, () => socket.destroy());
   socket.on('data', (chunk) => {
     if (handled) return;
@@ -1126,6 +1128,8 @@ class ManagedPiSessionController implements ManagedPiSession {
   private readonly helperExitPromise: Promise<void>;
   private readonly inputData: (chunk: Buffer | string) => void;
   private readonly resize: () => void;
+  private readonly outputDrain: () => void;
+  private readonly terminalError: () => void;
   private rawBefore: boolean;
   private closed = false;
 
@@ -1181,6 +1185,21 @@ class ManagedPiSessionController implements ManagedPiSession {
       if (!sent) this.fenceIngress('journal_or_pty_input_failed');
     };
     this.resize = () => this.sendResize();
+    this.outputDrain = () => this.child.stdout?.resume();
+    this.terminalError = () => this.failIo('terminal_stream_failed');
+
+    for (const stream of [
+      this.child.stdin,
+      this.child.stdout,
+      this.child.stderr,
+      this.status,
+      this.control,
+    ]) {
+      stream?.on('error', () => this.failIo('pty_stream_failed'));
+    }
+    process.stdin.on('error', this.terminalError);
+    process.stdout.on('error', this.terminalError);
+    process.stderr.on('error', this.terminalError);
 
     this.child.stdin?.on('drain', () => {
       if (!this.fenced) process.stdin.resume();
@@ -1188,7 +1207,7 @@ class ManagedPiSessionController implements ManagedPiSession {
     this.child.stdout?.on('data', (chunk: Buffer) => {
       if (!process.stdout.write(chunk)) this.child.stdout?.pause();
     });
-    process.stdout.on('drain', () => this.child.stdout?.resume());
+    process.stdout.on('drain', this.outputDrain);
     this.child.stderr?.on('data', (chunk: Buffer) =>
       process.stderr.write(chunk),
     );
@@ -1203,11 +1222,13 @@ class ManagedPiSessionController implements ManagedPiSession {
         this.finishUnknown('bridge_status_ended_without_pi_exit');
       }
     });
-    this.child.on('error', (error) =>
-      this.failStart(
-        new ManagedPiSessionError('pty_bridge_failed', error.message),
-      ),
-    );
+    this.child.on('error', () => this.failIo('pty_bridge_failed'));
+    this.child.once('close', () => {
+      process.stdout.removeListener('drain', this.outputDrain);
+      process.stdin.removeListener('error', this.terminalError);
+      process.stdout.removeListener('error', this.terminalError);
+      process.stderr.removeListener('error', this.terminalError);
+    });
     this.child.on('exit', (code, signal) => {
       this.helperExit = { code: code ?? null, signal: signal ?? null };
       this.resolveHelperExit();
@@ -1262,6 +1283,11 @@ class ManagedPiSessionController implements ManagedPiSession {
   private failStart(error: Error) {
     this.settleStart(error);
     this.fenceIngress('startup_or_bridge_failure');
+  }
+
+  private failIo(reason: string) {
+    this.failStart(new ManagedPiSessionError(reason));
+    this.finishUnknown(reason);
   }
 
   private finishUnknown(reason: string) {
@@ -1664,6 +1690,7 @@ export async function startManagedPiSession(
   const server = net.createServer((socket) => {
     void handleControl(socket, token, () => controller);
   });
+  server.on('error', () => controller?.fenceIngress('control_server_failed'));
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(socketPath, () => {

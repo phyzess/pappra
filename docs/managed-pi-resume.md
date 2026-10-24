@@ -36,7 +36,9 @@ must establish all of the following before native session open:
 - The task namespace, latest active attempt, admitted Assignment, coordinator,
   input revision, approval state and exact unreleased resource claims are current.
 - One exclusive task-store reservation is established for this exact source run
-  and checkpoint. Concurrent or unfinished prior reservations are not bypassed.
+  and checkpoint. Concurrent reservations owned by a live process are not bypassed.
+  Failed startup and normal shutdown release their exact reservation; the next
+  attempt reclaims reservations whose owner is proven dead before checking capacity.
 
 An in-process opaque authorization carries these verified pins to the SDK opener.
 The reopened session must retain the same UUID, cwd and transcript. Before native
@@ -49,8 +51,8 @@ model turn merely because the runtime has changed.
 This first mode requires one immediate task scope. Deferred initial Assignment,
 bootstrap receiver and automatic-handoff startup cannot be combined with resume.
 They retain their existing fresh-session contracts. Pre-upgrade journals without
-resume checkpoints cannot be adopted. If a reservation is left unfinished, the
-source journal is partial/altered, native outcome is unresolved, or permissions
+resume checkpoints cannot be adopted. If the source journal is partial/altered,
+native outcome is unresolved, or permissions
 have drifted, preserve the evidence and reconcile explicitly.
 For a Herdr-hosted source, resume stays in its recorded pane and retains the
 existing participant binding; it does not silently move a route to another pane.

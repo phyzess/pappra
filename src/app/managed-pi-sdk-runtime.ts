@@ -43,6 +43,7 @@ import {
 import {
   canExecuteManagedPiResume,
   prepareManagedPiResume,
+  releaseManagedPiResume,
 } from './managed-pi-resume-admission.js';
 /** Native SDK CLI lifecycle, including a receiver's deferred authoritative task binding. */
 export async function runManagedPiSdkRuntime(
@@ -91,11 +92,8 @@ export async function runManagedPiSdkRuntime(
       canonicalJson(automatic.transition.managed_execution_scope)
   )
     throw new Error('managed_execution_scope_conflict');
-  const resumeAuthorization = request.resume
-    ? await prepareManagedPiResume(request)
-    : undefined;
   if (
-    resumeAuthorization &&
+    request.resume &&
     (!request.executionScope ||
       bootstrap ||
       automatic ||
@@ -103,6 +101,9 @@ export async function runManagedPiSdkRuntime(
       request.handoffContextFile)
   )
     throw new Error('managed_pi_resume_scope_or_mode_invalid');
+  const resumeAuthorization = request.resume
+    ? await prepareManagedPiResume(request)
+    : undefined;
   let scope: ManagedPiExecutionScope | null = null;
   let host: SessionTransitionHost | undefined;
   let control: Awaited<ReturnType<typeof serveManagedPiSdkControl>> | null =
@@ -582,28 +583,32 @@ export async function runManagedPiSdkRuntime(
     ]);
     return signalFailed ? 1 : 0;
   } finally {
-    ready = false;
-    process.off('SIGINT', onSignal);
-    process.off('SIGTERM', onSignal);
-    if (retirementWatch) clearInterval(retirementWatch);
-    await readiness?.close();
-    unbindInitialLifecycle?.();
-    (handoff as ReturnType<typeof watchAutomaticHandoff> | null)?.close();
-    await admission?.close();
-    await (
-      initialAdmission as Awaited<
-        ReturnType<typeof watchManagedPiInitialAdmission>
-      > | null
-    )?.close();
-    receiver?.close();
-    await (
-      publication as Awaited<
-        ReturnType<typeof publishManagedPiHerdrIdentity>
-      > | null
-    )?.close();
-    (
-      control as Awaited<ReturnType<typeof serveManagedPiSdkControl>> | null
-    )?.close();
-    await controller?.stopOwnedRuntime().catch(() => {});
+    try {
+      ready = false;
+      process.off('SIGINT', onSignal);
+      process.off('SIGTERM', onSignal);
+      if (retirementWatch) clearInterval(retirementWatch);
+      await readiness?.close();
+      unbindInitialLifecycle?.();
+      (handoff as ReturnType<typeof watchAutomaticHandoff> | null)?.close();
+      await admission?.close();
+      await (
+        initialAdmission as Awaited<
+          ReturnType<typeof watchManagedPiInitialAdmission>
+        > | null
+      )?.close();
+      receiver?.close();
+      await (
+        publication as Awaited<
+          ReturnType<typeof publishManagedPiHerdrIdentity>
+        > | null
+      )?.close();
+      (
+        control as Awaited<ReturnType<typeof serveManagedPiSdkControl>> | null
+      )?.close();
+      await controller?.stopOwnedRuntime().catch(() => {});
+    } finally {
+      if (resumeAuthorization) releaseManagedPiResume(resumeAuthorization);
+    }
   }
 }

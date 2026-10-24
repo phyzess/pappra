@@ -6,6 +6,7 @@ import {
   rmSync,
   writeFileSync,
   openSync,
+  realpathSync,
 } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -22,6 +23,7 @@ import {
   isOwnedManagedPiExit,
   managedPiPtyBridgeSourceForTests,
   requestManagedPiControl,
+  startManagedPiSession,
   validateManagedPiArchiveEvidence,
 } from '../../src/hosts/pi/managed-session.js';
 
@@ -30,6 +32,108 @@ import managedPiSessionExtension from '../../src/hosts/pi/managed-session-extens
 function tempDirectory() {
   return mkdtempSync(path.join(os.tmpdir(), 'pappra-managed-pi-'));
 }
+
+test(
+  'PTY stream errors fence ingress, restore the terminal, and release global listeners',
+  { timeout: 15_000 },
+  async (t) => {
+    const directory = realpathSync(tempDirectory());
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
+    let raw = false;
+    for (const [target, key, descriptor] of [
+      [process.stdin, 'isTTY', { value: true }],
+      [process.stdout, 'isTTY', { value: true }],
+      [process.stdin, 'isRaw', { get: () => raw }],
+      [
+        process.stdin,
+        'setRawMode',
+        {
+          value: (next: boolean) => {
+            raw = next;
+            return process.stdin;
+          },
+        },
+      ],
+    ] as const) {
+      const previous = Object.getOwnPropertyDescriptor(target, key);
+      Object.defineProperty(target, key, { ...descriptor, configurable: true });
+      t.after(() => {
+        if (previous) Object.defineProperty(target, key, previous);
+        else Reflect.deleteProperty(target, key);
+      });
+    }
+    const fakePi = path.join(directory, 'fake-pi.py');
+    writeFileSync(
+      fakePi,
+      [
+        '#!/usr/bin/env python3',
+        'import json, os, signal, sys',
+        'session = sys.argv[sys.argv.index("--session-id") + 1]',
+        'with open(os.environ["PAPPRA_MANAGED_PI_METADATA_FILE"], "a") as f:',
+        '    f.write(json.dumps({"type": "session_start", "session_id": session, "cwd": os.getcwd()}) + "\\n")',
+        'signal.pause()',
+        '',
+      ].join('\n'),
+      { mode: 0o700 },
+    );
+    const listeners = {
+      drain: process.stdout.listenerCount('drain'),
+      input: process.stdin.listenerCount('error'),
+      output: process.stdout.listenerCount('error'),
+      error: process.stderr.listenerCount('error'),
+    };
+    const session = await startManagedPiSession({
+      cwd: directory,
+      journalPath: path.join(directory, 'session.jsonl'),
+      controlSocketPath: path.join(directory, 'c'),
+      model: 'fixture',
+      piBin: fakePi,
+    });
+    const internal = session as unknown as {
+      child: ChildProcess;
+      server: net.Server;
+    };
+    t.after(() => {
+      if (
+        internal.child.exitCode === null &&
+        internal.child.signalCode === null
+      )
+        internal.child.kill('SIGTERM');
+    });
+    assert.equal(raw, true);
+
+    // A peer's broken pipe is local to that peer, not authority to fence Pi.
+    const accepted = once(internal.server, 'connection');
+    const client = net.createConnection(session.controlEndpoint.socketPath);
+    const [peer] = (await accepted) as [net.Socket];
+    peer.emit('error', new Error('EPIPE'));
+    client.destroy();
+    assert.equal(raw, true);
+
+    for (const stream of [
+      internal.child.stdin,
+      internal.child.stdout,
+      internal.child.stderr,
+      internal.child.stdio[3],
+      internal.child.stdio[4],
+    ]) {
+      assert.ok(stream);
+      assert.doesNotThrow(() => stream.emit('error', new Error('EPIPE')));
+      assert.equal(raw, false);
+    }
+    assert.equal((await session.waitForExit()).status, 'unknown');
+    const closed = once(internal.child, 'close');
+    (internal.child.stdio[4] as Writable).write(
+      `${JSON.stringify({ command: 'signal', signal: 'TERM' })}\n`,
+    );
+    await closed;
+    session.close();
+    assert.equal(process.stdout.listenerCount('drain'), listeners.drain);
+    assert.equal(process.stdin.listenerCount('error'), listeners.input);
+    assert.equal(process.stdout.listenerCount('error'), listeners.output);
+    assert.equal(process.stderr.listenerCount('error'), listeners.error);
+  },
+);
 
 test('managed extension publishes the native settled session receipt', () => {
   const directory = tempDirectory();

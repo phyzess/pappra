@@ -9,9 +9,11 @@ import {
   assertManagedPiSdkResumeAuthorization,
   canExecuteManagedPiResume,
   consumeManagedPiResumeRegistration,
+  releaseManagedPiResume,
   type ManagedPiResumeRuntimeRegistration,
 } from '../../src/app/managed-pi-resume-admission.js';
 import type { ManagedPiRequest } from '../../src/app/managed-pi.js';
+import { runManagedPiSdkRuntime } from '../../src/app/managed-pi-sdk-runtime.js';
 import { ManagedPiJournal } from '../../src/hosts/pi/managed-session.js';
 import { managedPiHostIdentity } from '../../src/hosts/pi/managed-host-identity.js';
 import { buildMessage } from '../../src/collab/envelope.js';
@@ -276,7 +278,7 @@ function fixture(
   };
 }
 
-test('verified dead source is reserved once and only an atomic exact registry takeover enables execution', async () => {
+test('verified dead source is reserved once and only an atomic exact registry takeover enables execution', async (t) => {
   const f = fixture();
   try {
     const auth = await prepareManagedPiResume(f.request);
@@ -314,6 +316,16 @@ test('verified dead source is reserved once and only an atomic exact registry ta
       consumeManagedPiResumeRegistration(record, auth, f.source, next);
       record.managed_pi_runtime_registry = [next];
     });
+    // A different process can acquire the source PID after the atomic takeover.
+    const kill = process.kill;
+    t.mock.method(
+      process,
+      'kill',
+      (pid: number, signal?: NodeJS.Signals | number) => {
+        if (pid === f.source.pid) return true;
+        return kill(pid, signal);
+      },
+    );
     assert.equal(
       canExecuteManagedPiResume(auth, {
         sessionId: auth.sessionId,
@@ -346,6 +358,74 @@ test('verified dead source is reserved once and only an atomic exact registry ta
       }),
       false,
     );
+    releaseManagedPiResume(auth);
+    assert.deepEqual(readRecord(f.task)!.managed_pi_resume_admissions, []);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('failed or cancelled startup releases its reservation and permits a fresh retry', async () => {
+  const f = fixture();
+  try {
+    const auth = await prepareManagedPiResume(f.request);
+    releaseManagedPiResume(auth);
+    releaseManagedPiResume(auth);
+    assert.deepEqual(readRecord(f.task)!.managed_pi_resume_admissions, []);
+    assert.throws(
+      () =>
+        assertManagedPiSdkResumeAuthorization(auth, {
+          sessionId: auth.sessionId,
+          cwd: auth.cwd,
+        }),
+      /authorization_invalid/,
+    );
+    const retry = await prepareManagedPiResume(f.request);
+    releaseManagedPiResume(retry);
+    await assert.rejects(runManagedPiSdkRuntime(f.request));
+    assert.deepEqual(readRecord(f.task)!.managed_pi_resume_admissions, []);
+    releaseManagedPiResume(await prepareManagedPiResume(f.request));
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('dead reservation owners are reclaimed before the capacity and duplicate checks', async () => {
+  const f = fixture();
+  try {
+    f.change((record) => {
+      record.managed_pi_resume_admissions = Array.from(
+        { length: 64 },
+        (_, index) => ({
+          schema: 'pappra/managed-pi-resume-admission/1',
+          reservation_id: `abandoned-${index}`,
+          source_run_id: f.source.controller_run_id,
+          pid: f.source.pid,
+          status: index % 2 === 0 ? 'reserved' : 'registered',
+        }),
+      );
+    });
+    const auth = await prepareManagedPiResume(f.request);
+    assert.equal(
+      (readRecord(f.task)!.managed_pi_resume_admissions as unknown[]).length,
+      1,
+    );
+    releaseManagedPiResume(auth);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a live reservation owner is preserved and blocks duplicate admission', async () => {
+  const f = fixture();
+  try {
+    const auth = await prepareManagedPiResume(f.request);
+    await assert.rejects(prepareManagedPiResume(f.request), /already_reserved/);
+    assert.equal(
+      (readRecord(f.task)!.managed_pi_resume_admissions as unknown[]).length,
+      1,
+    );
+    releaseManagedPiResume(auth);
   } finally {
     f.cleanup();
   }

@@ -366,6 +366,22 @@ function reservations(record: TaskRecord): Record<string, unknown>[] {
   return value;
 }
 
+/** Reclaim only owners proven dead; a reused or inaccessible PID stays reserved. */
+function reservationOwnerDead(row: Record<string, unknown>): boolean {
+  if (!Number.isSafeInteger(row.pid) || Number(row.pid) <= 0) return false;
+  if (
+    typeof row.host_identity === 'string' &&
+    row.host_identity !== managedPiHostIdentity()
+  )
+    return false;
+  try {
+    process.kill(Number(row.pid), 0);
+    return false;
+  } catch (error) {
+    return object(error) && error.code === 'ESRCH';
+  }
+}
+
 function validReservation(
   record: TaskRecord,
   state: ResumeState,
@@ -605,7 +621,9 @@ export async function prepareManagedPiResume(
           state.sourceJson
       )
         return { ok: false, reason: 'managed_pi_resume_authority_changed' };
-      const pending = reservations(current);
+      const pending = reservations(current).filter(
+        (row) => !reservationOwnerDead(row),
+      );
       if (
         pending.length >= 64 ||
         pending.some((row) => row.source_run_id === source.controller_run_id)
@@ -618,6 +636,7 @@ export async function prepareManagedPiResume(
         source_run_id: source.controller_run_id,
         checkpoint_digest: checkpoint.digest,
         pid: process.pid,
+        host_identity: hostIdentity,
         journal_path: request.journalPath,
         status: 'reserved',
         created_at: new Date().toISOString(),
@@ -633,11 +652,44 @@ export async function prepareManagedPiResume(
   });
   if (!saved.ok) return fail('already_reserved_or_stale');
   AUTHORIZATIONS.set(authorization, state);
-  assertManagedPiSdkResumeAuthorization(authorization, {
-    sessionId: scope.session_id,
-    cwd: scope.cwd,
-  });
+  try {
+    assertManagedPiSdkResumeAuthorization(authorization, {
+      sessionId: scope.session_id,
+      cwd: scope.cwd,
+    });
+  } catch (error) {
+    releaseManagedPiResume(authorization);
+    throw error;
+  }
   return authorization;
+}
+
+/** Release this process's exact reservation after startup failure or runtime shutdown. */
+export function releaseManagedPiResume(
+  value: ManagedPiSdkResumeAuthorization,
+): void {
+  const state = AUTHORIZATIONS.get(value);
+  if (!state || state.pid !== process.pid) return;
+  const released = transact(value.scope.task_root, {
+    actor: 'managed-pi-resume',
+    purpose: 'release-exact-session-resume',
+    apply(record) {
+      record[RESERVATIONS] = reservations(record).filter(
+        (row) =>
+          row.reservation_id !== state.reservationId ||
+          row.pid !== state.pid ||
+          row.journal_path !== state.newJournal,
+      );
+      return {
+        record,
+        op: 'release-managed-pi-resume',
+        summary: { session_id: value.sessionId },
+        result: null,
+      };
+    },
+  });
+  if (!released.ok) return fail('release_failed');
+  AUTHORIZATIONS.delete(value);
 }
 
 export function assertManagedPiSdkResumeAuthorization(
@@ -717,7 +769,6 @@ export function canExecuteManagedPiResume(
   )
     return false;
   try {
-    assertDead(value.sourcePid);
     const record = state.reader.read();
     if (
       authority(record, value.scope) !== state.authorityDigest ||
