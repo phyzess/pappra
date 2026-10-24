@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { assertTaskStoreCurrent, openTaskStore } from './collab-task-store.js';
 import { readBoundedFile } from './bounded-file.js';
-import { buildMessage } from '../collab/envelope.js';
+import { buildMessage, canonicalJson } from '../collab/envelope.js';
 import { CLOSED_STATES } from '../collab/lifecycle.js';
 import { readRecord } from '../collab/store.js';
 import { submitMessage } from '../collab/messages.js';
@@ -823,7 +823,30 @@ export async function repairRejectedRoleNode(
         'reconciliation-required',
         'repair_authority_changed_during_native_stop',
       );
-    const activeClaims = (record.claims ?? []).filter(
+    // Normal commits replace task.json. Revalidate the authority that justified
+    // the stop instead of using its inode as an accidental state-change fence.
+    const afterStop = readRecord(request.task_root);
+    const currentSource = afterStop?.attempts.find(
+      (attempt) =>
+        attempt.subtask_id === authorization.source.assignment_id &&
+        attempt.attempt === authorization.source.attempt,
+    );
+    if (
+      !afterStop ||
+      !validAuthorization(
+        authorization,
+        sourceNode,
+        afterStop.coordinator,
+        request.max_attempts,
+        authorization.next.resources,
+      ) ||
+      canonicalJson(currentSource) !== canonicalJson(sourceAttempt)
+    )
+      return outcome(
+        'reconciliation-required',
+        'repair_authority_changed_during_native_stop',
+      );
+    const activeClaims = (afterStop.claims ?? []).filter(
       (claim) => !claim.released_at,
     );
     const sameHolder = (claim: (typeof activeClaims)[number]) =>

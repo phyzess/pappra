@@ -1,6 +1,5 @@
-import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { readRecord } from '../collab/store.js';
+import { isTaskRecord } from '../collab/validation.js';
 import type { Identity } from '../collab/types.js';
 import type { ManagedPiSdkSessionController } from '../hosts/pi/managed-sdk-session.js';
 import {
@@ -10,6 +9,7 @@ import {
 } from './collab-messages.js';
 import { buildNotificationText } from './collab-notify.js';
 import { routeExclusionFor } from './collab-route.js';
+import { readBoundedFile } from './bounded-file.js';
 
 type Runtime = Pick<
   ManagedPiSdkSessionController,
@@ -46,14 +46,26 @@ export async function deliverManagedPiMessage(
   if (await assertMessageTaskCurrent(opened.value))
     return refuse('delivery_namespace_changed');
   // No async seam follows the last namespace/record read and the native admission.
-  const identity = fs.lstatSync(opened.value.recordFile);
+  const latest = readBoundedFile(opened.value.recordFile, 8 * 1024 * 1024);
+  if (!latest.ok) return refuse('delivery_namespace_changed');
+  let record: unknown;
+  try {
+    record = JSON.parse(latest.text) as unknown;
+  } catch {
+    return refuse('delivery_record_missing');
+  }
   if (
-    identity.dev !== opened.value.identity.recordFile.dev ||
-    identity.ino !== opened.value.identity.recordFile.ino
+    !isTaskRecord(record) ||
+    record.task_id !== opened.value.record.task_id ||
+    record.task_root !== opened.value.taskRoot ||
+    record.domain_root !== opened.value.record.domain_root ||
+    record.domain_id !== opened.value.record.domain_id ||
+    record.created_at !== opened.value.record.created_at
   )
-    return refuse('delivery_namespace_changed');
-  const record = readRecord(authorization.taskRoot);
-  if (!record) return refuse('delivery_record_missing');
+    return refuse('delivery_record_missing');
+  const latestMessage = readBoundedFile(registered.value.file, 1024 * 1024);
+  if (!latestMessage.ok || latestMessage.digest !== registered.value.digest)
+    return refuse('delivery_digest_mismatch');
   const message = registered.value.message;
   const live = runtime.observe();
   if (

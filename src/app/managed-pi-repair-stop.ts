@@ -4,7 +4,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { bindNative, findAttempt } from '../collab/lifecycle.js';
 import { canonicalJson } from '../collab/envelope.js';
-import { transact } from '../collab/store.js';
+import { readRecord, transact } from '../collab/store.js';
 import type { TaskRecord } from '../collab/types.js';
 import { requestManagedPiControl } from '../hosts/pi/managed-session.js';
 import { ManagedPiSdkSessionController } from '../hosts/pi/managed-sdk-session.js';
@@ -315,6 +315,37 @@ export function managedPiRepairDependencies(
         registered.scope.owner_epoch !== source.coordinator.owner_epoch
       )
         return null;
+      // Pin authority rather than task.json's inode: unrelated task commits are safe.
+      const authority = (current: TaskRecord) =>
+        hash({
+          task_id: current.task_id,
+          task_root: current.task_root,
+          domain_id: current.domain_id,
+          domain_root: current.domain_root,
+          created_at: current.created_at,
+          coordinator: current.coordinator,
+          attempts: current.attempts
+            .filter(
+              (row) =>
+                row.subtask_id === source.source.assignment_id &&
+                row.attempt === source.source.attempt,
+            )
+            .map(
+              ({ updated_at: _updated, transitions: _transitions, ...row }) =>
+                row,
+            ),
+          runtimes: entries(current).filter(
+            (row) =>
+              row.agent_id === source.assignee.agent_id &&
+              row.session_id === source.assignee.session_id,
+          ),
+          claims: current.claims.filter((row) =>
+            registered.scope.claim_epochs.some(
+              (pin) => pin.claim_id === row.claim_id,
+            ),
+          ),
+        });
+      const expectedAuthority = authority(task.record);
       const key = hash({ source, registered });
       const directory = path.join(task.taskRoot, '.managed-native-stops');
       const file = path.join(directory, `${key}.json`);
@@ -384,6 +415,10 @@ export function managedPiRepairDependencies(
       )
         return null;
       if (await assertTaskStoreCurrent(task)) return null;
+      // The live snapshot awaited above is not authority over a later task revision.
+      // No async seam follows this fresh semantic check and the stop reservation.
+      const latest = readRecord(task.taskRoot);
+      if (!latest || authority(latest) !== expectedAuthority) return null;
       fs.mkdirSync(directory, { mode: 0o700, recursive: true });
       const pin = privateDirectory(directory);
       const reservation = Buffer.from(

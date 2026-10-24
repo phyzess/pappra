@@ -392,9 +392,22 @@ export async function admitManagedSourceAssignment(
         !same(active.assignee, entry.actor) ||
         active.owner_epoch !== scope.owner_epoch ||
         active.input_revision !== entry.input_revision ||
+        !['assigned', 'accepted', 'running'].includes(active.state) ||
         active.awaiting ||
         active.cancel_requested_at ||
         current.coordinator?.owner_epoch !== scope.owner_epoch ||
+        canonicalJson(
+          predecessor(current, active.assignee, entry.predecessor_handoff_id),
+        ) !== canonicalJson(lineage) ||
+        !Array.isArray(current.managed_pi_runtime_registry) ||
+        canonicalJson(
+          current.managed_pi_runtime_registry.filter(
+            (row: unknown) =>
+              object(row) &&
+              row.session_id === scope.session_id &&
+              canonicalJson(row.scope) === canonicalJson(scope),
+          ),
+        ) !== canonicalJson(registered) ||
         !claims.every((pin) =>
           current.claims.some(
             (row) =>

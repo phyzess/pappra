@@ -15,6 +15,7 @@ import { buildMessage } from '../../src/collab/envelope.js';
 import { submitMessage } from '../../src/collab/messages.js';
 import { transact } from '../../src/collab/store.js';
 import { owner } from '../collab/scenarios.js';
+import type { TaskRecord } from '../../src/collab/types.js';
 
 function fixture() {
   const value = makeTaskDomain('managed-repair-control', ['sample']);
@@ -265,6 +266,108 @@ test('a coordinator epoch change after the live lookup prevents the stop effect'
       null,
     );
     assert.equal(value.stops, 0);
+  } finally {
+    value.cleanup();
+  }
+});
+
+for (const [label, mutate] of [
+  [
+    'attempt state',
+    (record: TaskRecord) => {
+      record.attempts[0]!.state = 'completed';
+    },
+  ],
+  [
+    'attempt input',
+    (record: TaskRecord) => {
+      record.attempts[0]!.input_revision = `sha256:${'3'.repeat(64)}`;
+    },
+  ],
+  [
+    'runtime registry',
+    (record: TaskRecord) => {
+      record.managed_pi_runtime_registry = [];
+    },
+  ],
+] as const) {
+  test(`${label} drift during the live lookup prevents the stop effect`, async () => {
+    const value = fixture();
+    try {
+      value.register();
+      const control: NonNullable<
+        Parameters<typeof managedPiRepairDependencies>[1]
+      >['control'] = async (file, action) => {
+        const result = await value.control!(file, action);
+        if (action === 'snapshot') {
+          const changed = transact(value.taskRoot, {
+            actor: 'fixture',
+            purpose: 'concurrent-authority-change',
+            apply(record) {
+              mutate(record);
+              return {
+                record,
+                op: 'concurrent-change',
+                summary: {},
+                result: null,
+              };
+            },
+          });
+          assert.ok(changed.ok);
+        }
+        return result;
+      };
+      assert.equal(
+        await managedPiRepairDependencies(value.request, {
+          control,
+          peerPid: () => process.pid,
+        })!.confirm_stopped!(value.source),
+        null,
+      );
+      assert.equal(value.stops, 0);
+      assert.equal(
+        fs.existsSync(path.join(value.taskRoot, '.managed-native-stops')),
+        false,
+      );
+    } finally {
+      value.cleanup();
+    }
+  });
+}
+
+test('an unrelated normal task commit during the live lookup permits the stop effect', async () => {
+  const value = fixture();
+  try {
+    value.register();
+    const control: NonNullable<
+      Parameters<typeof managedPiRepairDependencies>[1]
+    >['control'] = async (file, action) => {
+      const result = await value.control!(file, action);
+      if (action === 'snapshot') {
+        const changed = transact(value.taskRoot, {
+          actor: 'another-actor',
+          purpose: 'unrelated-normal-commit',
+          apply(record) {
+            record.audit_note =
+              'Unrelated progress recorded during the native lookup.';
+            return {
+              record,
+              op: 'unrelated-progress',
+              summary: {},
+              result: null,
+            };
+          },
+        });
+        assert.ok(changed.ok);
+      }
+      return result;
+    };
+    const receipt = await managedPiRepairDependencies(value.request, {
+      control,
+      peerPid: () => process.pid,
+    })!.confirm_stopped!(value.source);
+    assert.equal(receipt?.observation, 'confirmed');
+    assert.equal(value.stops, 1);
   } finally {
     value.cleanup();
   }

@@ -40,8 +40,14 @@ import {
   inspectOrPlanRollover as publicInspectOrPlanRollover,
 } from '../../src/app/collaboration.js';
 import { routeExclusionFor } from '../../src/app/collab-route.js';
-import { notifyRegisteredMessage } from '../../src/app/collab-notify.js';
-import { deliveryPathFor } from '../../src/app/collab-messages.js';
+import {
+  notifyRegisteredMessage,
+  type HerdrTransport,
+} from '../../src/app/collab-notify.js';
+import {
+  deliveryPathFor,
+  readDeliveryRecord,
+} from '../../src/app/collab-messages.js';
 import {
   handoffBundleRelativeRef,
   saveHandoffBundle,
@@ -1245,6 +1251,120 @@ test('a validated succession excludes the archived old native from notify withou
     assert.equal(planned.value.target?.native_session, 'unknown');
   } finally {
     fixture.cleanup();
+  }
+});
+
+test('notify rechecks succession after transport awaits and delivery reservation', async (context) => {
+  for (const seam of ['caller', 'list', 'reservation'] as const) {
+    for (const side of ['sender', 'recipient'] as const) {
+      await context.test(`${side} archived during ${seam}`, async (subtest) => {
+        const fixture = await makeFixture(`notify-race-${seam}-${side}`);
+        try {
+          const sender = side === 'sender' ? OLD : WATCH;
+          const recipient = side === 'recipient' ? OLD : WATCH;
+          const message = fixture.send({
+            message_id: 'msg-before-succession',
+            type: 'STATUS_QUERY',
+            task_id: TASK,
+            from: sender,
+            to: recipient,
+            body: {},
+          });
+          const participants = [sender, recipient].map((identity, index) => ({
+            agent_id: identity.agent_id,
+            harness: identity.harness ?? 'unknown',
+            cwd: fixture.task,
+            herdr_agent: identity.agent_id,
+            pane_id: `w3:p${index + 1}`,
+            native_session_id: identity.session_id,
+          }));
+          const bindingFile = fixture.write('notify-race-binding.json', {
+            schema: 'pappra/collab-binding/1',
+            task_id: TASK,
+            task_root: fixture.task,
+            channel: 'herdr',
+            participants,
+          });
+          let prompts = 0;
+          const transport: HerdrTransport = {
+            id: 'succession-race',
+            async verifyCaller() {
+              if (seam === 'caller') recordSuccession(fixture);
+              return {
+                ok: true,
+                caller: {
+                  paneId: participants[0]!.pane_id,
+                  workspaceId: 'w3',
+                  tabId: 'w3:t1',
+                  harness: sender.harness,
+                  cwd: fixture.task,
+                  sessionKind: 'id',
+                  sessionValue: sender.session_id,
+                  source: 'current',
+                },
+              };
+            },
+            async list() {
+              if (seam === 'list') recordSuccession(fixture);
+              return {
+                ok: true,
+                agents: participants.map((participant) => ({
+                  name: participant.herdr_agent,
+                  harness: participant.harness,
+                  paneId: participant.pane_id,
+                  cwd: fixture.task,
+                  sessionValue: participant.native_session_id,
+                  sessionKind: 'id',
+                  status: 'idle',
+                  focused: false,
+                })),
+              };
+            },
+            async prompt() {
+              prompts += 1;
+              return { status: 'submitted', detail: null };
+            },
+          };
+          if (seam === 'reservation') {
+            const originalRename = fs.renameSync;
+            let changed = false;
+            subtest.mock.method(
+              fs,
+              'renameSync',
+              (from: fs.PathLike, to: fs.PathLike) => {
+                originalRename(from, to);
+                if (
+                  !changed &&
+                  to === deliveryPathFor(fixture.task, message.message_id)
+                ) {
+                  changed = true;
+                  recordSuccession(fixture);
+                }
+              },
+            );
+          }
+          const notified = await notifyRegisteredMessage({
+            taskRoot: fixture.task,
+            messageId: message.message_id,
+            bindingFile,
+            apply: true,
+            retry: false,
+            transport,
+          });
+          assert.equal(notified.ok, false, JSON.stringify(notified));
+          assert.equal(!notified.ok && notified.code, `${side}_route_excluded`);
+          assert.equal(prompts, 0);
+          const delivery = readDeliveryRecord(fixture.task, message.message_id);
+          assert.equal(
+            delivery?.status ?? null,
+            seam === 'reservation' ? 'failed' : null,
+          );
+        } finally {
+          subtest.mock.restoreAll();
+          fixture.cleanup();
+        }
+      });
+    }
   }
 });
 

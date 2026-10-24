@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isSafeMessageId } from '../collab/envelope.js';
 import { notificationsDir } from '../collab/store.js';
+import type { Message, TaskRecord } from '../collab/types.js';
 import {
   collabBindingSchema,
   type CollabBinding,
@@ -788,6 +789,31 @@ function failure(
   return { ok: false, code, message, nextAction };
 }
 
+function notificationRouteFailure(
+  record: TaskRecord,
+  message: Message,
+): MessageServiceFailure | null {
+  for (const [side, identity] of [
+    ['sender', message.from],
+    ['recipient', message.to],
+  ] as const) {
+    const route = routeExclusionFor(record, identity);
+    if (route.state === 'active') continue;
+    if (route.state === 'excluded')
+      return failure(
+        `${side}_route_excluded`,
+        `Message ${side} ${identity.agent_id} is an archived old native identity of succession ${route.exclusion === null ? '<unknown>' : route.exclusion.handoff_id}`,
+        'Notify the current successor identity; retained history is never re-routed.',
+      );
+    return failure(
+      'route_exclusion_unknown',
+      `Message ${side} route cannot be proven for ${identity.agent_id}: ${route.conflict ?? 'contradictory succession'}`,
+      'Repair the succession record; an unproven identity is never notified.',
+    );
+  }
+  return null;
+}
+
 async function loadBinding(
   file: string,
   taskRoot: string,
@@ -1294,24 +1320,50 @@ export async function notifyRegisteredMessage(
   // An archived old native identity is history, never a current route. The succession
   // check is pure current-record evaluation: it happens before any caller or live Herdr
   // query and before any send, and it never rewrites the message or delivery record.
-  for (const [side, identity] of [
-    ['sender', message.from],
-    ['recipient', message.to],
-  ] as const) {
-    const route = routeExclusionFor(record, identity);
-    if (route.state === 'active') continue;
-    if (route.state === 'excluded')
-      return failure(
-        `${side}_route_excluded`,
-        `Message ${side} ${identity.agent_id} is an archived old native identity of succession ${route.exclusion === null ? '<unknown>' : route.exclusion.handoff_id}`,
-        'Notify the current successor identity; retained history is never re-routed.',
+  const initialRouteFailure = notificationRouteFailure(record, message);
+  if (initialRouteFailure !== null) return initialRouteFailure;
+
+  // Record files legitimately change inode on any atomic task commit. Recheck
+  // the selected message and participants, then evaluate routes from a fresh
+  // record, rather than treating an unrelated commit as namespace replacement.
+  const assertNotificationCurrent =
+    async (): Promise<MessageServiceFailure | null> => {
+      const changed = await assertMessageTaskCurrent(opened.value);
+      if (changed !== null) return changed;
+      const currentBinding = await loadBinding(
+        options.bindingFile,
+        taskRoot,
+        record.task_id,
       );
-    return failure(
-      'route_exclusion_unknown',
-      `Message ${side} route cannot be proven for ${identity.agent_id}: ${route.conflict ?? 'contradictory succession'}`,
-      'Repair the succession record; an unproven identity is never notified.',
-    );
-  }
+      if (!currentBinding.ok) return currentBinding;
+      for (const expected of [sender, participant]) {
+        const current = currentBinding.value.participants.find(
+          (item) => item.agent_id === expected.agent_id,
+        );
+        if (JSON.stringify(current) !== JSON.stringify(expected)) {
+          return failure(
+            'binding_participant_changed',
+            `Notification binding changed for ${expected.agent_id}`,
+            'Revalidate the selected sender and recipient bindings; nothing was notified.',
+          );
+        }
+      }
+      const reread = await readRegisteredMessageSafe(
+        opened.value,
+        message.message_id,
+      );
+      if (!reread.ok) return reread;
+      if (reread.value.digest !== digest) {
+        return failure(
+          'message_registration_changed',
+          'Registered message changed while preparing the notification',
+          'Inspect the message file; nothing was notified.',
+        );
+      }
+      const current = await openMessageTask(taskRoot);
+      if (!current.ok) return current;
+      return notificationRouteFailure(current.value.record, message);
+    };
 
   const base = {
     message,
@@ -1397,20 +1449,8 @@ export async function notifyRegisteredMessage(
 
   // Async seams end here: revalidate the task namespace and the registered bytes
   // before any mutation or native submission.
-  const changed = await assertMessageTaskCurrent(opened.value);
+  const changed = await assertNotificationCurrent();
   if (changed !== null) return changed;
-  const reread = await readRegisteredMessageSafe(
-    opened.value,
-    message.message_id,
-  );
-  if (!reread.ok) return reread;
-  if (reread.value.digest !== digest) {
-    return failure(
-      'message_registration_changed',
-      'Registered message changed while preparing the notification',
-      'Inspect the message file; nothing was notified.',
-    );
-  }
 
   // The selected routing candidate must be the sender's bound pane. This is a
   // task-bound routing check, not process authentication.
@@ -1566,14 +1606,14 @@ export async function notifyRegisteredMessage(
     releaseDeliveryLock(lockPath);
   }
 
-  const afterReservation = await assertMessageTaskCurrent(opened.value);
+  const afterReservation = await assertNotificationCurrent();
   if (afterReservation !== null) {
     finalizeDelivery({
       taskRoot,
       directory: directory.value,
       deliveryFile,
       status: 'failed',
-      detail: `Namespace changed before submission: ${afterReservation.code}`,
+      detail: `Notification changed before submission: ${afterReservation.code}`,
       clock: options.clock,
     });
     return afterReservation;

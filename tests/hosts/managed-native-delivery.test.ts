@@ -102,10 +102,40 @@ test('owned native delivery accepts registered pointers and refuses forged, stal
   );
   assert.equal(inputs.length, 0);
   pending = false;
+  const read = fs.readFileSync;
+  let committed = false;
+  const readMock = t.mock.method(
+    fs,
+    'readFileSync',
+    (
+      file: Parameters<typeof fs.readFileSync>[0],
+      options?: Parameters<typeof fs.readFileSync>[1],
+    ) => {
+      const result = options === undefined ? read(file) : read(file, options);
+      if (file === registered.value.file && !committed) {
+        committed = true;
+        assert.equal(
+          transact(taskRoot, {
+            actor: 'another-actor',
+            purpose: 'unrelated-progress',
+            apply(record) {
+              record.audit_note =
+                'Normal commit during registered pointer lookup.';
+              return { record, result: null };
+            },
+          }).ok,
+          true,
+        );
+      }
+      return result;
+    },
+  );
   assert.equal(
     (await deliverManagedPiMessage(runtime, request, authorization)).ok,
     true,
   );
+  readMock.mock.restore();
+  assert.equal(committed, true);
   assert.equal(inputs.length, 1);
   assert.match(inputs[0]!, /COLLAB_MESSAGE task=delivery type=STATUS_QUERY/);
   assert(!inputs[0]!.includes('token'));

@@ -20,6 +20,7 @@ import {
 import type { Identity, Message, TaskRecord } from '../../src/collab/types.js';
 import {
   listMessagesForTaskRoot,
+  assertMessageTaskCurrent,
   openMessageTask,
   readDeliveryRecord,
   readMessageFromTaskRoot,
@@ -129,6 +130,54 @@ function recordOf(taskRoot: string): TaskRecord {
   assert(record);
   return record;
 }
+
+test('task namespace rejects a new record generation inside the same directories', async () => {
+  const value = fixture('message-namespace-generation');
+  try {
+    const opened = await openMessageTask(value.taskRoot);
+    assert(opened.ok);
+    const record = recordOf(value.taskRoot);
+    const replacement = join(value.taskRoot, 'task-replacement.json');
+    writeFileSync(
+      replacement,
+      JSON.stringify({
+        ...record,
+        created_at: new Date(clock + 1000).toISOString(),
+      }),
+    );
+    renameSync(replacement, join(value.taskRoot, 'task.json'));
+    const failure = await assertMessageTaskCurrent(opened.value);
+    assert.equal(failure?.code, 'task_namespace_changed');
+  } finally {
+    cleanup(value.root);
+  }
+});
+
+test('task namespace permits atomic record commits but rejects directory replacement', async () => {
+  const value = fixture('message-namespace-commit');
+  try {
+    const opened = await openMessageTask(value.taskRoot);
+    assert(opened.ok);
+    await persist(
+      value,
+      makeMessage('ASK', {
+        from: worker,
+        subtask_id: 'work',
+        attempt: 1,
+        body: { question: 'Which file?' },
+      }),
+    );
+    assert.equal(await assertMessageTaskCurrent(opened.value), null);
+
+    const directory = join(value.taskRoot, 'messages');
+    renameSync(directory, `${directory}-old`);
+    mkdirSync(directory);
+    const failure = await assertMessageTaskCurrent(opened.value);
+    assert.equal(failure?.code, 'task_namespace_changed');
+  } finally {
+    cleanup(value.root);
+  }
+});
 
 interface ParticipantOverrides {
   readonly herdrAgent?: string;
@@ -1950,6 +1999,96 @@ test('C1: null sender binding session still compares explicit message session', 
     assert.equal(transport.prompts.length, 0);
   } finally {
     cleanup(value.root);
+  }
+});
+
+test('notify permits unrelated atomic commits during live transport checks', async () => {
+  const value = fixture('notify-unrelated-commit');
+  try {
+    const message = makeMessage('STATUS_QUERY');
+    await persist(value, message);
+    const binding = bindingFor(value);
+    const transport = new FakeTransport({
+      agents: [observation({ cwd: value.taskRoot })],
+    });
+    const list = transport.list.bind(transport);
+    transport.list = async () => {
+      await persist(
+        value,
+        makeMessage('ASK', {
+          from: worker,
+          subtask_id: 'work',
+          attempt: 1,
+          body: { question: 'Unrelated concurrent update' },
+        }),
+      );
+      return list();
+    };
+    const result = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: message.message_id,
+      bindingFile: binding.file,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+    });
+    assert(result.ok, JSON.stringify(result));
+    assert.equal(result.value.status, 'submitted');
+    assert.equal(transport.prompts.length, 1);
+  } finally {
+    cleanup(value.root);
+  }
+});
+
+test('notify rejects selected binding or registered message drift during transport checks', async () => {
+  for (const drift of ['binding', 'message'] as const) {
+    const value = fixture(`notify-${drift}-drift`);
+    try {
+      const message = makeMessage('STATUS_QUERY');
+      await persist(value, message);
+      const binding = bindingFor(value);
+      const transport = new FakeTransport({
+        agents: [observation({ cwd: value.taskRoot })],
+      });
+      const list = transport.list.bind(transport);
+      transport.list = async () => {
+        if (drift === 'binding') {
+          bindingFor(value, { paneId: 'w3:p9' });
+        } else {
+          writeFileSync(
+            join(value.taskRoot, 'messages', `${message.message_id}.json`),
+            JSON.stringify(
+              makeMessage('STATUS_QUERY', { body: { changed: true } }),
+            ),
+          );
+        }
+        return list();
+      };
+      const result = await notifyRegisteredMessage({
+        taskRoot: value.taskRoot,
+        messageId: message.message_id,
+        bindingFile: binding.file,
+        apply: true,
+        retry: false,
+        transport,
+        clock,
+      });
+      assert(!result.ok);
+      assert.equal(
+        result.code,
+        drift === 'binding'
+          ? 'binding_participant_changed'
+          : 'message_registration_changed',
+      );
+      assert.equal(transport.prompts.length, 0);
+      assert.equal(
+        readDeliveryRecord(value.taskRoot, message.message_id),
+        null,
+      );
+    } finally {
+      cleanup(value.root);
+    }
   }
 });
 

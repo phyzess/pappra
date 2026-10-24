@@ -366,6 +366,10 @@ function sameIdentity(left: MessagePathIdentity, right: MessagePathIdentity) {
  * Revalidates the task namespace after an async seam. A root that was renamed,
  * replaced or redirected in the meantime fails closed before any mutation or
  * native submission.
+ * task.json is atomically replaced by normal store commits; its inode is not
+ * namespace identity. openMessageTask still validates its type and task/domain.
+ * This checks paths only. Callers must separately revalidate current authority
+ * after async work, preferably inside the transaction that commits the effect.
  */
 export async function assertMessageTaskCurrent(
   opened: OpenedMessageTask,
@@ -379,7 +383,8 @@ export async function assertMessageTaskCurrent(
       current.messagesDirectory,
       opened.identity.messagesDirectory,
     ) ||
-    !sameIdentity(current.recordFile, opened.identity.recordFile)
+    again.value.record.domain_id !== opened.record.domain_id ||
+    again.value.record.created_at !== opened.record.created_at
   ) {
     return serviceFailure(
       'task_namespace_changed',

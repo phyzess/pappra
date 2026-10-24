@@ -1,16 +1,19 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import fs, { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { runCli } from '../../src/cli/run.js';
 import { retireManagedPiSource } from '../../src/app/managed-pi-retirement.js';
 import { prepareManagedPiHandoffReceiver } from '../../src/app/managed-pi-handoff-receiver.js';
 import { watchManagedPiBootstrapAdmission } from '../../src/app/managed-pi-bootstrap-admission.js';
-import { readManagedSourceAssignment } from '../../src/app/managed-pi-source-admission.js';
+import {
+  admitManagedSourceAssignment,
+  readManagedSourceAssignment,
+} from '../../src/app/managed-pi-source-admission.js';
 import { validateSuccession } from '../../src/app/collab-route.js';
 import { readPiBootstrapConfig } from '../../src/hosts/integration/bootstrap-config.js';
-import type { ManagedPiSdkSessionController } from '../../src/hosts/pi/managed-sdk-session.js';
+import { ManagedPiSdkSessionController } from '../../src/hosts/pi/managed-sdk-session.js';
 import { bindNative } from '../../src/collab/lifecycle.js';
 import {
   buildMessage,
@@ -1191,6 +1194,180 @@ test('authority drift during awaited live successor observation prevents claim t
     assert.equal(value.load().claims?.[0]?.holder.agent_id, SOURCE.agent_id);
     assert.equal(value.load().claims?.[0]?.resource_epoch, 1);
     assert.equal(value.load().rollover?.[0]?.transfer_boundary, null);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('managed source admission rechecks state, runtime and succession while allowing unrelated commits', async (t) => {
+  const value = await fixture('source-admission-drift');
+  try {
+    const host = fakeHost({ cwd: value.cwd, supported: true });
+    const deps = transitionDeps(host.host, new FixtureBootstrap(value));
+    await applySessionTransition(value.request, deps);
+    await applySessionTransition(value.request, deps);
+    const ack = value.send({
+      message_id: 'source-admission-ack',
+      type: 'ACK',
+      task_id: TASK_ID,
+      from: SUCCESSOR,
+      to: COORDINATOR,
+      reply_to: 'msg-assignment-work',
+      subtask_id: SUBTASK_ID,
+      attempt: 1,
+      owner_epoch: 1,
+      body: {
+        handoff_id: HANDOFF_ID,
+        rollover_intent_id: INTENT_ID,
+        rollover_generation: 1,
+        input_revision: value.inputRevision,
+      },
+    });
+    const ackRequest = value.writeRequest({
+      ack_message_id: ack.message_id,
+      first_work_report_id: null,
+    });
+    assert(ackRequest.ok);
+    await applySessionTransition(ackRequest.value, deps);
+    const work = value.send({
+      message_id: 'source-admission-work',
+      type: 'REPORT',
+      task_id: TASK_ID,
+      from: SUCCESSOR,
+      to: COORDINATOR,
+      subtask_id: SUBTASK_ID,
+      attempt: 1,
+      owner_epoch: 1,
+      body: {
+        status: 'completed',
+        input_revision: value.inputRevision,
+        handoff_id: HANDOFF_ID,
+        rollover_generation: 1,
+      },
+    });
+    const complete = value.writeRequest({
+      ack_message_id: ack.message_id,
+      first_work_report_id: work.message_id,
+    });
+    assert(complete.ok);
+    const retired = await applySessionTransition(complete.value, deps);
+    assert.equal(retired.stage, 'task_retired', JSON.stringify(retired));
+    const baseline = value.load();
+    const scope = {
+      schema: 'pappra/managed-pi-execution-scope/1' as const,
+      task_id: TASK_ID,
+      task_root: value.taskRoot,
+      session_id: SUCCESSOR.session_id,
+      cwd: value.cwd,
+      subtask_id: SUBTASK_ID,
+      attempt: 1,
+      owner_epoch: 1,
+      claim_epochs: [{ claim_id: value.claimId, resource_epoch: 2 }],
+    };
+    const runtime = Object.assign(
+      Object.create(
+        ManagedPiSdkSessionController.prototype,
+      ) as ManagedPiSdkSessionController,
+      {
+        observe: () => ({
+          native: {
+            sessionId: SUCCESSOR.session_id,
+            agentId: SUCCESSOR.agent_id,
+            surface: 'pi-sdk-tui',
+            configurationId: 'source-admission-fixture',
+          },
+          cwd: value.cwd,
+        }),
+        snapshot: () => ({ process: { pid: process.pid } }),
+      },
+    );
+    const mutations = [
+      [
+        'state',
+        (record: TaskRecord) => {
+          record.attempts[0]!.state = 'completed';
+        },
+      ],
+      [
+        'runtime',
+        (record: TaskRecord) => {
+          record.managed_pi_runtime_registry = [];
+        },
+      ],
+      [
+        'succession',
+        (record: TaskRecord) => {
+          record.successions = [];
+        },
+      ],
+      [
+        'unrelated',
+        (record: TaskRecord) => {
+          record.audit_note = 'Unrelated task progress.';
+        },
+      ],
+    ] as const;
+    for (const [label, mutate] of mutations) {
+      const setup = transact(value.taskRoot, {
+        actor: 'fixture',
+        purpose: 'ready-current-source',
+        apply(record) {
+          record.attempts = structuredClone(baseline.attempts);
+          record.attempts[0]!.state = 'running';
+          delete record.attempts[0]!.closed_at;
+          record.claims = structuredClone(baseline.claims);
+          for (const claim of record.claims) claim.released_at = null;
+          record.successions = structuredClone(baseline.successions!);
+          record.managed_pi_runtime_registry = [
+            {
+              session_id: SUCCESSOR.session_id,
+              controller_run_id: 'admission-runtime',
+              scope,
+            },
+          ];
+          delete record.managed_pi_source_admissions;
+          return { record, result: null };
+        },
+      });
+      assert.ok(setup.ok);
+      let changed = false;
+      const exists = fs.existsSync;
+      const hook = t.mock.method(fs, 'existsSync', (file: fs.PathLike) => {
+        if (file === value.cardFile && !changed) {
+          changed = true;
+          const result = transact(value.taskRoot, {
+            actor: 'another-actor',
+            purpose: 'change-during-admission',
+            apply(record) {
+              mutate(record);
+              return { record, result: null };
+            },
+          });
+          assert.ok(result.ok);
+        }
+        return exists(file);
+      });
+      try {
+        const admission = admitManagedSourceAssignment(runtime, scope, {
+          assignmentFile: join(value.root, `admission-${label}.json`),
+          templateFile: value.cardFile,
+          cardFile: join(value.root, `card-${label}.json`),
+        });
+        if (label === 'unrelated') {
+          await admission;
+          assert.equal(
+            (value.load().managed_pi_source_admissions as unknown[]).length,
+            1,
+          );
+        } else {
+          await assert.rejects(admission);
+          assert.equal(value.load().managed_pi_source_admissions, undefined);
+        }
+        assert.equal(changed, true);
+      } finally {
+        hook.mock.restore();
+      }
+    }
   } finally {
     value.cleanup();
   }

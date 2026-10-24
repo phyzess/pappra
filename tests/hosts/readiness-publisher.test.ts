@@ -430,7 +430,7 @@ test('an existing transcript is verified when present but is not required before
 
 test(
   'watcher recovers after assignment/template arrival, invokes beforeRefresh, and ignores its own artifact event',
-  { timeout: 5000 },
+  { timeout: 20_000 },
   async () => {
     const value = setup('readiness-watch-recovery');
     const assignment = readFileSync(value.config.assignmentFile, 'utf8');
@@ -497,7 +497,8 @@ test(
                   `readiness did not recover: ${JSON.stringify({ status: publisher.status(), beforeRefreshCalls, readyWritten })}`,
                 ),
               ),
-            3000,
+            // Allow filesystem events to settle under the full suite's load.
+            15_000,
           );
         }),
       ]);

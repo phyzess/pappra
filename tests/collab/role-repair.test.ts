@@ -203,7 +203,7 @@ function fixture() {
   return { ...domain, task, source, next, request };
 }
 
-test('authorized repair requires a live stop, registers the next attempt and recovers its execution pins', async () => {
+test('authorized repair tolerates an unrelated atomic message commit during the live stop and recovers execution pins', async () => {
   const value = fixture();
   try {
     const before = JSON.stringify(readRecord(value.task));
@@ -218,6 +218,21 @@ test('authorized repair requires a live stop, registers the next attempt and rec
     const result = await repairRejectedRoleNode(value.request, {
       confirm_stopped: async () => {
         calls++;
+        assert(
+          submitMessage(
+            value.task,
+            buildMessage({
+              message_id: 'unrelated-question-during-stop',
+              type: 'ASK',
+              task_id: 'sample',
+              from: value.source,
+              to: owner,
+              subtask_id: 'write',
+              attempt: 1,
+              body: { question: 'Which file?' },
+            }),
+          ).ok,
+        );
         return {
           schema: 'pappra/collab-native-stop-receipt/1',
           observation: 'confirmed',
