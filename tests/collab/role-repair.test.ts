@@ -6,6 +6,7 @@ import test from 'node:test';
 import {
   repairRejectedRoleNode,
   recoverRoleRepairPlan,
+  type NativeStopReceipt,
   type RoleRepairRequest,
 } from '../../src/app/collab-role-repair.js';
 import {
@@ -206,6 +207,22 @@ function fixture() {
 test('authorized repair tolerates an unrelated atomic message commit during the live stop and recovers execution pins', async () => {
   const value = fixture();
   try {
+    assert(
+      submitMessage(
+        value.task,
+        buildMessage({
+          message_id: 'coordinator-requested-stop',
+          type: 'CANCEL',
+          task_id: 'sample',
+          from: owner,
+          to: value.source,
+          subtask_id: 'write',
+          attempt: 1,
+          owner_epoch: 1,
+          body: { reason: 'repair the rejected node' },
+        }),
+      ).ok,
+    );
     const before = JSON.stringify(readRecord(value.task));
     const missing = await repairRejectedRoleNode(value.request);
     assert.equal(missing.status, 'repair-required', JSON.stringify(missing));
@@ -249,6 +266,22 @@ test('authorized repair tolerates an unrelated atomic message commit during the 
     assert.equal(result.status, 'repaired', JSON.stringify(result));
     assert.equal(calls, 1);
     const record = readRecord(value.task)!;
+    assert.equal(
+      record.messages.some((entry) => entry.type === 'CANCELLED'),
+      false,
+    );
+    const sourceStop = record.attempts[0]!.transitions.at(-1)!;
+    assert.equal(sourceStop.actor, owner.agent_id);
+    assert.equal(
+      (sourceStop.evidence as NativeStopReceipt).schema,
+      'pappra/collab-native-stop-receipt/1',
+    );
+    assert.equal(
+      record.uncertainty.some(
+        (entry) => entry.kind === 'cancel_unconfirmed' && !entry.resolved_at,
+      ),
+      false,
+    );
     assert.equal(
       record.attempts?.find((entry) => entry.attempt === 1)?.state,
       'cancelled',
@@ -314,6 +347,39 @@ test('authorized repair tolerates an unrelated atomic message commit during the 
     );
   } finally {
     value.cleanup();
+  }
+});
+
+test('coordinator repair cannot close or release a source with unbound or stale host stop evidence', async () => {
+  for (const invalid of ['task', 'attempt', 'epoch', 'assignee', 'stale']) {
+    const value = fixture();
+    try {
+      const before = structuredClone(readRecord(value.task));
+      const receipt: NativeStopReceipt = {
+        schema: 'pappra/collab-native-stop-receipt/1',
+        observation: 'confirmed',
+        task_id: invalid === 'task' ? 'another-task' : 'sample',
+        subtask_id: 'write',
+        attempt: invalid === 'attempt' ? 2 : 1,
+        owner_epoch: invalid === 'epoch' ? 2 : 1,
+        assignee: invalid === 'assignee' ? value.next : value.source,
+        evidence_ref: 'trusted-fixture-owned-runtime',
+        observed_at: new Date(
+          Date.now() - (invalid === 'stale' ? 60_000 : 0),
+        ).toISOString(),
+      };
+      const result = await repairRejectedRoleNode(value.request, {
+        confirm_stopped: async () => receipt,
+      });
+      assert.equal(result.status, 'repair-required', invalid);
+      assert.equal(
+        result.diagnostic,
+        'live_supported_stop_receipt_missing_or_stale',
+      );
+      assert.deepEqual(readRecord(value.task), before, invalid);
+    } finally {
+      value.cleanup();
+    }
   }
 });
 

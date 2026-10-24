@@ -332,7 +332,31 @@ test('wrong sender / input / epoch / recipient ANSWER never continues -> resume_
     const flow = makeFlow(`recovery-wrong-${label}`);
     try {
       assign(flow, 'work');
-      answer(flow, 'work', over);
+      if (label === 'sender') {
+        const forged = buildMessage({
+          message_id: flow.nextId('forged-answer'),
+          type: 'ANSWER',
+          task_id: TASK,
+          from: WRITER_B,
+          to: WRITER_A,
+          reply_to: 'msg-assign-work-1',
+          subtask_id: 'work',
+          attempt: 1,
+          owner_epoch: 1,
+          body: { input_revision: INPUT, note: 'continue' },
+        });
+        const refused = submitMessage(flow.task, forged);
+        assert.equal(refused.ok, false);
+        assert.equal(refused.reason, 'unauthorized_sender');
+        assert.equal(
+          flow
+            .record()
+            .messages.some((entry) => entry.message_id === forged.message_id),
+          false,
+        );
+      } else {
+        answer(flow, 'work', over);
+      }
       const planFile = flow.planFile(planOf([node('work')]));
       const r = await inspectRecoveryProjection({
         taskRoot: flow.task,

@@ -57,7 +57,15 @@ const result = await executeRecovery(
   thrown controller, a post-dispatch failure, or any `unknown`/`queued`/`applied` observation stops and is
   recorded as an actionable unknown — never blindly replayed. A `submitted`/`queued` wake is a submission
   acceptance only, never consumption or completion. Numeric retry inputs are bounded (NaN/Infinity fall back
-  to the default).
+  to the default). After a blocked, refused or unknown final result, a later explicit invocation may retry
+  the same cause only when every retained journal entry has a completed, known-no-effect outcome and the
+  final observation is also `none`. Each invocation gets a fresh bounded retry budget; an exclusive
+  generation claim prevents concurrent callers from both resuming that boundary. Recorded successful or
+  deferred effects return a successful `noop`; ambiguous effects remain `ok: false` / `unknown` and are
+  never silently converted to success or reissued. A verified dead owner with no dispatch intent can
+  be resumed. Interrupted generation claims are followed through exclusive immutable successors instead
+  of deleting a possibly replaced lock; live, malformed or excessively long claim chains remain unknown.
+  An incomplete dispatch intent still requires supported observation before recovery.
 - **Authority and identity.** The acting `self` must match the expected session. For a resume the attempt's
   bound native session must match too; for a coordinator review the actor is validated by role and is **not**
   compared to the completed writer's native binding.

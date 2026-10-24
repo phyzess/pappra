@@ -463,7 +463,7 @@ async function runUnknownNoReplayCharacterization(
       ['ignore', 'ignore', 'inherit', 'ipc'],
     );
     const restartedResult = await restarted.waitFor('result', 30_000);
-    assert.equal(restartedResult.status, 'noop');
+    assert.equal(restartedResult.status, 'unknown');
     assert.equal(restartedResult.reservationOutcome, 'unknown');
     assert.equal(restartedResult.controllerCalls, 0);
     assert.equal(restartedResult.reservationCreated, false);

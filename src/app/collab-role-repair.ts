@@ -4,8 +4,12 @@ import path from 'node:path';
 import { assertTaskStoreCurrent, openTaskStore } from './collab-task-store.js';
 import { readBoundedFile } from './bounded-file.js';
 import { buildMessage, canonicalJson } from '../collab/envelope.js';
-import { CLOSED_STATES } from '../collab/lifecycle.js';
-import { readRecord } from '../collab/store.js';
+import {
+  CLOSED_STATES,
+  resolveUncertainty,
+  transitionAttempt,
+} from '../collab/lifecycle.js';
+import { readRecord, transact } from '../collab/store.js';
 import { submitMessage } from '../collab/messages.js';
 import { isAssignment } from '../collab/contracts.js';
 import type { Identity, Message, TaskRecord } from '../collab/types.js';
@@ -26,7 +30,7 @@ import {
 } from '../collab/resources.js';
 import type { WorkExecutionRequest } from './collab-work-execution.js';
 
-const REPAIR_JOURNAL_SCHEMA = 'pappra/collab-role-repair-journal/1';
+const REPAIR_JOURNAL_SCHEMA = 'pappra/collab-role-repair-journal/2';
 const STOP_RECEIPT_SCHEMA = 'pappra/collab-native-stop-receipt/1';
 const MAX_REPAIR_JOURNAL_BYTES = 1024 * 1024;
 const MAX_REPAIRS = 64;
@@ -150,9 +154,9 @@ interface RepairIntent {
   readonly next_plan: RolePlanSuccess['plan'];
   readonly next_execution: WorkExecutionRequest;
   readonly release_claim_ids: readonly string[];
-  readonly cancel_message: Message | null;
+  readonly close_source: boolean;
   readonly assign_message: Message;
-  readonly stop_receipt: NativeStopReceipt | null;
+  stop_receipt: NativeStopReceipt | null;
   state:
     | 'prepared'
     | 'source-closed'
@@ -198,7 +202,7 @@ function validateJournal(value: unknown): RepairJournal | null {
       !Array.isArray(item['release_claim_ids']) ||
       !isRecord(item['next_plan']) ||
       !isRecord(item['assign_message']) ||
-      !(item['cancel_message'] === null || isRecord(item['cancel_message'])) ||
+      typeof item['close_source'] !== 'boolean' ||
       !(item['stop_receipt'] === null || isRecord(item['stop_receipt'])) ||
       ![
         'prepared',
@@ -459,12 +463,98 @@ function nextExecution(
   );
   return cards.length === 1 ? configured : null;
 }
-function protocolMessageIds(authorizationDigest: string): {
-  cancel: string;
-  assign: string;
-} {
+function protocolMessageIds(authorizationDigest: string): { assign: string } {
   const prefix = `role-repair-${authorizationDigest.slice(0, 32)}`;
-  return { cancel: `${prefix}-stop`, assign: `${prefix}-assign` };
+  return { assign: `${prefix}-assign` };
+}
+
+/** A trusted host observation is coordinator evidence, never a forged worker report. */
+function closeSourceAfterVerifiedStop(
+  taskRoot: string,
+  authorization: RoleRepairAuthorization,
+  assignee: Identity,
+  receipt: NativeStopReceipt,
+  clock: number,
+): boolean {
+  const closed = transact(taskRoot, {
+    actor: authorization.coordinator.agent_id,
+    purpose: 'role-repair-verified-stop',
+    clock,
+    apply(record) {
+      const coordinator = record.coordinator;
+      const source = record.attempts.find(
+        (entry) =>
+          entry.subtask_id === authorization.source.assignment_id &&
+          entry.attempt === authorization.source.attempt,
+      );
+      if (
+        !coordinator ||
+        !sameIdentity(coordinator, authorization.coordinator) ||
+        coordinator.owner_epoch !== authorization.coordinator.owner_epoch ||
+        !source ||
+        source.owner_epoch !== authorization.coordinator.owner_epoch ||
+        source.input_revision !== authorization.source.input_revision ||
+        !sameIdentity(source.assignee, assignee) ||
+        !validStopReceipt(
+          receipt,
+          record.task_id,
+          authorization.coordinator,
+          authorization.source,
+          source.assignee,
+          clock,
+        )
+      )
+        return { ok: false as const, reason: 'verified_stop_pins_stale' };
+      if (source.state !== 'cancelled') {
+        const transition = transitionAttempt(record, {
+          subtaskId: source.subtask_id,
+          attempt: source.attempt,
+          to: 'cancelled',
+          actor: coordinator.agent_id,
+          reason: `authorized role repair ${authorization.approval.authorization_id}`,
+          evidence: receipt,
+          clock,
+        });
+        if (!transition.ok) return transition;
+      }
+      for (const claim of record.claims) {
+        if (
+          !claim.released_at &&
+          sameIdentity(claim.holder, source.assignee) &&
+          claim.subtask_id === source.subtask_id &&
+          claim.attempt === source.attempt
+        )
+          claim.cancel_pending = false;
+      }
+      for (const entry of record.uncertainty) {
+        if (
+          !entry.resolved_at &&
+          entry.kind === 'cancel_unconfirmed' &&
+          entry.subtask_id === source.subtask_id &&
+          entry.attempt === source.attempt
+        )
+          resolveUncertainty(record, {
+            uncertaintyId: entry.uncertainty_id,
+            resolution:
+              'trusted host confirmed the source stopped for role repair',
+            resolutionEvidence: receipt,
+            actor: coordinator.agent_id,
+            clock,
+          });
+      }
+      return {
+        record,
+        op: 'role-repair-verified-stop',
+        summary: {
+          subtask_id: source.subtask_id,
+          attempt: source.attempt,
+          authorization_id: authorization.approval.authorization_id,
+        },
+        result: null,
+      };
+    },
+  });
+  return closed.ok;
 }
 
 function writeUpdatedPlan(
@@ -787,14 +877,6 @@ export async function repairRejectedRoleNode(
   } else {
     if (journal.intents.length >= MAX_REPAIRS)
       return outcome('repair-exhausted', 'repair_journal_limit_reached');
-    const toIdentity = {
-      agent_id: sourceAttempt.assignee.agent_id,
-      session_id: sourceAttempt.assignee.session_id,
-      harness: sourceAttempt.assignee.harness ?? null,
-      ...(sourceAttempt.assignee.cwd
-        ? { cwd: sourceAttempt.assignee.cwd }
-        : {}),
-    };
     const alreadyClosed = CLOSED_STATES.includes(sourceAttempt.state);
     // A terminal task state does not fence the old native session's input.
     const stopReceipt =
@@ -887,20 +969,6 @@ export async function repairRejectedRoleNode(
       ...(coordinator!.cwd ? { cwd: coordinator!.cwd } : {}),
     };
     const idsNow = protocolMessageIds(authDigest);
-    const cancelMessage = alreadyClosed
-      ? null
-      : buildMessage({
-          message_id: idsNow.cancel,
-          type: 'CANCELLED',
-          task_id: record.task_id,
-          from: coordinatorIdentity,
-          to: toIdentity,
-          reply_to: sourceAttempt.assignment_message_id,
-          subtask_id: authorization.source.assignment_id,
-          attempt: authorization.source.attempt,
-          owner_epoch: authorization.coordinator.owner_epoch,
-          body: { stop_evidence: stopReceipt },
-        });
     const assignMessage = buildMessage({
       message_id: idsNow.assign,
       type: 'ASSIGN',
@@ -929,7 +997,7 @@ export async function repairRejectedRoleNode(
       next_plan: updatedExpansion.plan,
       next_execution: updatedExecution,
       release_claim_ids: releaseClaimIds,
-      cancel_message: cancelMessage,
+      close_source: !alreadyClosed,
       assign_message: assignMessage,
       stop_receipt: stopReceipt,
       state: 'prepared',
@@ -942,8 +1010,57 @@ export async function repairRejectedRoleNode(
     }
   }
 
-  if (intent.cancel_message && intent.state === 'prepared') {
-    if (!submitIdempotently(request.task_root, intent.cancel_message))
+  if (intent.close_source && intent.state === 'prepared') {
+    if (
+      !validStopReceipt(
+        intent.stop_receipt,
+        record.task_id,
+        authorization.coordinator,
+        authorization.source,
+        sourceAttempt.assignee,
+        (deps.now ?? Date.now)(),
+      )
+    ) {
+      const fresh =
+        (await deps.confirm_stopped?.({
+          task_id: record.task_id,
+          coordinator: authorization.coordinator,
+          source: authorization.source,
+          assignee: sourceAttempt.assignee,
+        })) ?? null;
+      if (
+        !validStopReceipt(
+          fresh,
+          record.task_id,
+          authorization.coordinator,
+          authorization.source,
+          sourceAttempt.assignee,
+          (deps.now ?? Date.now)(),
+        )
+      )
+        return outcome(
+          'repair-required',
+          'live_supported_stop_receipt_missing_or_stale',
+        );
+      intent.stop_receipt = fresh;
+      try {
+        persistJournal(journalFile, journal);
+      } catch {
+        return outcome(
+          'reconciliation-required',
+          'repair_intent_persist_failed',
+        );
+      }
+    }
+    if (
+      !closeSourceAfterVerifiedStop(
+        request.task_root,
+        authorization,
+        sourceAttempt.assignee,
+        intent.stop_receipt!,
+        (deps.now ?? Date.now)(),
+      )
+    )
       return outcome(
         'reconciliation-required',
         'source_close_protocol_refused',
@@ -958,7 +1075,7 @@ export async function repairRejectedRoleNode(
       );
     }
   }
-  if (intent.state === 'prepared' && !intent.cancel_message)
+  if (intent.state === 'prepared' && !intent.close_source)
     intent.state = 'source-closed';
   if (intent.state === 'source-closed') {
     if (

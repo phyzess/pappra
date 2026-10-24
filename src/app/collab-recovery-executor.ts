@@ -34,9 +34,9 @@ const MAX_RETRIES_CEILING = 4;
 const DEFAULT_RETRIES = 2;
 const MAX_RESERVATION_BYTES = 64 * 1024;
 const MAX_JOURNAL_ENTRIES = 32;
+const MAX_RESUME_CLAIM_HOPS = 64;
 const RESERVATION_DIRNAME = '.recovery';
-const NOFOLLOW_WRITE_FLAGS =
-  fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
+const NOFOLLOW_WRITE_FLAGS = fs.constants.O_WRONLY | fs.constants.O_NOFOLLOW;
 
 export type RecoveryExecutionMode = 'plan' | 'apply';
 
@@ -306,6 +306,7 @@ interface ReservationFile {
   readonly cause: RecoveryCause;
   readonly reserved_at: number;
   owner_pid?: number;
+  generation?: number;
   journal: JournalEntry[];
   final?: ReservationFinal;
 }
@@ -556,6 +557,11 @@ function parseReservation(raw: string): ReservationFile | null {
   )
     return null;
   if (!isCause(file.cause)) return null;
+  if (
+    file.generation !== undefined &&
+    (!Number.isSafeInteger(file.generation) || Number(file.generation) < 0)
+  )
+    return null;
   if (!Array.isArray(file.journal) || !file.journal.every(isJournalEntry))
     return null;
   if (file.final !== undefined) {
@@ -702,6 +708,89 @@ function readReservation(
     return null;
   }
   return parseReservation(raw);
+}
+
+function processExited(pid: number | undefined): boolean {
+  if (pid === undefined) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+/**
+ * Dead pre-dispatch claims are immutable. Contend on one deterministic successor
+ * instead of unlinking a pathname that another contender may already have replaced.
+ */
+function claimResumeGeneration(
+  reservationFile: string,
+  anchor: SidecarAnchor,
+  existing: ReservationFile,
+): ReturnType<typeof createReservationExclusive> {
+  const base = `${reservationFile}.resume-${existing.generation ?? 0}.lock`;
+  let claimFile = base;
+  const snapshot = serialize(existing);
+  for (let hop = 0; hop < MAX_RESUME_CLAIM_HOPS; hop += 1) {
+    const current = readReservation(reservationFile, anchor);
+    if (current === null || serialize(current) !== snapshot)
+      return { ok: false, reason: 'exists' };
+    const claim = createReservationExclusive(
+      claimFile,
+      anchor,
+      `${JSON.stringify({ owner_pid: process.pid, prior_owner_pid: existing.owner_pid, key: existing.key })}\n`,
+    );
+    if (claim.ok || claim.reason !== 'exists') return claim;
+    let fd: number | null = null;
+    try {
+      fd = fs.openSync(
+        claimFile,
+        fs.constants.O_RDONLY |
+          fs.constants.O_NOFOLLOW |
+          fs.constants.O_NONBLOCK,
+      );
+      const stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.size > 1024)
+        return { ok: false, reason: 'unsafe' };
+      const buffer = Buffer.alloc(1025);
+      const bytes = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      if (bytes > 1024) return { ok: false, reason: 'unsafe' };
+      const raw = buffer.subarray(0, bytes).toString('utf8');
+      const owner: unknown = JSON.parse(raw);
+      if (
+        typeof owner !== 'object' ||
+        owner === null ||
+        !('owner_pid' in owner) ||
+        !('key' in owner) ||
+        owner.key !== existing.key ||
+        typeof owner.owner_pid !== 'number' ||
+        !Number.isSafeInteger(owner.owner_pid) ||
+        owner.owner_pid <= 0 ||
+        !processExited(owner.owner_pid)
+      )
+        return { ok: false, reason: 'exists' };
+      const after = fs.lstatSync(claimFile);
+      if (!after.isFile() || after.dev !== stat.dev || after.ino !== stat.ino)
+        return { ok: false, reason: 'unsafe' };
+      const boundary = crypto
+        .createHash('sha256')
+        .update(JSON.stringify([stat.dev, stat.ino, raw]))
+        .digest('hex');
+      claimFile = `${base}.retry-${boundary}`;
+    } catch {
+      return { ok: false, reason: 'unsafe' };
+    } finally {
+      if (fd !== null) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* The claim remains conservative if descriptor cleanup fails. */
+        }
+      }
+    }
+  }
+  return { ok: false, reason: 'exists' };
 }
 
 function controllerClass(
@@ -963,10 +1052,35 @@ async function runRecovery(
         'a reservation exists but is unreadable or malformed; the prior effect state is unknown. Not replaying.',
         projection,
       );
-    if (existing.final)
+    const knownNoEffect =
+      existing.key === key &&
+      existing.journal.every(
+        (entry, index, entries) =>
+          Number.isSafeInteger(entry.seq) &&
+          entry.seq >= 0 &&
+          (index === 0 || entry.seq === entries[index - 1]!.seq + 1) &&
+          entry.outcome_at !== null &&
+          entry.observation === 'none' &&
+          (entry.disposition === 'failed' ||
+            entry.disposition === 'unavailable' ||
+            entry.disposition === 'refused'),
+      );
+    const retryableFinal =
+      knownNoEffect &&
+      existing.final?.observation === 'none' &&
+      (existing.final.status === 'blocked' ||
+        existing.final.status === 'unknown' ||
+        existing.final.status === 'refused');
+    if (existing.final && !retryableFinal)
       return result({
-        ok: true,
-        status: 'noop',
+        ok:
+          existing.final.status === 'applied' ||
+          existing.final.status === 'deferred',
+        status:
+          existing.final.status === 'applied' ||
+          existing.final.status === 'deferred'
+            ? 'noop'
+            : 'unknown',
         action,
         cause,
         reservation: {
@@ -978,45 +1092,23 @@ async function runRecovery(
         performed: null,
         retries: 0,
         notes: [
-          'this cause was already reserved and recorded; returning the prior outcome without re-issuing (request id does not create a new right to send).',
+          'this cause has a recorded effect or ambiguous outcome; preserving that outcome without re-issuing. A possible effect requires supported observation before retry.',
         ],
         limits: [...BASE_LIMITS, ...projection.limits],
       });
-    const previousPid = existing.owner_pid;
-    let previousExited = false;
-    if (previousPid !== undefined) {
-      try {
-        process.kill(previousPid, 0);
-      } catch (error) {
-        previousExited = (error as NodeJS.ErrnoException).code === 'ESRCH';
-      }
-    }
-    const noEffect =
-      existing.key === key &&
-      existing.journal.length > 0 &&
-      existing.journal.length <= maxRetries &&
-      existing.journal.every(
-        (entry, index) =>
-          entry.seq === index &&
-          entry.outcome_at !== null &&
-          entry.observation === 'none' &&
-          (entry.disposition === 'failed' ||
-            entry.disposition === 'unavailable'),
-      );
-    if (previousExited && noEffect) {
+    const previousExited = processExited(existing.owner_pid);
+    if (retryableFinal || (previousExited && knownNoEffect)) {
       // Each persisted retry boundary has one exclusive successor. A crash after
       // this claim remains ambiguous; the same boundary is never claimed twice.
-      const claim = createReservationExclusive(
-        `${file}.resume-${existing.journal.length}.lock`,
-        sidecar,
-        `${JSON.stringify({ owner_pid: process.pid, prior_owner_pid: previousPid, key })}\n`,
-      );
+      const claim = claimResumeGeneration(file, sidecar, existing);
       if (claim.ok) {
         const stat = fs.lstatSync(file);
         if (stat.isFile() && !stat.isSymbolicLink()) {
           const current = readReservation(file, sidecar);
           if (current && serialize(current) === serialize(existing)) {
             existing.owner_pid = process.pid;
+            existing.generation = (existing.generation ?? 0) + 1;
+            delete existing.final;
             const id = { dev: stat.dev, ino: stat.ino };
             if (safeUpdate(file, id, sidecar, serialize(existing)))
               resumed = { reservation: existing, id };
@@ -1030,7 +1122,7 @@ async function runRecovery(
         cause,
         key,
         file,
-        'a reservation exists with an in-flight intent and no final outcome; the prior effect is an actionable unknown. Not replaying; resolve via supported observation.',
+        'exclusive continuation ownership could not be established: an incomplete intent, live or malformed owner, or retry-claim chain beyond the bounded inspection limit remains unknown. No wake was replayed; inspect the reservation and claims.',
         projection,
       );
   }
@@ -1042,13 +1134,13 @@ async function runRecovery(
   const reservationCreated = resumed === null;
 
   // Per-attempt dispatch loop: fresh authority + sidecar/live-target revalidation before every attempt.
-  let retries = resumed ? reservation.journal.length : 0;
+  let retries = 0;
   let last: RecoveryControllerResult = {
     disposition: 'unknown',
     detail: 'no attempt made',
     observation: 'unknown',
   };
-  for (let attempt = resumed ? reservation.journal.length : 0; ; attempt += 1) {
+  for (let attempt = 0; ; attempt += 1) {
     if (attempt > 0) await sleep(Math.min(2000, 100 * 2 ** (attempt - 1)));
 
     const recheckBlock = await revalidateBeforeAttempt(
@@ -1074,7 +1166,7 @@ async function runRecovery(
       );
 
     const entry: JournalEntry = {
-      seq: attempt,
+      seq: (reservation.journal.at(-1)?.seq ?? -1) + 1,
       intent_at: now(),
       disposition: null,
       observation: null,
@@ -1151,7 +1243,7 @@ async function runRecovery(
           'the dispatch outcome could not be safely persisted (the sidecar path became unsafe); the effect is an actionable unknown.',
         );
       return result({
-        ok: status === 'applied' || status === 'deferred',
+        ok: outcomePersisted && (status === 'applied' || status === 'deferred'),
         status: outcomePersisted ? status : 'unknown',
         action,
         cause,
@@ -1159,7 +1251,7 @@ async function runRecovery(
           key,
           path: file,
           created: reservationCreated,
-          outcome: status,
+          outcome: outcomePersisted ? status : 'unknown',
         },
         performed: last,
         retries,
@@ -1170,7 +1262,7 @@ async function runRecovery(
     if (attempt >= maxRetries) {
       finalize(file, fileId, sidecar, reservation, now, 'unknown', last);
       notes.push(
-        `the continuation wake could not be delivered after ${retries} retries (${last.disposition}); the next action is persisted as an actionable unknown.`,
+        `the continuation wake could not be delivered after ${retries} retries (${last.disposition}); persisted no-effect evidence permits a later bounded retry after the obstruction is resolved.`,
       );
       return result({
         ok: false,

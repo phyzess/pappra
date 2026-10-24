@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   existsSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -131,13 +133,23 @@ function report(flow: Flow): Message {
   });
 }
 function answer(flow: Flow): Message {
+  flow.send({
+    message_id: 'msg-ask-work-1',
+    type: 'ASK',
+    task_id: TASK,
+    from: WRITER_A,
+    to: COORDINATOR,
+    subtask_id: 'work',
+    attempt: 1,
+    body: { question: 'May I continue?', input_revision: INPUT },
+  });
   return flow.send({
     message_id: 'msg-answer-work-1',
     type: 'ANSWER',
     task_id: TASK,
     from: COORDINATOR,
     to: WRITER_A,
-    reply_to: 'msg-assign-work-1',
+    reply_to: 'msg-ask-work-1',
     subtask_id: 'work',
     attempt: 1,
     owner_epoch: 1,
@@ -611,6 +623,256 @@ test('only a known-no-effect failure retries within the bounded budget', async (
     assert.equal(r.retries, 2);
     assert.equal(rec.calls.length, 3, 'initial attempt plus two retries');
     assert.equal(sleeps.length, 2);
+  } finally {
+    flow.cleanup();
+  }
+});
+
+test('exhausted no-effect retries can be retried later without a new cause', async () => {
+  const flow = makeFlow('exec-retry-later');
+  try {
+    assign(flow);
+    const planFile = flow.planFile(planOf([node()]));
+    const req = baseRequest(flow, planFile, { maxRetries: 0 });
+    const unavailable = recorder({
+      disposition: 'unavailable',
+      detail: 'route is temporarily unavailable before dispatch',
+      observation: 'none',
+    });
+    // Retain only bounded evidence, while keeping sequence and resume claims
+    // unique after more than one journal window of no-effect invocations.
+    for (let i = 0; i < 34; i += 1) {
+      const r = await executeRecovery(req, {
+        controller: unavailable.controller,
+      });
+      assert.equal(r.ok, false);
+      assert.equal(r.status, 'unknown', JSON.stringify(r));
+    }
+    assert.equal(unavailable.calls.length, 34);
+    const delivered = recorder(SUBMITTED);
+    const [a, b] = await Promise.all([
+      executeRecovery(req, { controller: delivered.controller }),
+      executeRecovery(req, { controller: delivered.controller }),
+    ]);
+    assert.equal(delivered.calls.length, 1, 'only one resumed dispatcher');
+    assert.ok([a.status, b.status].includes('applied'));
+    const successful = a.status === 'applied' ? a : b;
+    const saved = JSON.parse(
+      readFileSync(successful.reservation!.path, 'utf8'),
+    );
+    assert.equal(saved.journal.length, 32);
+    assert.equal(saved.journal.at(-1).seq, 34);
+    const again = await executeRecovery(req, {
+      controller: delivered.controller,
+    });
+    assert.equal(again.status, 'noop');
+    assert.equal(again.ok, true);
+    assert.equal(delivered.calls.length, 1);
+  } finally {
+    flow.cleanup();
+  }
+});
+
+test('a finalized ambiguous effect stays unsuccessful and is never replayed', async () => {
+  const flow = makeFlow('exec-repeat-unknown');
+  try {
+    assign(flow);
+    const planFile = flow.planFile(planOf([node()]));
+    const req = baseRequest(flow, planFile);
+    const rec = recorder({
+      disposition: 'unknown',
+      detail: 'disconnected after possible dispatch',
+      observation: 'unknown',
+    });
+    const first = await executeRecovery(req, { controller: rec.controller });
+    const second = await executeRecovery(req, { controller: rec.controller });
+    assert.equal(first.ok, false);
+    assert.equal(second.ok, false);
+    assert.equal(second.status, 'unknown');
+    assert.equal(second.reservation!.outcome, 'unknown');
+    assert.equal(rec.calls.length, 1);
+  } finally {
+    flow.cleanup();
+  }
+});
+
+function crashReservationWorker(
+  request: RecoveryExecutionRequest,
+  mode: 'initial-empty' | 'resume-claim' | 'resumed-empty',
+): void {
+  const worker = new URL(
+    './recovery-reservation-crash-worker.js',
+    import.meta.url,
+  );
+  const child = spawnSync(
+    process.execPath,
+    [worker.pathname, JSON.stringify({ request, mode })],
+    {
+      encoding: 'utf8',
+      timeout: 15_000,
+    },
+  );
+  assert.equal(child.signal, 'SIGKILL', `${child.stdout}\n${child.stderr}`);
+}
+
+test('dead owners before the first durable intent can resume initial and successor reservations', async () => {
+  const flow = makeFlow('exec-empty-intent-crash');
+  try {
+    assign(flow);
+    const req = baseRequest(flow, flow.planFile(planOf([node()])));
+    crashReservationWorker(req, 'initial-empty');
+    crashReservationWorker(req, 'resumed-empty');
+    const delivered = recorder(SUBMITTED);
+    const resumed = await executeRecovery(req, {
+      controller: delivered.controller,
+    });
+    assert.equal(resumed.status, 'applied', JSON.stringify(resumed));
+    assert.equal(delivered.calls.length, 1);
+    assert.equal(
+      (await executeRecovery(req, { controller: delivered.controller })).status,
+      'noop',
+    );
+    assert.equal(delivered.calls.length, 1);
+  } finally {
+    flow.cleanup();
+  }
+});
+
+test('dead generation claims recover without deleting or stealing concurrent claims', async () => {
+  const flow = makeFlow('exec-claim-crash');
+  try {
+    assign(flow);
+    const req = baseRequest(flow, flow.planFile(planOf([node()])), {
+      maxRetries: 0,
+    });
+    const unavailable = recorder({
+      disposition: 'unavailable',
+      observation: 'none',
+      detail: 'no effect',
+    });
+    const first = await executeRecovery(req, {
+      controller: unavailable.controller,
+    });
+    assert.equal(first.status, 'unknown');
+    crashReservationWorker(req, 'resume-claim');
+    crashReservationWorker(req, 'resume-claim');
+    const directory = join(flow.task, '.recovery', 'reservations');
+    const claims = readdirSync(directory).filter((name) =>
+      name.includes('.resume-'),
+    );
+    assert.equal(claims.length, 2);
+    const delivered = recorder(SUBMITTED);
+    const results = await Promise.all([
+      executeRecovery(req, { controller: delivered.controller }),
+      executeRecovery(req, { controller: delivered.controller }),
+    ]);
+    assert.ok(results.some((value) => value.status === 'applied'));
+    assert.equal(delivered.calls.length, 1);
+    for (const claim of claims) assert.ok(existsSync(join(directory, claim)));
+  } finally {
+    flow.cleanup();
+  }
+});
+
+test('live and malformed pre-dispatch generation claim owners stay unknown', async () => {
+  const flow = makeFlow('exec-live-claim');
+  try {
+    assign(flow);
+    const req = baseRequest(flow, flow.planFile(planOf([node()])), {
+      maxRetries: 0,
+    });
+    const unavailable = recorder({
+      disposition: 'unavailable',
+      observation: 'none',
+      detail: 'no effect',
+    });
+    const first = await executeRecovery(req, {
+      controller: unavailable.controller,
+    });
+    crashReservationWorker(req, 'resume-claim');
+    const claim = `${first.reservation!.path}.resume-0.lock`;
+    const original = readFileSync(claim, 'utf8');
+    const value = JSON.parse(original) as Record<string, unknown>;
+    const delivered = recorder(SUBMITTED);
+    for (const raw of [
+      JSON.stringify({ ...value, owner_pid: process.pid }),
+      '{}',
+    ]) {
+      writeFileSync(claim, raw);
+      const refused = await executeRecovery(req, {
+        controller: delivered.controller,
+      });
+      assert.equal(refused.status, 'unknown');
+      assert.equal(refused.ok, false);
+      assert.equal(readFileSync(claim, 'utf8'), raw);
+      assert.equal(delivered.calls.length, 0);
+    }
+    writeFileSync(claim, original);
+    assert.equal(
+      (await executeRecovery(req, { controller: delivered.controller })).status,
+      'applied',
+    );
+  } finally {
+    flow.cleanup();
+  }
+});
+
+test('a replaced regular reservation inode is preserved before any truncation', async () => {
+  const flow = makeFlow('exec-replaced-reservation');
+  try {
+    assign(flow);
+    const req = baseRequest(flow, flow.planFile(planOf([node()])));
+    const replacement = 'replacement reservation must remain intact\n';
+    let replacedFile = '';
+    const controller: RecoveryController = {
+      id: 'replace-inode',
+      perform: async () => {
+        const directory = join(flow.task, '.recovery', 'reservations');
+        const file = readdirSync(directory).find((name) =>
+          name.endsWith('.json'),
+        )!;
+        replacedFile = join(directory, file);
+        renameSync(replacedFile, `${replacedFile}.original`);
+        writeFileSync(replacedFile, replacement);
+        return SUBMITTED;
+      },
+    };
+    const outcome = await executeRecovery(req, { controller });
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.status, 'unknown');
+    assert.equal(readFileSync(replacedFile, 'utf8'), replacement);
+  } finally {
+    flow.cleanup();
+  }
+});
+
+test('a temporary binding obstruction can be cleared and retried safely', async () => {
+  const flow = makeFlow('exec-retry-binding-restored');
+  try {
+    assign(flow);
+    const planFile = flow.planFile(planOf([node()]));
+    const req = baseRequest(flow, planFile, { maxRetries: 1 });
+    const bindingFile = req.expectedSession!.binding_ref!;
+    const binding = readFileSync(bindingFile, 'utf8');
+    const rec = recorder({
+      disposition: 'unavailable',
+      detail: 'known no effect',
+      observation: 'none',
+    });
+    const first = await executeRecovery(req, {
+      controller: rec.controller,
+      sleep: async () => writeFileSync(bindingFile, '{}'),
+    });
+    assert.equal(first.status, 'blocked', JSON.stringify(first));
+    assert.equal(first.ok, false);
+    writeFileSync(bindingFile, binding);
+    const delivered = recorder(SUBMITTED);
+    const second = await executeRecovery(req, {
+      controller: delivered.controller,
+    });
+    assert.equal(second.status, 'applied', JSON.stringify(second));
+    assert.equal(delivered.calls.length, 1);
+    assert.equal(second.reservation!.key, first.reservation!.key);
   } finally {
     flow.cleanup();
   }

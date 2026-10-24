@@ -428,11 +428,15 @@ test(
         0,
         'unknown intent blocks controller dispatch',
       );
-      assert.ok(
-        (outcome.notes as string[]).some((note) =>
-          note.includes('resolve via supported observation'),
-        ),
-        'the effect remains actionable for evidence-based reconciliation',
+      assert.deepEqual(
+        JSON.parse(readFileSync(reservationPath, 'utf8')).journal,
+        interrupted.journal,
+        'the unresolved effect evidence survives restart without a new intent',
+      );
+      assert.equal(
+        (outcome.reservation as { outcome: string | null }).outcome,
+        null,
+        'an unresolved dispatch must not acquire a successful final outcome',
       );
       assert.equal(
         readDispatchLog(effectLog).length,
