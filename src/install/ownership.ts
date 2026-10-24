@@ -33,6 +33,8 @@ import {
   sha256Digest,
 } from '../infra/fs.js';
 import { ensurePrivateState } from '../infra/private-state.js';
+import { publishPrivateLock } from '../infra/private-lock.js';
+import { captureProcessIdentity } from '../infra/process-identity.js';
 
 export interface WorkspaceInstallPaths {
   readonly root: string;
@@ -330,10 +332,22 @@ export async function acquireInstallLock(
     operation,
     target,
     pid: process.pid,
+    ...(captureProcessIdentity() === null
+      ? {}
+      : { process_identity: captureProcessIdentity()! }),
     createdAt: new Date().toISOString(),
   };
   try {
-    await writeNewFile(path, Buffer.from(`${JSON.stringify(lock, null, 2)}\n`));
+    await publishPrivateLock(
+      path,
+      Buffer.from(`${JSON.stringify(lock, null, 2)}\n`),
+      async () => {
+        if (boundaryRoot !== undefined) {
+          const boundary = await ensureStatePathBoundary(boundaryRoot, path);
+          if (!boundary.ok) throw new Error(boundary.message);
+        }
+      },
+    );
     return {
       ok: true,
       status: 'acquired',

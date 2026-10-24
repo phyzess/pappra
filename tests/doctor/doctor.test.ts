@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -178,6 +179,45 @@ test('checks a valid workspace, missing runtime, and unverified validation candi
     assert.deepEqual(snapshotTree(fixture.root), before);
   } finally {
     for (const path of Object.values(fixture)) cleanup(path);
+  }
+});
+
+test('doctor observes an installed host bundle even when no host is selected', async () => {
+  const fixture = isolated();
+  try {
+    createWorkspace(fixture.root);
+    writeMachineConfig(fixture.root, {
+      ...baseMachineConfig(fixture.root),
+      selectedHosts: [],
+    });
+    const hostRoot = join(fixture.root, '.claude');
+    mkdirSync(hostRoot);
+    writeFileSync(join(hostRoot, 'pappra-host.json'), '{}\n');
+    writeFileSync(
+      join(hostRoot, '.pappra-host.lock'),
+      'legacy-unverified-token',
+    );
+    const before = snapshotTree(fixture.root);
+    const report = await runDoctor({
+      root: fixture.root,
+      dataDir: fixture.data,
+      homeDir: fixture.home,
+      pathEnv: fixture.bin,
+    });
+    assert.equal(check(report, 'host.integration').status, 'partial');
+    assert.equal(check(report, 'host.install-locks').status, 'warning');
+    assert(
+      check(report, 'host.install-locks').nextActions.some((action) =>
+        action.includes('--force --apply'),
+      ),
+    );
+    assert.equal(
+      check(report, 'host.integration').source,
+      join(realpathSync(hostRoot), 'pappra-host.json'),
+    );
+    assert.deepEqual(snapshotTree(fixture.root), before);
+  } finally {
+    for (const file of Object.values(fixture)) cleanup(file);
   }
 });
 

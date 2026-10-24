@@ -39,6 +39,9 @@ import {
   workspaceInstallPaths,
 } from '../install/ownership.js';
 import { detectPassiveHosts, detectPassiveTool } from '../hosts/detect.js';
+import { inspectWorkspaceLocks } from '../install/repair.js';
+import { inspectLocalResetState } from '../install/reset-local.js';
+import { inspectPrivateLock } from '../infra/private-lock.js';
 
 export interface DoctorOptions {
   readonly root?: string;
@@ -855,6 +858,76 @@ export async function runDoctor(
   );
 
   if (root !== null) {
+    const resetState = await inspectLocalResetState(root);
+    if (resetState === 'pending' || resetState === 'unreadable')
+      checks.push(
+        makeCheck({
+          id: 'state.local-reset',
+          code: diagnosticCodes.initApplyResidual,
+          status: 'warning',
+          severity: 'warning',
+          title: 'Private local reset',
+          summary: `Local reset metadata is ${resetState}; retained archives were not changed.`,
+          source: join(root, '.pappra/local-archive/pending-reset.json'),
+          observedAt,
+          coverage:
+            'read-only local reset journal status; no process is stopped or adopted',
+          evidence: [],
+          nextActions: [
+            'After stopping all affected writers, resume with pappra repair --reset-local --all-writers-stopped --apply.',
+          ],
+        }),
+      );
+    try {
+      const locks = await inspectWorkspaceLocks(root);
+      const needsRepair = locks.some(
+        (lock) => lock.state === 'dead' || lock.state === 'unknown',
+      );
+      checks.push(
+        makeCheck({
+          id: 'state.writer-locks',
+          code: diagnosticCodes.document_locked,
+          status: needsRepair ? 'warning' : 'ok',
+          severity: needsRepair ? 'warning' : 'info',
+          title: 'Private writer locks',
+          summary:
+            locks.length === 0
+              ? 'No private writer lock remains.'
+              : locks.map((lock) => `${lock.state}: ${lock.file}`).join('; '),
+          source: join(root, '.pappra/local'),
+          observedAt,
+          coverage:
+            'bounded install, knowledge and checkpoint lock inventory; process identity or positive owner-death evidence',
+          evidence: locks.map((lock) =>
+            fileEvidence(lock.file, observedAt, lock.digest),
+          ),
+          nextActions: needsRepair
+            ? [
+                'Run pappra repair to inspect owner states; use --apply only for provably dead writers. Unknown/live owners are preserved.',
+              ]
+            : [],
+        }),
+      );
+    } catch (error) {
+      checks.push(
+        makeCheck({
+          id: 'state.writer-locks',
+          code: diagnosticCodes.document_locked,
+          status: 'error',
+          severity: 'error',
+          title: 'Private writer locks',
+          summary: `Cannot inspect private lock state: ${error instanceof Error ? error.message : String(error)}`,
+          source: join(root, '.pappra/local'),
+          observedAt,
+          coverage:
+            'private lock paths are unsafe or inventory was unavailable',
+          evidence: [],
+          nextActions: [
+            'Inspect pappra repair output and the reported path; no lock was changed.',
+          ],
+        }),
+      );
+    }
     const workspaceInspection = await inspectWorkspaceConfig(root, {
       missing: 'info',
     });
@@ -1141,6 +1214,7 @@ export async function runDoctor(
   );
 
   const selectedHosts = machine?.selectedHosts ?? [];
+  const observableHosts = ['pi', 'codex', 'claude'] as const;
   // Passive observation only: a host install can target the private default root, a
   // project directory, or Codex's user configuration directory.
   const hostInstallRoots = (host: 'pi' | 'codex' | 'claude'): string[] => {
@@ -1156,7 +1230,7 @@ export async function runDoctor(
   const installedHostBundle =
     (
       await Promise.all(
-        selectedHosts.map(async (host) => {
+        observableHosts.map(async (host) => {
           for (const base of hostInstallRoots(host)) {
             const path = join(base, 'pappra-host.json');
             if ((await observePath(path)).kind === 'file') return path;
@@ -1165,10 +1239,49 @@ export async function runDoctor(
         }),
       )
     ).find((path) => path !== null) ?? null;
+  const hostLocks = (
+    await Promise.all(
+      observableHosts.flatMap((host) =>
+        hostInstallRoots(host).map(async (base) => ({
+          host,
+          base,
+          owner: await inspectPrivateLock(join(base, '.pappra-host.lock')),
+        })),
+      ),
+    )
+  ).filter((entry) => entry.owner.state !== 'missing');
+  if (hostLocks.length > 0)
+    checks.push(
+      makeCheck({
+        id: 'host.install-locks',
+        code: diagnosticCodes.host_install_conflict,
+        status: hostLocks.every((entry) => entry.owner.state === 'alive')
+          ? 'partial'
+          : 'warning',
+        severity: hostLocks.every((entry) => entry.owner.state === 'alive')
+          ? 'info'
+          : 'warning',
+        title: 'Host installation locks',
+        summary: `${hostLocks.length} host lock(s) observed; live owners are retained, dead owners can be reclaimed, and unknown owners require an explicit stopped-writer assertion.`,
+        source: hostLocks[0]!.owner.file,
+        observedAt,
+        coverage: 'known project/private/user host roots only',
+        evidence: hostLocks.map((entry) =>
+          fileEvidence(entry.owner.file, observedAt, entry.owner.digest),
+        ),
+        nextActions: hostLocks.map((entry) =>
+          entry.owner.state === 'alive'
+            ? `Let the verified live ${entry.host} writer finish; --force cannot override it.`
+            : entry.owner.state === 'dead'
+              ? `Retry host install --host ${entry.host} --host-root ${JSON.stringify(entry.base)} to reclaim the proven dead owner.`
+              : `Stop all writers for ${entry.base}, then run pappra host uninstall --host ${entry.host} --host-root ${JSON.stringify(entry.base)} --force --apply to archive an unknown lock.`,
+        ),
+      }),
+    );
   const installedHostSkill =
     (
       await Promise.all(
-        selectedHosts.map(async (host) => {
+        observableHosts.map(async (host) => {
           for (const base of hostInstallRoots(host)) {
             const path = join(base, 'skills', 'pappra', 'SKILL.md');
             if ((await observePath(path)).kind === 'file') return path;
@@ -1187,7 +1300,7 @@ export async function runDoctor(
       title: 'Host integration',
       summary:
         installedHostBundle === null
-          ? 'No P09 host bundle manifest was observed under the selected host roots; no host, session, or model was started.'
+          ? 'No host bundle manifest was observed under the known host roots; no host, session, or model was started.'
           : `P09 host bundle manifest exists at ${installedHostBundle}; native trust, reload and callability remain unverified and no host was started.`,
       source: installedHostBundle ?? root ?? homeDir,
       observedAt,

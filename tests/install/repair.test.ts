@@ -626,7 +626,7 @@ test('repair preview is read-only; explicit apply releases a dead owner and clos
   }
 });
 
-test('repair refuses live owners and uncertain pending files', async () => {
+test('repair refuses live owners and preserves uncertain files while retiring unproven ownership', async () => {
   const root = realpathSync(makeTempDir('repair-live'));
   try {
     const item = journal(root);
@@ -656,12 +656,14 @@ test('repair refuses live owners and uncertain pending files', async () => {
     writeFileSync(join(uncertain, 'user.txt'), 'user');
     const file = journalPath(uncertain, item.installId);
     await writeInstallJournal(file, item, uncertain);
-    assert.equal(
-      (await repairInstall({ root: uncertain, apply: true })).ok,
-      false,
-    );
+    const retired = await repairInstall({ root: uncertain, apply: true });
+    assert.equal(retired.ok, true, JSON.stringify(retired));
+    assert.deepEqual(retired.preserved, ['user.txt']);
     assert.equal(readFileSync(join(uncertain, 'user.txt'), 'utf8'), 'user');
-    assert.equal((await readInstallJournal(file)).value?.status, 'applying');
+    const audited = (await readInstallJournal(file)).value;
+    assert.equal(audited?.status, 'rolled-back');
+    assert.equal(audited?.entries[0]?.identity, null);
+    assert.equal(audited?.entries[0]?.detail, 'preserved-unproven-file');
   } finally {
     cleanup(uncertain);
   }

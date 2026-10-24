@@ -33,6 +33,7 @@ import {
   writeWorkspaceManifest,
 } from './ownership.js';
 import { observePath, sha256Digest } from '../infra/fs.js';
+import { beginRuntimeReference } from './references.js';
 import {
   errorMessage,
   failed,
@@ -781,6 +782,64 @@ export async function updateMachineRuntime(
   root: string,
   runtime: RuntimeManifest,
   options: UpdateMachineRuntimeOptions = {},
+): Promise<ManagedMachineUpdateResult> {
+  const lease = await beginRuntimeReference(root, runtime);
+  if (!lease.ok)
+    return {
+      ok: false,
+      status: 'failed',
+      residualPaths: [],
+      diagnostics: [
+        diagnostic(
+          lease.code,
+          lease.message,
+          lease.nextAction ?? 'Inspect the runtime reference state.',
+          runtime.runtimeRoot,
+        ),
+      ],
+    };
+  let result: ManagedMachineUpdateResult;
+  try {
+    result = await updateMachineRuntimeAt(root, runtime, options);
+  } catch (error) {
+    result = {
+      ok: false,
+      status: 'failed',
+      residualPaths: [],
+      diagnostics: [
+        diagnostic(
+          diagnosticCodes.initApplyFailed,
+          errorMessage(error),
+          'Inspect the workspace binding journal before retrying.',
+          root,
+        ),
+      ],
+    };
+  }
+  const released = await lease.value.release();
+  return released.ok
+    ? result
+    : {
+        ...result,
+        ok: false,
+        status: result.ok ? 'partial' : result.status,
+        residualPaths: [...result.residualPaths, lease.value.lockPath],
+        diagnostics: [
+          ...result.diagnostics,
+          diagnostic(
+            released.code,
+            released.message,
+            'Inspect the retained runtime lock before retrying.',
+            lease.value.lockPath,
+          ),
+        ],
+      };
+}
+
+async function updateMachineRuntimeAt(
+  root: string,
+  runtime: RuntimeManifest,
+  options: UpdateMachineRuntimeOptions,
 ): Promise<ManagedMachineUpdateResult> {
   const stateBoundary = await ensureWorkspaceStateBoundary(root);
   if (!stateBoundary.ok) {

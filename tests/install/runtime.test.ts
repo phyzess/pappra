@@ -120,6 +120,71 @@ test('reuses a complete runtime and detects a mismatched version without replaci
   }
 });
 
+test('a tarball runtime can be reused from self only when the verified payload fingerprint matches', async () => {
+  const root = makeTempDir('runtime-tarball-self');
+  try {
+    const tarball = createRuntimeTarball(root, { version });
+    const dataDir = join(root, 'data');
+    const installed = await installRuntime({
+      version,
+      source: { kind: 'tarball', path: tarball },
+      dataDir,
+      offline: true,
+      timeoutMs: 60_000,
+    });
+    assert(
+      installed.ok && installed.manifest,
+      JSON.stringify(installed.diagnostics),
+    );
+    assert.match(installed.manifest.sourceFingerprint, /^sha256:[0-9a-f]{64}$/);
+    const reused = await installRuntime({
+      version,
+      source: { kind: 'self', path: join(root, 'runtime-package') },
+      dataDir,
+      offline: true,
+      timeoutMs: 60_000,
+    });
+    assert.equal(reused.status, 'reused', JSON.stringify(reused.diagnostics));
+    assert.equal(reused.manifest?.installId, installed.manifest.installId);
+    const newerSource = join(root, 'newer-source');
+    mkdirSync(newerSource);
+    writeFileSync(
+      join(newerSource, 'package.json'),
+      JSON.stringify({
+        name: '@phyzess/pappra',
+        version: '99.0.0',
+      }),
+    );
+    const olderTarget = await installRuntime({
+      version,
+      source: { kind: 'self', path: newerSource },
+      dataDir,
+      offline: true,
+    });
+    assert.equal(
+      olderTarget.status,
+      'reused',
+      JSON.stringify(olderTarget.diagnostics),
+    );
+    assert.equal(olderTarget.manifest?.installId, installed.manifest.installId);
+    const absentTarget = await installRuntime({
+      version: '0.0.1',
+      source: { kind: 'self', path: newerSource },
+      dataDir,
+      offline: true,
+    });
+    assert.equal(absentTarget.ok, false);
+    assert(
+      absentTarget.diagnostics.some((entry) =>
+        entry.message.includes('does not match'),
+      ),
+    );
+    assert.equal(existsSync(runtimePaths('0.0.1', dataDir).runtimeRoot), false);
+  } finally {
+    cleanup(root);
+  }
+});
+
 test('old beta runtime formats require reinitialization without claiming corruption or changing state', async () => {
   const root = makeTempDir('runtime-format-reset');
   try {
@@ -162,6 +227,7 @@ test('old beta runtime formats require reinitialization without claiming corrupt
         version,
         dataDir,
         activeReferences: [],
+        forceUnknownReferences: true,
       });
       assert.equal(removed.status, 'incompatible');
       assert.equal(readFileSync(file, 'utf8'), bytes);
@@ -293,7 +359,7 @@ test('serializes concurrent installs of the same version', async () => {
   }
 });
 
-test('removes only a complete runtime with an explicit no-reference result', async () => {
+test('an empty caller reference list is unknown; only explicit force policy removes an unverified runtime', async () => {
   const root = makeTempDir('runtime-remove');
   try {
     const tarball = createRuntimeTarball(root, { version });
@@ -307,17 +373,25 @@ test('removes only a complete runtime with an explicit no-reference result', asy
     });
     assert.equal(installed.ok, true);
     const blocked = await removeRuntime({ version, dataDir });
-    assert.equal(blocked.status, 'in-use');
+    assert.equal(blocked.status, 'unknown');
     assert.equal(existsSync(runtimePaths(version, dataDir).runtimeRoot), true);
     const removed = await removeRuntime({
       version,
       dataDir,
       activeReferences: [],
+      forceUnknownReferences: true,
     });
     assert.equal(removed.status, 'removed');
     assert.equal(existsSync(runtimePaths(version, dataDir).runtimeRoot), false);
     assert.equal(
-      (await removeRuntime({ version, dataDir, activeReferences: [] })).status,
+      (
+        await removeRuntime({
+          version,
+          dataDir,
+          activeReferences: [],
+          forceUnknownReferences: true,
+        })
+      ).status,
       'missing',
     );
   } finally {
@@ -669,6 +743,7 @@ test('installs self runtimes from local dependencies without registry access', a
   const packageName = 'pappra-runtime-fixture';
   const packageRoot = join(root, 'self-package');
   const dependencyRoot = join(packageRoot, 'node_modules', dependencyName);
+  const executionMarker = join(root, 'self-executed');
   const envKeys = [
     'HOME',
     'npm_config_cache',
@@ -701,6 +776,8 @@ test('installs self runtimes from local dependencies without registry access', a
       join(packageRoot, 'dist', 'cli', 'main.js'),
       [
         '#!/usr/bin/env node',
+        "import { writeFileSync } from 'node:fs';",
+        `writeFileSync(${JSON.stringify(executionMarker)}, 'executed');`,
         `import { marker } from '${dependencyName}';`,
         `if (marker !== 'bundled') process.exitCode = 1;`,
         `else process.stdout.write(JSON.stringify({ version: '${version}' }) + '\\n');`,
@@ -744,6 +821,66 @@ test('installs self runtimes from local dependencies without registry access', a
     );
     assert.equal(installed.status, 'installed');
     assert.equal(installed.manifest?.source.kind, 'self');
+    assert.match(
+      installed.manifest?.sourceFingerprint ?? '',
+      /^sha256:[0-9a-f]{64}$/,
+    );
+    const same = await installRuntime({
+      version,
+      packageName,
+      source: { kind: 'self', path: packageRoot },
+      dataDir: join(root, 'data'),
+      timeoutMs: 5000,
+    });
+    assert.equal(same.status, 'reused', JSON.stringify(same.diagnostics));
+    const manifestPath = join(installed.runtimeRoot!, 'install-manifest.json');
+    const originalManifest = readFileSync(manifestPath);
+    const sourceExecutable = join(packageRoot, 'dist/cli/main.js');
+    const originalExecutable = readFileSync(sourceExecutable);
+    rmSync(executionMarker, { force: true });
+    writeFileSync(
+      sourceExecutable,
+      Buffer.concat([
+        originalExecutable,
+        Buffer.from('\n// rebuilt self payload\n'),
+      ]),
+    );
+    const rebuilt = await installRuntime({
+      version,
+      packageName,
+      source: { kind: 'self', path: packageRoot },
+      dataDir: join(root, 'data'),
+      timeoutMs: 5000,
+    });
+    assert.equal(rebuilt.ok, false);
+    assert(
+      rebuilt.diagnostics.some((entry) =>
+        entry.hint?.includes('Bump the package version'),
+      ),
+    );
+    assert.equal(
+      existsSync(executionMarker),
+      false,
+      'changed source is refused before executing the old runtime',
+    );
+    assert.deepEqual(readFileSync(manifestPath), originalManifest);
+    writeFileSync(sourceExecutable, originalExecutable);
+    const dependencyManifestPath = join(dependencyRoot, 'package.json');
+    const dependencyManifest = JSON.parse(
+      readFileSync(dependencyManifestPath, 'utf8'),
+    ) as Record<string, unknown>;
+    dependencyManifest['version'] = '1.0.1';
+    writeFileSync(dependencyManifestPath, JSON.stringify(dependencyManifest));
+    const changedDependency = await installRuntime({
+      version,
+      packageName,
+      source: { kind: 'self', path: packageRoot },
+      dataDir: join(root, 'data'),
+      timeoutMs: 5000,
+    });
+    assert.equal(changedDependency.ok, false);
+    assert.equal(existsSync(executionMarker), false);
+    assert.deepEqual(readFileSync(manifestPath), originalManifest);
   } finally {
     for (const [key, value] of originalEnvironment) {
       if (value === undefined) delete process.env[key];

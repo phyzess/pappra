@@ -1,6 +1,10 @@
 import { z } from 'zod';
+import {
+  isLocalProcessIdentity,
+  type LocalProcessIdentity,
+} from '../infra/process-identity.js';
 
-export const RUNTIME_MANIFEST_SCHEMA = 'pappra/runtime-manifest/2';
+export const RUNTIME_MANIFEST_SCHEMA = 'pappra/runtime-manifest/3';
 export const RUNTIME_DIGEST_SCHEME = 'sha256-utf8-byte-order-v1';
 export const WORKSPACE_MANIFEST_SCHEMA = 'pappra/install-manifest/1';
 export const INSTALL_JOURNAL_SCHEMA = 'pappra/install-journal/1';
@@ -29,12 +33,15 @@ export const installLockSchema = z.strictObject({
     'uninstall-workspace-files',
     'remove-runtime',
     'update-machine-runtime',
-    // Local configuration toggle guarded by the same workspace lock; it keeps a
-    // backup and an atomic replacement instead of a managed-file journal.
+    // Private hook preference toggle guarded by the workspace lock; shared
+    // configuration is never rewritten by this operation.
     'set-auto-resume',
   ]),
   target: z.string().min(1).max(4096),
   pid: z.number().int().positive(),
+  process_identity: z
+    .custom<LocalProcessIdentity>(isLocalProcessIdentity)
+    .optional(),
   createdAt: z.iso.datetime({ offset: true }),
 });
 
@@ -76,6 +83,7 @@ export const runtimeManifestSchema = z.strictObject({
   source: runtimeSourceSchema,
   packageDigest: digestSchema,
   digestScheme: z.literal(RUNTIME_DIGEST_SCHEME),
+  sourceFingerprint: digestSchema,
   smoke: z.strictObject({
     argv: z.array(z.string().max(4096)).max(16),
     exitCode: z.number().int(),

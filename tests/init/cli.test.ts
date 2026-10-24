@@ -143,13 +143,9 @@ test('init runtime preview is read-only; --apply ensures and reuses an isolated 
     assert.equal(existsSync(dataDir), false);
 
     const version = getPackageInfo().version;
-    const localTarball = createRuntimeTarball(temporary, {
-      version,
-      packageName: getPackageInfo().name,
-    });
     const seededRuntime = await installRuntime({
       version,
-      source: { kind: 'tarball', path: localTarball },
+      source: { kind: 'self', path: root },
       dataDir,
       packageName: getPackageInfo().name,
       offline: true,
@@ -1083,13 +1079,23 @@ ${result.stderr}`,
     assert(humanRepeat.stdout.includes('Runtime operation result: reused'));
     assertUnchangedAfterApply(temporary, beforeHumanRepeat);
 
+    // The fixture tarball deliberately differs from the running package despite
+    // sharing its version. Default self installation must not reuse that payload.
+    const beforeSelfRepeat = snapshotTree(temporary);
     const repeated = invoke(
       ['init', '--config', choices, '--apply', '--json'],
       temporary,
       { PAPPRA_DATA_HOME: dataDir, npm_config_offline: 'true' },
     );
-    assert.equal(repeated.status, 0, repeated.stderr);
+    assert.equal(repeated.status, 1, repeated.stderr);
     const repeatedValue = parseJson(repeated.stdout);
+    assert.equal(repeatedValue.ok, false);
+    const repeatedRuntime = repeatedValue.runtime as Record<string, unknown>;
+    assert.equal(repeatedRuntime.status, 'failed');
+    assert.match(
+      JSON.stringify(repeatedRuntime.diagnostics),
+      /different self package payload or resolved dependency identity/,
+    );
     assert('apply' in repeatedValue);
     const repeatedApply = repeatedValue.apply;
     assert(typeof repeatedApply === 'object' && repeatedApply !== null);
@@ -1097,6 +1103,7 @@ ${result.stderr}`,
       (repeatedApply as Record<string, unknown>).status,
       'no-changes',
     );
+    assertUnchangedAfterApply(temporary, beforeSelfRepeat);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
@@ -1237,16 +1244,26 @@ test('init --json without selections reports candidates and derived choices', ()
 
 test('init --print-choices prints a round-trippable choices document', () => {
   const temporary = isolatedRepository();
-  const isolated = deterministicPath({ claude: '2.1.292' });
+  const isolated = deterministicPath();
   try {
-    const printed = invoke(['init', '--print-choices'], temporary, {
-      PATH: isolated.path,
+    // Serialization of represented selections must not depend on whether a
+    // separate native version probe settles during a loaded integration run.
+    writeWorkspaceConfig(temporary, baseWorkspaceConfig());
+    writeMachineConfig(temporary, {
+      ...baseMachineConfig(temporary),
+      selectedHosts: ['claude'],
     });
+    const beforePrint = snapshotTree(temporary);
+    const printed = invoke(
+      ['init', '--print-choices', '--reconfigure'],
+      temporary,
+      { PATH: isolated.path },
+    );
     assert.equal(printed.status, 0, printed.stderr);
     const choices = parseJson(printed.stdout);
     assert.equal(choices.schema, 'pappra/init-choices/1');
     assert.deepEqual(choices.hosts, ['claude']);
-    assert.equal(existsSync(join(temporary, '.pappra')), false);
+    assert.deepEqual(snapshotTree(temporary), beforePrint);
     const choicesPath = join(temporary, 'choices.json');
     writeFileSync(choicesPath, printed.stdout);
 
@@ -1266,9 +1283,11 @@ test('init --print-choices prints a round-trippable choices document', () => {
       (appliedValue.apply as Record<string, unknown>).status,
       'external-actions-pending',
     );
-    const wrapped = invoke(['init', '--print-choices', '--json'], temporary, {
-      PATH: isolated.path,
-    });
+    const wrapped = invoke(
+      ['init', '--print-choices', '--reconfigure', '--json'],
+      temporary,
+      { PATH: isolated.path },
+    );
     assert.equal(wrapped.status, 0, wrapped.stderr);
     const wrapper = parseJson(wrapped.stdout);
     assert.equal(wrapper.mode, 'choices');

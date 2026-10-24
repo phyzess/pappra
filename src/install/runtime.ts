@@ -26,6 +26,7 @@ import type {
 } from '../schemas/install.js';
 import {
   installJournalSchema,
+  installLockSchema,
   runtimeManifestSchema,
   runtimePackageManifestSchema,
   runtimeSourceSchema,
@@ -34,6 +35,8 @@ import {
 } from '../schemas/install.js';
 import { isPathInside } from '../schemas/paths.js';
 import { errorMessage } from '../schemas/outcome.js';
+import { fingerprintSelfSource } from './source-fingerprint.js';
+import { inspectRuntimeReferences } from './references.js';
 import {
   observePath,
   readFileBounded,
@@ -41,6 +44,10 @@ import {
   resolveRealpath,
   sha256Digest,
 } from '../infra/fs.js';
+import {
+  materializeInstalledDependencies,
+  readPackageDependencyManifest,
+} from './dependencies.js';
 import {
   acquireInstallLock,
   ensureStatePathBoundary,
@@ -307,124 +314,6 @@ interface SelfPackageTarball {
   readonly digest: string;
 }
 
-function packageDependencyNames(value: unknown): string[] | null {
-  if (value === undefined) return [];
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return null;
-  }
-  const entries = Object.entries(value);
-  if (
-    entries.some(
-      ([name, range]) =>
-        !/^(?:@[A-Za-z0-9._-]+\/)?[A-Za-z0-9._-]+$/.test(name) ||
-        typeof range !== 'string',
-    )
-  ) {
-    return null;
-  }
-  return entries.map(([name]) => name);
-}
-
-async function installedDependencyDirectory(
-  sourcePackageRoot: string,
-  expectedName: string,
-): Promise<string | null> {
-  let current = sourcePackageRoot;
-  while (true) {
-    const candidate = join(current, 'node_modules', ...expectedName.split('/'));
-    const realPath = await resolveRealpath(candidate);
-    if (
-      realPath !== null &&
-      (await observePath(realPath)).kind === 'directory'
-    ) {
-      const manifestRead = await readTextFileBounded(
-        join(realPath, 'package.json'),
-      );
-      if (manifestRead.ok) {
-        try {
-          const decoded: unknown = JSON.parse(manifestRead.value.text);
-          if (
-            typeof decoded === 'object' &&
-            decoded !== null &&
-            'name' in decoded &&
-            decoded.name === expectedName
-          ) {
-            return realPath;
-          }
-        } catch {
-          return null;
-        }
-      }
-    }
-    const parent = dirname(current);
-    if (parent === current) return null;
-    current = parent;
-  }
-}
-
-async function copyInstalledPackageDependencies(
-  sourcePackageRoot: string,
-  targetPackageRoot: string,
-  activeSources = new Set<string>(),
-): Promise<boolean> {
-  const manifestRead = await readTextFileBounded(
-    join(sourcePackageRoot, 'package.json'),
-  );
-  if (!manifestRead.ok) return false;
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(manifestRead.value.text);
-  } catch {
-    return false;
-  }
-  if (typeof decoded !== 'object' || decoded === null) return false;
-  const manifest = decoded as {
-    readonly dependencies?: unknown;
-    readonly optionalDependencies?: unknown;
-  };
-  const dependencies = packageDependencyNames(manifest.dependencies);
-  const optionalDependencies = packageDependencyNames(
-    manifest.optionalDependencies,
-  );
-  if (dependencies === null || optionalDependencies === null) return false;
-  const names = [...new Set([...dependencies, ...optionalDependencies])];
-  if (names.length === 0) return true;
-
-  const realPackageRoot = await resolveRealpath(sourcePackageRoot);
-  if (realPackageRoot === null || activeSources.has(realPackageRoot)) {
-    return true;
-  }
-  const nextActiveSources = new Set(activeSources).add(realPackageRoot);
-  for (const name of names) {
-    const dependencyRoot = await installedDependencyDirectory(
-      realPackageRoot,
-      name,
-    );
-    if (dependencyRoot === null) return false;
-    const destination = join(
-      targetPackageRoot,
-      'node_modules',
-      ...name.split('/'),
-    );
-    await mkdir(dirname(destination), { recursive: true });
-    await cp(dependencyRoot, destination, {
-      recursive: true,
-      dereference: true,
-      force: true,
-    });
-    if (
-      !(await copyInstalledPackageDependencies(
-        dependencyRoot,
-        destination,
-        nextActiveSources,
-      ))
-    ) {
-      return false;
-    }
-  }
-  return true;
-}
-
 /**
  * Packs the package that is currently executing so it can be installed as a
  * durable runtime before an ephemeral (npx/dlx) checkout is collected. The
@@ -462,8 +351,7 @@ async function packSelfPackage(
     );
   }
   const dependenciesAvailable =
-    packageDependencyNames(manifest.dependencies) !== null &&
-    packageDependencyNames(manifest.optionalDependencies) !== null;
+    (await readPackageDependencyManifest(packageRoot)) !== null;
   const directory = await mkdtemp(join(tmpdir(), 'pappra-self-'));
   // Pack a staging copy: npm refuses to pack reliably from inside a dependency
   // tree (a known "Exit handler never called!" failure on Linux CI).
@@ -488,10 +376,15 @@ async function packSelfPackage(
   }
   let hasInstalledDependencies = dependenciesAvailable;
   if (hasInstalledDependencies) {
-    hasInstalledDependencies = await copyInstalledPackageDependencies(
-      packageRoot,
-      staging,
-    );
+    // Reuse the exact installed dependency closure instead of packing a copy
+    // from the registry: payloads are copied without nested node_modules and
+    // shared exact versions are hoisted once under the staging root.
+    hasInstalledDependencies = (
+      await materializeInstalledDependencies({
+        sourceRoot: packageRoot,
+        targetRoot: staging,
+      })
+    ).ok;
   }
   const npm = npmCommand();
   const packed = await runCommand(
@@ -774,6 +667,7 @@ async function completeExistingRuntime(
   paths: RuntimePaths,
   packageName: string,
   timeoutMs: number,
+  expectedSelfFingerprint?: string,
 ): Promise<RuntimeInstallResult | null> {
   const observation = await observePath(paths.runtimeRoot);
   if (observation.kind === 'missing') return null;
@@ -831,6 +725,21 @@ async function completeExistingRuntime(
       },
     );
   }
+  if (
+    expectedSelfFingerprint !== undefined &&
+    manifest.sourceFingerprint !== expectedSelfFingerprint
+  )
+    return failureResult(
+      'failed',
+      'This version already contains a different self package payload or resolved dependency identity.',
+      {
+        version,
+        runtimeRoot: paths.runtimeRoot,
+        manifest,
+        hint: 'Bump the package version before installing a rebuilt self runtime; an existing version is never silently reused or overwritten for different source bytes.',
+        source: paths.runtimeRoot,
+      },
+    );
   const packageRoot = join(
     paths.runtimeRoot,
     'node_modules',
@@ -973,11 +882,66 @@ export async function installRuntime(
       source: paths.lockPath,
     });
   }
+  let expectedSelfFingerprint: string | undefined;
+  if (options.source.kind === 'self') {
+    try {
+      const sourceRead = await readTextFileBounded(
+        join(resolve(options.source.path ?? ''), 'package.json'),
+      );
+      const sourceManifest: unknown = sourceRead.ok
+        ? JSON.parse(sourceRead.value.text)
+        : null;
+      if (
+        typeof sourceManifest === 'object' &&
+        sourceManifest !== null &&
+        'name' in sourceManifest &&
+        sourceManifest.name === packageName &&
+        'version' in sourceManifest &&
+        typeof sourceManifest.version === 'string' &&
+        sourceManifest.version !== version
+      ) {
+        // A newer CLI may verify and reuse an older workspace target. It cannot
+        // replace that target with its own differently versioned payload.
+        const older = await completeExistingRuntime(
+          version,
+          paths,
+          packageName,
+          timeoutMs,
+        );
+        if (older !== null) return older;
+        return failureResult(
+          'failed',
+          'The running package version does not match the requested runtime and no verified target is available.',
+          {
+            version,
+            runtimeRoot: paths.runtimeRoot,
+            hint: 'Install the exact workspace runtime version from a versioned package or tarball.',
+          },
+        );
+      }
+      expectedSelfFingerprint = await fingerprintSelfSource(
+        resolve(options.source.path ?? ''),
+        packageName,
+        version,
+      );
+    } catch (error) {
+      return failureResult(
+        'failed',
+        `Cannot identify the running package source: ${errorMessage(error)}`,
+        {
+          version,
+          runtimeRoot: paths.runtimeRoot,
+          hint: 'Review the package payload and resolved dependencies; bump the package version for rebuilt source.',
+        },
+      );
+    }
+  }
   const existing = await completeExistingRuntime(
     version,
     paths,
     packageName,
     timeoutMs,
+    expectedSelfFingerprint,
   );
   if (existing !== null) return existing;
 
@@ -1005,6 +969,7 @@ export async function installRuntime(
     paths,
     packageName,
     timeoutMs,
+    expectedSelfFingerprint,
   );
   if (afterLock !== null) {
     await releaseInstallLock(paths.lockPath, lock.lock!.token);
@@ -1033,6 +998,13 @@ export async function installRuntime(
     } else if (options.source.kind === 'self') {
       const packageRoot = resolve(options.source.path ?? '');
       selfPackage = await packSelfPackage(packageRoot, packageName, version);
+      if (
+        (await fingerprintSelfSource(packageRoot, packageName, version)) !==
+        expectedSelfFingerprint
+      )
+        throw new Error(
+          'Self source changed while packing; no runtime will be published. Rebuild with a new version and retry.',
+        );
       source = {
         kind: 'self',
         packageName,
@@ -1234,6 +1206,11 @@ export async function installRuntime(
       source,
       packageDigest: verification.digest,
       digestScheme: RUNTIME_DIGEST_SCHEME,
+      sourceFingerprint: await fingerprintSelfSource(
+        join(stage, 'node_modules', ...packageName.split('/')),
+        packageName,
+        version,
+      ),
       smoke: verification.smoke,
       verifiedAt: isoNow(),
     };
@@ -1362,6 +1339,7 @@ async function runtimePackageName(runtimeRoot: string): Promise<string> {
 export async function inspectRuntimeState(
   version: string,
   dataDir = resolveUserDataDir(),
+  heldLockToken?: string,
 ): Promise<RuntimeStateReport> {
   const paths = runtimePaths(version, dataDir);
   if (!validVersion(version)) {
@@ -1421,7 +1399,14 @@ export async function inspectRuntimeState(
       ],
     };
   }
-  if (lockObservation.kind !== 'missing') {
+  const ownLock =
+    heldLockToken === undefined
+      ? null
+      : await readJsonDocument(paths.lockPath, installLockSchema);
+  if (
+    lockObservation.kind !== 'missing' &&
+    (heldLockToken === undefined || ownLock?.value?.token !== heldLockToken)
+  ) {
     return {
       version,
       status: 'locked',
@@ -1474,8 +1459,10 @@ export async function inspectRuntimeState(
 export interface RemoveRuntimeOptions {
   readonly version: string;
   readonly dataDir?: string;
-  /** Caller-provided live workspace/runtime references. Unknown is not empty. */
+  /** Extra positive caller references; an empty list never proves complete coverage. */
   readonly activeReferences?: readonly string[];
+  /** Explicit operator policy: accepts unknown coverage, never verified references. */
+  readonly forceUnknownReferences?: boolean;
 }
 
 export interface RemoveRuntimeResult {
@@ -1484,6 +1471,7 @@ export interface RemoveRuntimeResult {
     | 'removed'
     | 'missing'
     | 'in-use'
+    | 'unknown'
     | 'locked'
     | 'corrupt'
     | 'failed'
@@ -1495,6 +1483,73 @@ export interface RemoveRuntimeResult {
 
 export async function removeRuntime(
   options: RemoveRuntimeOptions,
+): Promise<RemoveRuntimeResult> {
+  if (!validVersion(options.version)) return removeRuntimeAt(options);
+  const dataDir = resolve(options.dataDir ?? resolveUserDataDir());
+  const paths = runtimePaths(options.version, dataDir);
+  const lock = await acquireInstallLock(
+    paths.lockPath,
+    'remove-runtime',
+    paths.runtimeRoot,
+    dataDir,
+  );
+  if (!lock.ok || !lock.lock)
+    return {
+      ok: false,
+      status: 'locked',
+      runtimeRoot: paths.runtimeRoot,
+      residualPaths: [paths.lockPath],
+      diagnostics: [
+        createDiagnostic({
+          code: diagnosticCodes.initApplyResidual,
+          severity: 'error',
+          message: lock.message ?? 'Runtime removal is locked.',
+          source: paths.lockPath,
+        }),
+      ],
+    };
+  let result: RemoveRuntimeResult;
+  try {
+    result = await removeRuntimeAt(options, lock.lock.token);
+  } catch (error) {
+    result = {
+      ok: false,
+      status: 'failed',
+      runtimeRoot: paths.runtimeRoot,
+      residualPaths: [],
+      diagnostics: [
+        createDiagnostic({
+          code: diagnosticCodes.initApplyFailed,
+          severity: 'error',
+          message: errorMessage(error),
+          source: paths.runtimeRoot,
+        }),
+      ],
+    };
+  }
+  const released = await releaseInstallLock(paths.lockPath, lock.lock.token);
+  return released.ok
+    ? result
+    : {
+        ...result,
+        ok: false,
+        status: 'failed',
+        residualPaths: [...result.residualPaths, paths.lockPath],
+        diagnostics: [
+          ...result.diagnostics,
+          createDiagnostic({
+            code: released.code,
+            severity: 'error',
+            message: released.message,
+            source: paths.lockPath,
+          }),
+        ],
+      };
+}
+
+async function removeRuntimeAt(
+  options: RemoveRuntimeOptions,
+  heldLockToken?: string,
 ): Promise<RemoveRuntimeResult> {
   const dataDir = resolve(options.dataDir ?? resolveUserDataDir());
   const paths = runtimePaths(options.version, dataDir);
@@ -1515,28 +1570,45 @@ export async function removeRuntime(
       residualPaths: [],
     };
   }
-  const references = options.activeReferences ?? [];
-  if (references.length > 0 || options.activeReferences === undefined) {
+  if ((await observePath(paths.runtimeRoot)).kind === 'missing')
+    return {
+      ok: true,
+      status: 'missing',
+      runtimeRoot: paths.runtimeRoot,
+      diagnostics: [],
+      residualPaths: [],
+    };
+  const references = await inspectRuntimeReferences(dataDir, options.version);
+  const activeCount =
+    references.active.length + (options.activeReferences?.length ?? 0);
+  if (activeCount > 0 || options.forceUnknownReferences !== true) {
     return {
       ok: false,
-      status: 'in-use',
+      status: activeCount > 0 ? 'in-use' : 'unknown',
       runtimeRoot: paths.runtimeRoot,
       diagnostics: [
         createDiagnostic({
           code: diagnosticCodes.initApplyResidual,
           severity: 'error',
           message:
-            options.activeReferences === undefined
-              ? 'Runtime removal requires an explicit active-reference check.'
-              : `Runtime is referenced by ${references.length} active workspace(s).`,
+            activeCount > 0
+              ? `Runtime is referenced by ${activeCount} verified or explicitly reported active workspace(s).`
+              : 'Global reference coverage is unknown: only explicitly registered workspace roots were checked. An empty caller list is not proof of no references.',
           source: paths.runtimeRoot,
-          hint: 'Resolve active references and retry; Pappra does not guess that a runtime is unused.',
+          hint:
+            activeCount > 0
+              ? 'Rebind or explicitly retire those workspace bindings; --force never bypasses a verified reference.'
+              : 'Review registered and unregistered workspace usage, then use the explicit CLI --force policy only to accept unknown coverage.',
         }),
       ],
       residualPaths: [],
     };
   }
-  const state = await inspectRuntimeState(options.version, dataDir);
+  const state = await inspectRuntimeState(
+    options.version,
+    dataDir,
+    heldLockToken,
+  );
   if (state.status === 'missing') {
     return {
       ok: true,

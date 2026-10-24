@@ -1,4 +1,9 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import {
+  inspectRuntimeReferences,
+  runtimeBindingMatches,
+} from '../../install/references.js';
 import type { Diagnostic } from '../../schemas/diagnostics.js';
 import { getPackageInfo, getPackageRoot } from '../../package-info.js';
 import {
@@ -16,20 +21,22 @@ import { resolveWorkspaceRoot } from '../../workspace/resolve.js';
 import type { CliOutput } from '../output.js';
 
 export const runtimeUsage =
-  'pappra runtime <install|status|verify|remove> [options] [--json]\n' +
+  'pappra runtime <install|status|verify|remove|gc> [options] [--json]\n' +
   '  install [--from self|tarball|registry] [--tarball <file>] [--runtime-version <v>]\n' +
   '          [--apply] [--bind]\n' +
   '  status\n' +
   '  verify [--runtime-version <v>]\n' +
-  '  remove [--runtime-version <v>] --apply --force\n\n' +
+  '  remove [--runtime-version <v>] [--apply] [--force]\n' +
+  '  gc [--runtime-version <v>] [--apply] [--force]\n\n' +
   'Install keeps a durable copy of the package outside the checkout. --from self packs the\n' +
   'package that is currently executing, which is what makes an npx/dlx bootstrap survive\n' +
   'cache eviction. Writes require --apply; --bind records the copy in machine.json.\n' +
-  'Removal requires --force because references from other workspaces cannot be enumerated.\n';
+  'Only explicitly registered workspace roots are inspected; no home scan is performed.\n' +
+  '--force accepts unknown/unregistered coverage, but never bypasses a verified workspace binding.\n';
 
 export interface RuntimeCommandOptions {
   readonly cwd: string;
-  readonly action: 'install' | 'status' | 'verify' | 'remove' | null;
+  readonly action: 'install' | 'status' | 'verify' | 'remove' | 'gc' | null;
   readonly json: boolean;
   readonly from: 'self' | 'tarball' | 'registry' | null;
   readonly tarball: string | null;
@@ -286,61 +293,182 @@ async function runRemove(
 ): Promise<number> {
   const version = options.version ?? binding?.runtime?.version ?? null;
   if (version === null) {
-    output.stderr('pappra runtime remove: --runtime-version is required.\n');
-    return 2;
-  }
-  if (!options.apply) {
-    output.stderr('pappra runtime remove: rerun with --apply to remove it.\n');
-    return 2;
-  }
-  const boundHere = binding?.runtime?.version === version;
-  if (boundHere && !options.force) {
-    const message =
-      'machine.json still binds this runtime; pass --force to remove it anyway.';
-    if (options.json) {
+    const message = 'runtime remove requires --runtime-version.';
+    if (options.json)
       output.stdout(
-        `${JSON.stringify({
-          ok: false,
-          command: 'runtime',
-          action: 'remove',
-          version,
-          message,
-        })}\n`,
+        `${JSON.stringify({ ok: false, code: 'invalid_arguments', message })}\n`,
       );
-    } else {
-      output.stderr(`pappra runtime remove: ${message}\n`);
-    }
-    return 1;
+    else output.stderr(`pappra: ${message}\n`);
+    return 2;
+  }
+  const dataDir = resolveUserDataDir();
+  const boundHere = await runtimeBindingMatches(
+    dataDir,
+    version,
+    binding?.runtime,
+  );
+  const references = await inspectRuntimeReferences(dataDir, version);
+  if (!options.apply) {
+    const plan = {
+      ok: true,
+      command: 'runtime',
+      action: 'remove',
+      mode: 'plan',
+      version,
+      runtimeRoot: runtimePaths(version, dataDir).runtimeRoot,
+      references,
+      boundHere,
+      eligibleUnderForcePolicy:
+        !boundHere && references.active.length === 0 && options.force,
+      nextAction:
+        'Use --apply after review. --force accepts unknown coverage only; active bindings are always retained.',
+    };
+    output.stdout(
+      options.json
+        ? `${JSON.stringify(plan)}\n`
+        : `Runtime removal plan ${version}: ${boundHere || references.active.length > 0 ? 'referenced; retained' : 'global coverage unknown; explicit --force required'}.\n`,
+    );
+    return 0;
   }
   const removed = await removeRuntime({
     version,
-    dataDir: resolveUserDataDir(),
-    // No global workspace registry exists. Unknown references are not an empty
-    // set; only the explicit CLI override authorizes removal without that check.
-    ...(options.force ? { activeReferences: [] } : {}),
+    dataDir,
+    ...(boundHere && binding !== null
+      ? { activeReferences: [binding.root] }
+      : {}),
+    forceUnknownReferences: options.force,
   });
-  const nextAction =
-    removed.status === 'in-use' && !options.force
-      ? 'Check references in other workspaces, then pass --force only if removing their shared runtime is intended.'
-      : null;
-  if (options.json) {
+  if (options.json)
     output.stdout(
-      `${JSON.stringify({
-        ok: removed.ok,
-        command: 'runtime',
-        action: 'remove',
-        version,
-        removed,
-        machineBindingRetained: boundHere,
-        ...(nextAction === null ? {} : { nextAction }),
-      })}\n`,
+      `${JSON.stringify({ ok: removed.ok, command: 'runtime', action: 'remove', version, removed, references, machineBindingRetained: boundHere })}\n`,
     );
-  } else {
+  else {
     output.stdout(`Runtime ${version}: ${removed.status}\n`);
     printDiagnostics(output, removed.diagnostics);
-    if (nextAction !== null) output.stderr(`${nextAction}\n`);
   }
   return removed.ok ? 0 : 1;
+}
+
+async function runGc(
+  options: RuntimeCommandOptions,
+  output: CliOutput,
+  binding: WorkspaceRuntimeBinding | null,
+): Promise<number> {
+  if (
+    options.version !== null &&
+    !/^[0-9A-Za-z][0-9A-Za-z0-9._+-]*$/.test(options.version)
+  ) {
+    const message =
+      'runtime gc requires an exact --runtime-version without path separators.';
+    output.stdout(
+      options.json
+        ? `${JSON.stringify({ ok: false, code: 'invalid_arguments', message })}\n`
+        : `${message}\n`,
+    );
+    return 2;
+  }
+  if (options.from !== null || options.tarball !== null || options.bind) {
+    const message =
+      'runtime gc accepts only --runtime-version, --apply, --force and --json.';
+    if (options.json)
+      output.stdout(
+        `${JSON.stringify({ ok: false, code: 'invalid_arguments', message })}\n`,
+      );
+    else output.stderr(`${message}\n`);
+    return 2;
+  }
+  const dataDir = resolveUserDataDir();
+  let versions: string[];
+  try {
+    const entries = await readdir(join(dataDir, 'runtimes'), {
+      withFileTypes: true,
+    });
+    versions = entries
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          /^[0-9A-Za-z][0-9A-Za-z0-9._+-]*$/.test(entry.name),
+      )
+      .map((entry) => entry.name)
+      .sort();
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      const report = {
+        ok: false,
+        command: 'runtime',
+        action: 'gc',
+        mode: options.apply ? 'apply' : 'plan',
+        message: 'Runtime directory is unreadable; nothing was removed.',
+      };
+      output.stdout(
+        options.json ? `${JSON.stringify(report)}\n` : `${report.message}\n`,
+      );
+      return 1;
+    }
+    versions = [];
+  }
+  if (options.version !== null)
+    versions = versions.filter((version) => version === options.version);
+  if (versions.length > 256) {
+    const message =
+      'Runtime GC version limit exceeded; select one --runtime-version.';
+    output.stdout(
+      options.json
+        ? `${JSON.stringify({ ok: false, command: 'runtime', action: 'gc', message })}\n`
+        : `${message}\n`,
+    );
+    return 1;
+  }
+  const entries: Record<string, unknown>[] = [];
+  let ok = true;
+  for (const version of versions) {
+    const references = await inspectRuntimeReferences(dataDir, version);
+    const boundHere = await runtimeBindingMatches(
+      dataDir,
+      version,
+      binding?.runtime,
+    );
+    if (boundHere || references.active.length > 0) {
+      entries.push({
+        version,
+        status: 'retained',
+        reason: 'verified-workspace-reference',
+        references,
+      });
+      continue;
+    }
+    if (!options.apply) {
+      entries.push({
+        version,
+        status: options.force ? 'candidate' : 'unknown',
+        references,
+      });
+      continue;
+    }
+    const removed = await removeRuntime({
+      version,
+      dataDir,
+      forceUnknownReferences: options.force,
+    });
+    entries.push({ version, ...removed, references });
+    ok &&= removed.ok;
+  }
+  const report = {
+    ok,
+    command: 'runtime',
+    action: 'gc',
+    mode: options.apply ? 'apply' : 'plan',
+    dataDir,
+    coverage: 'registered-workspaces-only',
+    unregisteredCoverage: 'unknown',
+    entries,
+  };
+  output.stdout(
+    options.json
+      ? `${JSON.stringify(report)}\n`
+      : `Runtime GC ${report.mode}: ${entries.map((entry) => `${String(entry['version'])}=${String(entry['status'])}`).join(', ') || 'no versions'}\n`,
+  );
+  return ok ? 0 : 1;
 }
 
 export async function runRuntimeCommand(
@@ -361,5 +489,7 @@ export async function runRuntimeCommand(
       return runVerify(options, output, binding);
     case 'remove':
       return runRemove(options, output, binding);
+    case 'gc':
+      return runGc(options, output, binding);
   }
 }

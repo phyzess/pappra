@@ -134,7 +134,7 @@ test('runtime install --bind records the durable copy in machine.json', () => {
   }
 });
 
-test('runtime remove requires --apply and refuses a bound runtime unless forced', () => {
+test('runtime remove previews without writing and preserves a bound runtime even with force', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'pappra-runtime-remove-'));
   const dataDir = join(temporary, 'data');
   const environment = { PAPPRA_DATA_HOME: dataDir };
@@ -152,7 +152,9 @@ test('runtime remove requires --apply and refuses a bound runtime unless forced'
       temporary,
       environment,
     );
-    assert.equal(missingApply.status, 2, missingApply.stderr);
+    assert.equal(missingApply.status, 0, missingApply.stderr);
+    assert.equal(parseJson(missingApply.stdout).mode, 'plan');
+    assert.equal(existsSync(join(dataDir, 'runtimes', version)), true);
 
     const bound = invoke(
       ['runtime', 'remove', '--apply', '--json'],
@@ -182,12 +184,12 @@ test('runtime remove requires --apply and refuses a bound runtime unless forced'
       temporary,
       environment,
     );
-    assert.equal(forced.status, 0, forced.stderr);
+    assert.equal(forced.status, 1, forced.stderr);
     assert.equal(
       (parseJson(forced.stdout).removed as Record<string, unknown>).status,
-      'removed',
+      'in-use',
     );
-    assert.equal(existsSync(join(dataDir, 'runtimes', version)), false);
+    assert.equal(existsSync(join(dataDir, 'runtimes', version)), true);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }

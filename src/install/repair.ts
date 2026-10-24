@@ -1,5 +1,7 @@
-import { rm } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { constants } from 'node:fs';
+import { mkdir, open, readdir, rename, rm } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { dirname, join, resolve } from 'node:path';
 import { z } from 'zod';
 import { getPackageInfo } from '../package-info.js';
 import {
@@ -9,7 +11,6 @@ import {
   sha256Digest,
 } from '../infra/fs.js';
 import {
-  installLockSchema,
   workspaceInstallManifestSchema,
   type InstallJournal,
   type ManagedFileEntry,
@@ -38,6 +39,14 @@ import {
   runtimePaths,
   verifyRuntimeForRepair,
 } from './runtime.js';
+import {
+  inspectPrivateLock,
+  reclaimDeadPrivateLock,
+  type PrivateLockObservation,
+} from '../infra/private-lock.js';
+import { resolveWorkspaceRoot } from '../workspace/resolve.js';
+import { isValidTaskId } from '../schemas/continuity.js';
+import { resetLocalState, type LocalResetResult } from './reset-local.js';
 
 export interface RepairOptions {
   readonly root: string;
@@ -45,6 +54,12 @@ export interface RepairOptions {
   readonly installId?: string;
   readonly dataDir?: string;
   readonly apply?: boolean;
+  /** Explicit operator assertion that every potentially affected writer has stopped. */
+  readonly quarantineUnownedLocks?: boolean;
+  readonly resetLocal?: boolean;
+  readonly allWritersStopped?: boolean;
+  /** Test-only dependency seam; never supplied by the CLI. */
+  readonly afterLocalArchive?: () => Promise<void> | void;
 }
 
 export interface RepairEntry {
@@ -61,21 +76,21 @@ export interface RepairResult {
   readonly repaired: readonly string[];
   readonly locks: readonly string[];
   readonly errors: readonly string[];
-}
-
-function ownerIsDead(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return false;
-  } catch (error) {
-    return error instanceof Error && 'code' in error && error.code === 'ESRCH';
-  }
+  readonly lockStates: readonly Pick<
+    PrivateLockObservation,
+    'file' | 'state'
+  >[];
+  readonly preserved: readonly string[];
+  readonly quarantined: readonly string[];
+  readonly reset: LocalResetResult | null;
 }
 
 /** A stale lock is reclaimed only on explicit repair and positive owner-death evidence. */
 async function clearDeadLock(
   file: string,
   boundaryRoot: string,
+  quarantineUnowned = false,
+  quarantined?: string[],
 ): Promise<void> {
   const boundary = await ensureStatePathBoundary(boundaryRoot, file);
   if (!boundary.ok) throw new Error(boundary.message);
@@ -83,14 +98,120 @@ async function clearDeadLock(
   if (observation.kind === 'missing') return;
   if (observation.kind !== 'file')
     throw new Error(`Unsafe install lock: ${file}`);
-  const read = await readJsonDocument(file, installLockSchema);
-  if (read.value === null || !ownerIsDead(read.value.pid)) {
-    throw new Error(
-      `Install lock owner is alive or cannot be verified: ${file}`,
-    );
+  const owner = await inspectPrivateLock(file);
+  if (owner.state === 'unknown' && quarantineUnowned) {
+    quarantined?.push(await quarantineUnownedLock(file, boundaryRoot));
+    return;
   }
-  const released = await releaseInstallLock(file, read.value.token);
-  if (!released.ok) throw new Error(released.message);
+  await reclaimDeadPrivateLock(file, async () => {
+    const current = await ensureStatePathBoundary(boundaryRoot, file);
+    if (!current.ok) throw new Error(current.message);
+  });
+}
+
+/** An explicit operator escape preserves unknown evidence; it never asserts owner death. */
+async function quarantineUnownedLock(
+  file: string,
+  root: string,
+): Promise<string> {
+  const check = async (): Promise<void> => {
+    const boundary = await ensureStatePathBoundary(root, file);
+    if (!boundary.ok) throw new Error(boundary.message);
+  };
+  await check();
+  const handle = await open(
+    file,
+    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+  );
+  try {
+    const original = await handle.stat();
+    if (!original.isFile() || original.size > 64 * 1024)
+      throw new Error('Unowned lock is unsafe or too large to quarantine.');
+    const bytes = Buffer.alloc(64 * 1024 + 1);
+    const read = await handle.read(bytes, 0, bytes.length, 0);
+    if (read.bytesRead > 64 * 1024)
+      throw new Error('Unowned lock grew during quarantine.');
+    const directory = join(dirname(file), 'lock-quarantine');
+    const allowed = await ensureStatePathBoundary(root, directory);
+    if (!allowed.ok) throw new Error(allowed.message);
+    await mkdir(directory, { recursive: true, mode: 0o700 });
+    const parent = await observePath(directory);
+    if (parent.kind !== 'directory' || parent.stats === null)
+      throw new Error('Unsafe lock quarantine directory.');
+    const target = join(directory, `${randomUUID()}.lock`);
+    const receipt = await writeBytesAtomic(
+      `${target}.json`,
+      Buffer.from(
+        `${JSON.stringify({ schema: 'pappra/unowned-lock-quarantine/1', original: file, dev: original.dev, ino: original.ino, digest: sha256Digest(bytes.subarray(0, read.bytesRead)), size: read.bytesRead, operator_asserted_all_writers_stopped: true, owner_death_proven: false, quarantined_at: new Date().toISOString() }, null, 2)}\n`,
+      ),
+      root,
+    );
+    if (!receipt.ok) throw new Error(receipt.message);
+    await check();
+    const current = await observePath(file);
+    const currentParent = await observePath(directory);
+    if (
+      current.kind !== 'file' ||
+      current.stats?.dev !== original.dev ||
+      current.stats.ino !== original.ino ||
+      current.stats.size !== original.size ||
+      currentParent.kind !== 'directory' ||
+      currentParent.stats?.dev !== parent.stats.dev ||
+      currentParent.stats.ino !== parent.stats.ino ||
+      !(await ensureStatePathBoundary(root, target)).ok
+    )
+      throw new Error(
+        'Unowned lock or quarantine directory changed; preserve evidence.',
+      );
+    await rename(file, target);
+    const moved = await observePath(target);
+    if (
+      moved.kind !== 'file' ||
+      moved.stats?.dev !== original.dev ||
+      moved.stats.ino !== original.ino
+    )
+      throw new Error(
+        'Lock changed during quarantine; moved evidence was retained for inspection.',
+      );
+    return target;
+  } finally {
+    await handle.close();
+  }
+}
+
+/** Bounded private lock inventory shared by doctor and explicit repair. */
+export async function inspectWorkspaceLocks(
+  root: string,
+): Promise<readonly PrivateLockObservation[]> {
+  const files = [
+    workspaceInstallPaths(root).lockPath,
+    join(root, '.pappra/local/knowledge/apply.lock'),
+    join(root, '.pappra/local-archive/reset.lock'),
+  ];
+  const tasks = join(root, '.pappra/local/tasks');
+  const boundary = await ensureStatePathBoundary(root, tasks);
+  if (!boundary.ok) throw new Error(boundary.message);
+  const observation = await observePath(tasks);
+  if (observation.kind === 'directory') {
+    const entries = await readdir(tasks, { withFileTypes: true });
+    if (entries.length > 1000)
+      throw new Error('Private task lock inventory exceeds 1000 entries.');
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() && isValidTaskId(entry.name))
+        throw new Error(`Private task directory is a symlink: ${entry.name}`);
+      if (entry.isDirectory() && isValidTaskId(entry.name))
+        files.push(join(tasks, entry.name, 'checkpoint.lock'));
+    }
+  } else if (observation.kind !== 'missing')
+    throw new Error('Private task state directory is unsafe.');
+  const results: PrivateLockObservation[] = [];
+  for (const file of files) {
+    const allowed = await ensureStatePathBoundary(root, file);
+    if (!allowed.ok) throw new Error(allowed.message);
+    const lock = await inspectPrivateLock(file);
+    if (lock.state !== 'missing') results.push(lock);
+  }
+  return results;
 }
 
 async function finish(
@@ -159,6 +280,16 @@ async function repairWorkspace(
       return observePath(target);
     }),
   );
+  if (
+    journal.operation === 'apply-workspace-files' &&
+    journal.entries.some(
+      (entry, index) =>
+        entry.identity === null && observations[index]?.kind === 'file',
+    )
+  ) {
+    await retireUnprovenApply(root, file, journal);
+    return;
+  }
   const noEffects =
     journal.operation === 'apply-workspace-files' &&
     observations.every((observation) => observation.kind === 'missing');
@@ -238,6 +369,149 @@ async function repairWorkspace(
   await finish(file, journal, 'rolled-back', root);
 }
 
+/** Retire only managed effects; files whose creation was never proved stay user-owned. */
+async function retireUnprovenApply(
+  root: string,
+  file: string,
+  source: InstallJournal,
+): Promise<void> {
+  if (
+    source.entries.some(
+      (entry) => entry.backupRef !== null || entry.backupDigest !== null,
+    )
+  )
+    throw new Error(
+      'Unproven replacement needs its original verified backup; no file was changed.',
+    );
+  const lockPath = workspaceInstallPaths(root).lockPath;
+  await clearDeadLock(lockPath, root);
+  const lock = await acquireInstallLock(
+    lockPath,
+    'rollback-workspace-files',
+    source.installId,
+    root,
+  );
+  if (!lock.ok || lock.lock === null)
+    throw new Error(lock.message ?? 'Workspace is locked.');
+  try {
+    await assertJournalCurrent(file, source);
+    const manifest = await readWorkspaceManifest(root);
+    const rootState = await observePath(root);
+    if (
+      manifest.diagnostics.length ||
+      (manifest.value !== null &&
+        (manifest.value.workspaceRoot !== root ||
+          manifest.value.rootIdentity.dev !== rootState.stats?.dev ||
+          manifest.value.rootIdentity.ino !== rootState.stats?.ino))
+    )
+      throw new Error(
+        'Cannot verify workspace ownership for interrupted creation.',
+      );
+    const owned =
+      manifest.value?.entries.filter(
+        (entry) => entry.installId === source.installId,
+      ) ?? [];
+    if (
+      owned.some(
+        (entry) =>
+          !source.entries.some(
+            (item) =>
+              item.path === entry.path && item.digest === entry.afterDigest,
+          ),
+      )
+    )
+      throw new Error('Source journal does not cover its manifest ownership.');
+    const entries: InstallJournal['entries'] = [];
+    const removals: ManagedFileEntry[] = [];
+    for (const entry of source.entries) {
+      const target = resolvePortableRelativePath(root, entry.path);
+      const boundary = await ensureStatePathBoundary(root, target);
+      if (!boundary.ok) throw new Error(boundary.message);
+      const observed = await observePath(target);
+      if (observed.kind === 'missing') {
+        entries.push(entry);
+        continue;
+      }
+      if (observed.kind !== 'file')
+        throw new Error(`Unsafe interrupted apply target: ${target}`);
+      const known = owned.find((item) => item.path === entry.path);
+      if (entry.identity === null && known === undefined) {
+        entries.push({
+          ...entry,
+          status: 'residual',
+          detail: 'preserved-unproven-file',
+        });
+        continue;
+      }
+      const managed: ManagedFileEntry = known ?? {
+        path: entry.path,
+        installId: source.installId,
+        operation: 'create',
+        beforeDigest: null,
+        afterDigest: entry.digest,
+        backupRef: null,
+        backupDigest: null,
+        identity: entry.identity!,
+        owner: 'pappra',
+        verifiedAt: source.updatedAt,
+      };
+      const read = await readFileBounded(target);
+      if (
+        !read.ok ||
+        read.value.digest !== managed.afterDigest ||
+        observed.stats?.dev !== managed.identity.dev ||
+        observed.stats.ino !== managed.identity.ino
+      )
+        throw new Error(`Proven managed file changed; preserve ${target}`);
+      removals.push(managed);
+      entries.push(entry);
+    }
+    const prepared = await writeInstallJournal(
+      file,
+      {
+        ...source,
+        entries,
+        steps: source.steps.some(
+          (step) => step.name === 'preserve-unproven-files',
+        )
+          ? source.steps
+          : [
+              ...source.steps,
+              {
+                name: 'preserve-unproven-files',
+                status: 'ok',
+                at: new Date().toISOString(),
+                detail:
+                  'Files without creation identity remain in place and are not adopted as managed ownership.',
+              },
+            ],
+      },
+      root,
+    );
+    if (!prepared.ok) throw new Error(prepared.message);
+    for (const entry of removals) {
+      const removed = await removeOwnedFile(root, entry);
+      if (!removed.ok) throw new Error(removed.message);
+    }
+    if (manifest.value !== null && owned.length > 0) {
+      const updated = await writeWorkspaceManifest(root, {
+        ...manifest.value,
+        entries: manifest.value.entries.filter(
+          (entry) => entry.installId !== source.installId,
+        ),
+      });
+      if (!updated.ok) throw new Error(updated.message);
+    }
+    const current = (await readInstallJournal(file)).value;
+    if (current === null)
+      throw new Error('Interrupted apply journal became unreadable.');
+    await finish(file, current, 'rolled-back', root);
+  } finally {
+    const released = await releaseInstallLock(lockPath, lock.lock.token);
+    if (!released.ok) throw new Error(released.message);
+  }
+}
+
 async function assertRollbackComplete(
   root: string,
   source: InstallJournal,
@@ -259,6 +533,8 @@ async function assertRollbackComplete(
   )
     throw new Error('Source rollback ownership state cannot be verified.');
   for (const entry of source.entries) {
+    if (entry.identity === null && entry.detail === 'preserved-unproven-file')
+      continue;
     if (!isPortableRelativePath(entry.path))
       throw new Error('Unsafe source rollback path.');
     const target = resolvePortableRelativePath(root, entry.path);
@@ -621,6 +897,10 @@ export async function repairInstall(
   const repaired: string[] = [];
   const errors: string[] = [];
   const locks: string[] = [];
+  const lockStates: PrivateLockObservation[] = [];
+  const preserved: string[] = [];
+  const quarantined: string[] = [];
+  let reset: LocalResetResult | null = null;
   const mode = options.apply === true ? 'apply' : 'plan';
   try {
     if (
@@ -636,10 +916,56 @@ export async function repairInstall(
       throw new Error('Use an exact runtime version without path separators.');
     }
     const runtime = options.runtimeVersion !== undefined;
+    const resolution = runtime
+      ? null
+      : await resolveWorkspaceRoot({ startPath: options.root });
     const root = runtime
       ? resolve(options.dataDir ?? resolveUserDataDir())
-      : await resolveRealpath(options.root);
+      : (resolution?.root ?? (await resolveRealpath(options.root)));
     if (root === null) throw new Error('Workspace root does not exist.');
+    if (options.resetLocal === true) {
+      if (runtime || options.installId !== undefined)
+        throw new Error(
+          'Local reset cannot target a runtime version or install ID.',
+        );
+      lockStates.push(...(await inspectWorkspaceLocks(root)));
+      locks.push(...lockStates.map((state) => state.file));
+      reset = await resetLocalState(root, {
+        apply: options.apply === true,
+        allWritersStopped: options.allWritersStopped === true,
+        assertNoLiveLocks: async () => {
+          const current = await inspectWorkspaceLocks(root);
+          if (
+            current.some(
+              (state) =>
+                state.state === 'alive' &&
+                state.file !== join(root, '.pappra/local-archive/reset.lock'),
+            )
+          )
+            throw new Error(
+              'A live writer lock prevents local reset; stop it first.',
+            );
+        },
+        recoverUnknownResetLock: async (file) => {
+          await clearDeadLock(file, root, true, quarantined);
+        },
+        ...(options.afterLocalArchive === undefined
+          ? {}
+          : { afterArchive: options.afterLocalArchive }),
+      });
+      return {
+        ok: true,
+        mode,
+        entries,
+        repaired: options.apply ? [join(root, '.pappra/local')] : [],
+        locks,
+        errors,
+        lockStates: lockStates.map(({ file, state }) => ({ file, state })),
+        preserved: reset.archive === null ? [] : [reset.archive],
+        quarantined,
+        reset,
+      };
+    }
     const directory = runtime
       ? runtimePaths(options.runtimeVersion!, root).journalsDir
       : workspaceInstallPaths(root).journalsDir;
@@ -648,7 +974,11 @@ export async function repairInstall(
     const lockPath = runtime
       ? runtimePaths(options.runtimeVersion!, root).lockPath
       : workspaceInstallPaths(root).lockPath;
-    if ((await observePath(lockPath)).kind !== 'missing') locks.push(lockPath);
+    if (runtime) {
+      const state = await inspectPrivateLock(lockPath);
+      if (state.state !== 'missing') lockStates.push(state);
+    } else lockStates.push(...(await inspectWorkspaceLocks(root)));
+    locks.push(...lockStates.map((state) => state.file));
     const scan = await scanJournalDirectory(directory);
     if (scan.kind === 'unreadable' || scan.nonRegular.length > 0) {
       throw new Error(`Unsafe or unreadable journal directory: ${directory}`);
@@ -682,6 +1012,16 @@ export async function repairInstall(
       throw new Error('No incomplete journal matches this install ID.');
     }
     if (options.apply === true) {
+      if (options.quarantineUnownedLocks === true) {
+        for (const state of lockStates.filter(
+          (item) => item.state === 'unknown',
+        ))
+          await clearDeadLock(state.file, root, true, quarantined);
+      }
+      for (const state of lockStates.filter((item) => item.file !== lockPath)) {
+        await clearDeadLock(state.file, root);
+        repaired.push(state.file);
+      }
       if (candidates.length === 0 && locks.length > 0) {
         await clearDeadLock(lockPath, root);
         repaired.push(lockPath);
@@ -710,13 +1050,28 @@ export async function repairInstall(
         if (runtime)
           await repairRuntime(root, options.runtimeVersion!, file, journal);
         else await repairWorkspace(root, file, journal);
+        const completed = (await readInstallJournal(file)).value;
+        for (const entry of completed?.entries ?? [])
+          if (entry.detail === 'preserved-unproven-file')
+            preserved.push(entry.path);
         repaired.push(file);
       }
     }
   } catch (error) {
     errors.push(error instanceof Error ? error.message : String(error));
   }
-  return { ok: errors.length === 0, mode, entries, repaired, locks, errors };
+  return {
+    ok: errors.length === 0,
+    mode,
+    entries,
+    repaired,
+    locks,
+    errors,
+    lockStates: lockStates.map(({ file, state }) => ({ file, state })),
+    preserved,
+    quarantined,
+    reset,
+  };
 }
 
 async function assertJournalCurrent(

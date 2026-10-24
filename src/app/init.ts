@@ -203,6 +203,11 @@ export interface InitApplyOptions {
     relativePath: string,
     index: number,
   ) => Promise<void> | void;
+  /** Test seam after durable create, before its identity is journaled; never supplied by CLI. */
+  readonly afterWrite?: (
+    relativePath: string,
+    index: number,
+  ) => Promise<void> | void;
 }
 
 export interface KnowledgeCandidate {
@@ -3058,6 +3063,7 @@ export async function applyInitPlan(
         } finally {
           await handle.close();
         }
+        await options.afterWrite?.(file.path, index);
         created.push(record);
         const recorded = await recordManagedFile(
           managed!,
