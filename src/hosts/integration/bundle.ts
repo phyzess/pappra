@@ -47,6 +47,9 @@ export function installPathForBundleFile(
   if (host === 'pi' && sourcePath === 'templates/pi/entry.ts') {
     return 'extensions/pappra/index.ts';
   }
+  if (host === 'pi' && sourcePath === 'templates/pi/runtime.mjs') {
+    return 'extensions/pappra/runtime.mjs';
+  }
   return sourcePath;
 }
 

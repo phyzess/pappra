@@ -61,6 +61,7 @@ export const doctorReportSchema = z.strictObject({
         'locked',
         'partial',
         'unreadable',
+        'incompatible',
       ])
       .nullable(),
   }),

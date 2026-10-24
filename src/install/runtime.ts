@@ -29,6 +29,8 @@ import {
   runtimeManifestSchema,
   runtimePackageManifestSchema,
   runtimeSourceSchema,
+  RUNTIME_MANIFEST_SCHEMA,
+  RUNTIME_DIGEST_SCHEME,
 } from '../schemas/install.js';
 import { isPathInside } from '../schemas/paths.js';
 import { errorMessage } from '../schemas/outcome.js';
@@ -49,7 +51,13 @@ import {
 } from './ownership.js';
 
 export type RuntimeInstallStatus =
-  'installed' | 'reused' | 'locked' | 'corrupt' | 'partial' | 'failed';
+  | 'installed'
+  | 'reused'
+  | 'locked'
+  | 'corrupt'
+  | 'partial'
+  | 'failed'
+  | 'incompatible';
 
 export interface RuntimeInstallResult {
   readonly ok: boolean;
@@ -640,6 +648,40 @@ async function readRuntimeManifest(
   return read.value;
 }
 
+/** Recognize an unsupported format without adopting or executing its content. */
+async function incompatibleRuntimeDiagnostic(
+  runtimeRoot: string,
+): Promise<Diagnostic | null> {
+  const file = join(runtimeRoot, 'install-manifest.json');
+  if ((await observePath(file)).kind !== 'file') return null;
+  const read = await readTextFileBounded(file);
+  if (!read.ok) return null;
+  let raw: unknown;
+  try {
+    raw = JSON.parse(read.value.text) as unknown;
+  } catch {
+    return null;
+  }
+  if (
+    typeof raw !== 'object' ||
+    raw === null ||
+    !('schema' in raw) ||
+    typeof raw.schema !== 'string' ||
+    !raw.schema.startsWith('pappra/runtime-manifest/') ||
+    (raw.schema === RUNTIME_MANIFEST_SCHEMA &&
+      'digestScheme' in raw &&
+      raw.digestScheme === RUNTIME_DIGEST_SCHEME)
+  )
+    return null;
+  return createDiagnostic({
+    code: diagnosticCodes.runtimeStateIncompatible,
+    severity: 'error',
+    message: `Unsupported runtime state format at ${file}; this is not a content-corruption diagnosis.`,
+    source: file,
+    hint: 'This beta does not migrate old state. Use the current package and run pappra init --reconfigure --apply to initialize its runtime; preserve any old data you still need. Nothing was removed.',
+  });
+}
+
 /** Repair verifies published content without executing it or ignoring its journal. */
 export async function verifyRuntimeForRepair(
   runtimeRoot: string,
@@ -749,6 +791,19 @@ async function completeExistingRuntime(
   }
   const manifest = await readRuntimeManifest(paths.runtimeRoot);
   if (manifest === null) {
+    const incompatible = await incompatibleRuntimeDiagnostic(paths.runtimeRoot);
+    if (incompatible !== null) {
+      return {
+        ok: false,
+        status: 'incompatible',
+        version,
+        runtimeRoot: paths.runtimeRoot,
+        manifest: null,
+        journal: null,
+        diagnostics: [incompatible],
+        residualPaths: [],
+      };
+    }
     return failureResult(
       'corrupt',
       `Runtime has no valid manifest: ${paths.runtimeRoot}`,
@@ -1167,7 +1222,7 @@ export async function installRuntime(
       throw new Error('Cannot update install journal.');
 
     const manifest: RuntimeManifest = {
-      schema: 'pappra/runtime-manifest/1',
+      schema: RUNTIME_MANIFEST_SCHEMA,
       installId,
       packageName,
       runtimeVersion: version,
@@ -1178,6 +1233,7 @@ export async function installRuntime(
       ),
       source,
       packageDigest: verification.digest,
+      digestScheme: RUNTIME_DIGEST_SCHEME,
       smoke: verification.smoke,
       verifiedAt: isoNow(),
     };
@@ -1287,7 +1343,8 @@ export async function installRuntime(
 
 export interface RuntimeStateReport {
   readonly version: string;
-  readonly status: 'missing' | 'complete' | 'partial' | 'corrupt' | 'locked';
+  readonly status:
+    'missing' | 'complete' | 'partial' | 'corrupt' | 'locked' | 'incompatible';
   readonly runtimeRoot: string;
   readonly manifest: RuntimeManifest | null;
   readonly journal: InstallJournal | null;
@@ -1401,7 +1458,12 @@ export async function inspectRuntimeState(
   }
   return {
     version,
-    status: complete.status === 'reused' ? 'complete' : 'corrupt',
+    status:
+      complete.status === 'reused'
+        ? 'complete'
+        : complete.status === 'incompatible'
+          ? 'incompatible'
+          : 'corrupt',
     runtimeRoot: paths.runtimeRoot,
     manifest: complete.manifest,
     journal: complete.journal,
@@ -1419,7 +1481,13 @@ export interface RemoveRuntimeOptions {
 export interface RemoveRuntimeResult {
   readonly ok: boolean;
   readonly status:
-    'removed' | 'missing' | 'in-use' | 'locked' | 'corrupt' | 'failed';
+    | 'removed'
+    | 'missing'
+    | 'in-use'
+    | 'locked'
+    | 'corrupt'
+    | 'failed'
+    | 'incompatible';
   readonly runtimeRoot: string;
   readonly diagnostics: readonly Diagnostic[];
   readonly residualPaths: readonly string[];
@@ -1490,7 +1558,7 @@ export async function removeRuntime(
   if (state.status !== 'complete' || state.manifest === null) {
     return {
       ok: false,
-      status: 'corrupt',
+      status: state.status === 'incompatible' ? 'incompatible' : 'corrupt',
       runtimeRoot: paths.runtimeRoot,
       diagnostics: state.diagnostics,
       residualPaths: [],
@@ -1531,7 +1599,8 @@ export type RuntimePassiveStatus =
   | 'corrupt'
   | 'locked'
   | 'partial'
-  | 'unreadable';
+  | 'unreadable'
+  | 'incompatible';
 
 export interface PassiveRuntimeState {
   readonly version: string;
@@ -1715,9 +1784,17 @@ export async function inspectRuntimeStatePassive(
     runtimeManifestSchema,
   );
   if (!manifestRead.exists || manifestRead.value === null) {
+    const incompatible = manifestRead.exists
+      ? await incompatibleRuntimeDiagnostic(paths.runtimeRoot)
+      : null;
     return {
       version,
-      status: manifestRead.exists ? 'unreadable' : 'corrupt',
+      status:
+        incompatible !== null
+          ? 'incompatible'
+          : manifestRead.exists
+            ? 'unreadable'
+            : 'corrupt',
       runtimeRoot: paths.runtimeRoot,
       manifest: null,
       journal: null,
@@ -1726,17 +1803,19 @@ export async function inspectRuntimeStatePassive(
       packageDigestMatch: false,
       executableExists: false,
       diagnostics:
-        manifestRead.diagnostics.length > 0
-          ? manifestRead.diagnostics
-          : [
-              createDiagnostic({
-                code: diagnosticCodes.initApplyFailed,
-                severity: 'error',
-                message: `Runtime manifest is missing: ${paths.runtimeRoot}`,
-                source: paths.runtimeRoot,
-                hint: 'Inspect the partial runtime; doctor does not overwrite it.',
-              }),
-            ],
+        incompatible !== null
+          ? [incompatible]
+          : manifestRead.diagnostics.length > 0
+            ? manifestRead.diagnostics
+            : [
+                createDiagnostic({
+                  code: diagnosticCodes.initApplyFailed,
+                  severity: 'error',
+                  message: `Runtime manifest is missing: ${paths.runtimeRoot}`,
+                  source: paths.runtimeRoot,
+                  hint: 'Inspect the partial runtime; doctor does not overwrite it.',
+                }),
+              ],
     };
   }
   const manifest = manifestRead.value;

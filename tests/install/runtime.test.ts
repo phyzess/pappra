@@ -28,6 +28,10 @@ import {
 import type { InstallJournal } from '../../src/schemas/install.js';
 import { cleanup, createRuntimeTarball, makeTempDir } from './fixtures.js';
 import { snapshotTree } from '../workspace/fixtures.js';
+import {
+  RUNTIME_MANIFEST_SCHEMA,
+  RUNTIME_DIGEST_SCHEME,
+} from '../../src/schemas/install.js';
 
 const version = '9.8.7';
 
@@ -48,6 +52,7 @@ test('installs a local tarball into the isolated data dir without lifecycle scri
     assert.equal(result.status, 'installed');
     assert(result.manifest !== null);
     assert.equal(result.manifest.runtimeVersion, version);
+    assert.equal(result.manifest.digestScheme, RUNTIME_DIGEST_SCHEME);
     assert.equal(result.manifest.source.kind, 'tarball');
     assert.match(result.manifest.source.digest ?? '', /^sha256:[0-9a-f]{64}$/);
     assert.equal(result.journal?.status, 'verified');
@@ -63,7 +68,7 @@ test('installs a local tarball into the isolated data dir without lifecycle scri
       readFileSync(
         join(paths.runtimeRoot, 'install-manifest.json'),
         'utf8',
-      ).includes('pappra/runtime-manifest/1'),
+      ).includes(RUNTIME_MANIFEST_SCHEMA),
       true,
     );
     const state = await inspectRuntimeState(version, dataDir);
@@ -110,6 +115,57 @@ test('reuses a complete runtime and detects a mismatched version without replaci
       (await inspectRuntimeState(version, dataDir)).status,
       'complete',
     );
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('old beta runtime formats require reinitialization without claiming corruption or changing state', async () => {
+  const root = makeTempDir('runtime-format-reset');
+  try {
+    const tarball = createRuntimeTarball(root, { version });
+    const dataDir = join(root, 'data');
+    const installed = await installRuntime({
+      version,
+      source: { kind: 'tarball', path: tarball },
+      dataDir,
+      offline: true,
+      timeoutMs: 60_000,
+    });
+    assert(installed.manifest !== null);
+    const file = join(installed.runtimeRoot!, 'install-manifest.json');
+    for (const unsupported of [
+      {
+        ...installed.manifest,
+        schema: 'pappra/runtime-manifest/1',
+        digestScheme: undefined,
+      },
+      { ...installed.manifest, digestScheme: 'locale-compare' },
+    ]) {
+      const bytes = `${JSON.stringify(unsupported)}\n`;
+      writeFileSync(file, bytes);
+      const passive = await inspectRuntimeStatePassive(version, dataDir);
+      assert.equal(passive.status, 'incompatible');
+      assert.equal(passive.diagnostics[0]?.code, 'runtime_state_incompatible');
+      const active = await inspectRuntimeState(version, dataDir);
+      assert.equal(active.status, 'incompatible');
+      const retried = await installRuntime({
+        version,
+        source: { kind: 'tarball', path: tarball },
+        dataDir,
+        offline: true,
+        timeoutMs: 60_000,
+      });
+      assert.equal(retried.status, 'incompatible');
+      assert.match(retried.diagnostics[0]?.hint ?? '', /reconfigure/);
+      const removed = await removeRuntime({
+        version,
+        dataDir,
+        activeReferences: [],
+      });
+      assert.equal(removed.status, 'incompatible');
+      assert.equal(readFileSync(file, 'utf8'), bytes);
+    }
   } finally {
     cleanup(root);
   }

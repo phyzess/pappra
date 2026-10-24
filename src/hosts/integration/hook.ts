@@ -23,6 +23,7 @@ import {
   sha256Digest,
 } from '../../infra/fs.js';
 import { isPathInside } from '../../schemas/paths.js';
+import { ensurePrivateState } from '../../infra/private-state.js';
 import { resolveWorkspaceRoot } from '../../workspace/resolve.js';
 import {
   inspectMachineConfig,
@@ -349,9 +350,12 @@ export function mapNativeHookEvent(
   if (native === 'SessionStart') {
     const source = parsed.data.source;
     event =
-      source === 'resume'
+      source === 'resume' || source === 'compact'
         ? 'resume'
-        : source === undefined || source === 'startup' || source === 'new'
+        : source === undefined ||
+            source === 'startup' ||
+            source === 'new' ||
+            source === 'clear'
           ? 'startup'
           : null;
   } else if (native === 'PostCompact') {
@@ -682,6 +686,27 @@ export async function runHostHook(
           `Private host-event path is not a private directory: ${directory}`,
           directory,
           'Inspect or remove the redirected path; no event was recorded.',
+        ),
+      ],
+    });
+  }
+  const privateState = await ensurePrivateState(root);
+  if (!privateState.ok) {
+    return result({
+      ok: false,
+      status: 'failed',
+      host: value.host,
+      event: value.event,
+      eventKey,
+      duplicate: false,
+      context: null,
+      diagnostics: [
+        diagnostic(
+          privateState.code,
+          privateState.message,
+          root,
+          privateState.nextAction ??
+            'Protect private workspace state before recording the host event.',
         ),
       ],
     });

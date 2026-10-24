@@ -13,7 +13,10 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { CheckpointService } from '../../src/continuity/index.js';
-import { writeContinuityBytes } from '../../src/continuity/paths.js';
+import {
+  writeContinuityBytes,
+  CONTINUITY_PAYLOAD_MAX_BYTES,
+} from '../../src/continuity/paths.js';
 import * as store from '../../src/collab/store.js';
 import { sha256Digest } from '../../src/infra/fs.js';
 import {
@@ -475,10 +478,12 @@ test('rejects artifact symlinks that resolve outside the workspace', async () =>
   }
 });
 
-test('captures untracked file bodies in the private patch and detects body drift', async () => {
+test('captures only untracked metadata and detects body drift without storing secrets', async () => {
   const root = makeRepoWorkspace();
   try {
     writeText(join(root, 'untracked.txt'), 'untracked version A\n');
+    const sentinel = 'AKIAFAKESECRET123';
+    writeText(join(root, '.env.local'), `API_KEY=${sentinel}\n`);
     const service = new CheckpointService(root);
     const saved = await service.save(initialInput());
     assert.equal(saved.ok, true, saved.diagnostics[0]?.message);
@@ -490,7 +495,15 @@ test('captures untracked file bodies in the private patch and detects body drift
       '.pappra/local/tasks/task-p07/patches',
       `${patchDigest!.slice('sha256:'.length)}.patch`,
     );
-    assert(readFileSync(patchPath, 'utf8').includes('untracked version A'));
+    const patch = readFileSync(patchPath, 'utf8');
+    assert(patch.includes('untracked.txt'));
+    assert(patch.includes('.env.local'));
+    assert(!patch.includes('untracked version A'));
+    assert(!patch.includes(sentinel));
+    assert.equal(
+      readFileSync(join(root, '.pappra/local/.gitignore'), 'utf8'),
+      '*\n',
+    );
     writeText(join(root, 'untracked.txt'), 'untracked version B\n');
     const resumed = await service.resume({
       taskId: 'task-p07',
@@ -498,6 +511,17 @@ test('captures untracked file bodies in the private patch and detects body drift
     });
     assert.equal(resumed.packet?.codeDrift.status, 'changed');
     assert.equal(resumed.packet?.verificationStatus, 'stale');
+    const added = spawnSync('git', ['add', '--all'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    assert.equal(added.status, 0, added.stderr);
+    const privateFiles = spawnSync('git', ['ls-files', '--', '.pappra/local'], {
+      cwd: root,
+      encoding: 'utf8',
+    });
+    assert.equal(privateFiles.status, 0, privateFiles.stderr);
+    assert.equal(privateFiles.stdout, '');
   } finally {
     cleanup(root);
   }
@@ -536,12 +560,13 @@ test('NUL-delimited capture preserves quoted and whitespace filenames', async ()
         `${digest!.slice('sha256:'.length)}.patch`,
       ),
     );
-    for (const key of Object.keys(names)) {
+    for (const [key, name] of Object.entries(names)) {
       assert.equal(
-        patch.includes(Buffer.from(`BODY:${key}:`)),
+        patch.includes(Buffer.from(name)),
         true,
-        `missing captured body for ${key}`,
+        `missing captured path for ${key}`,
       );
+      assert.equal(patch.includes(Buffer.from(`BODY:${key}:`)), false);
     }
     // The tracked rename is a status continuation, not an untracked body
     // path; a misparse would make the capture partial or add a bogus body.
@@ -1076,8 +1101,7 @@ test('untracked file-kind transitions change identity without following targets'
       `${fileDigest!.slice('sha256:'.length)}.patch`,
     );
     const fileBytes = readFileSync(filePatch, 'utf8');
-    assert(fileBytes.startsWith('PAPPRA-UNTRACKED/2'));
-    assert(fileBytes.includes('\nF '));
+    assert(fileBytes.startsWith('PAPPRA-UNTRACKED/3'));
 
     unlinkSync(untracked);
     symlinkSync('tracked.txt', untracked);
@@ -1104,8 +1128,7 @@ test('untracked file-kind transitions change identity without following targets'
       `${symlinkDigest!.slice('sha256:'.length)}.patch`,
     );
     const symlinkBytes = readFileSync(symlinkPatch, 'utf8');
-    assert(symlinkBytes.startsWith('PAPPRA-UNTRACKED/2'));
-    assert(symlinkBytes.includes('\nL '));
+    assert(symlinkBytes.startsWith('PAPPRA-UNTRACKED/3'));
 
     unlinkSync(untracked);
     writeText(untracked, 'tracked.txt');
@@ -1182,15 +1205,13 @@ test('capture and resume share the private payload bound', async () => {
   }
 });
 
-test('oversized aggregate capture is reported partial and stays readable', async () => {
+test('an untracked file beyond the hashing bound is partial without storing its bytes', async () => {
   const root = makeRepoWorkspace();
   try {
-    for (let index = 0; index < 4; index += 1) {
-      writeFileSync(
-        join(root, `large-${index}.bin`),
-        Buffer.alloc(4.25 * 1024 * 1024, 65 + index),
-      );
-    }
+    writeFileSync(
+      join(root, 'large.bin'),
+      Buffer.alloc(CONTINUITY_PAYLOAD_MAX_BYTES + 1, 65),
+    );
     const service = new CheckpointService(root);
     const saved = await service.save(initialInput());
     assert.equal(saved.ok, true, saved.diagnostics[0]?.message);

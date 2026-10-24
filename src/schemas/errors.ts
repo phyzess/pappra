@@ -29,6 +29,7 @@ export const diagnosticCodes = {
   initApplyFailed: 'init_apply_failed',
   initApplyResidual: 'init_apply_residual',
   initRuntimeSourceRequired: 'init_runtime_source_required',
+  runtimeStateIncompatible: 'runtime_state_incompatible',
   initCancelled: 'init_cancelled',
   fileInvalidEncoding: 'file_invalid_encoding',
   configMissing: 'config_missing',

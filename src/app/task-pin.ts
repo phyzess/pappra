@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, rename, rm, writeFile } from 'node:fs/promises';
+import { ensurePrivateState } from '../infra/private-state.js';
 import { dirname, join, resolve } from 'node:path';
 import {
   observePath,
@@ -631,6 +632,8 @@ export async function pinTask(
   const target = taskStatePaths(canonical).pinPath;
   const boundary = await privateTaskStateBoundary(canonical, target);
   if (!boundary.ok) return { ok: false, message: boundary.message };
+  const privateState = await ensurePrivateState(canonical);
+  if (!privateState.ok) return { ok: false, message: privateState.message };
   const initial = await namespaceSnapshot(canonical);
   if (!initial.ok) return { ok: false, message: initial.message };
   try {
@@ -757,6 +760,8 @@ export async function setAutoResume(
   const paths = taskStatePaths(canonical);
   const boundary = await configBoundary(canonical, paths.configPath);
   if (!boundary.ok) return { ok: false, message: boundary.message };
+  const privateState = await ensurePrivateState(canonical);
+  if (!privateState.ok) return { ok: false, message: privateState.message };
   const initial = await namespaceSnapshot(canonical);
   if (!initial.ok) return { ok: false, message: initial.message };
   let snapshot = initial;

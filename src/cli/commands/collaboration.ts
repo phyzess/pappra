@@ -19,6 +19,7 @@ export const collaborationUsage =
   `${collaborationCommandLine}\n` +
   '  prepare --goal <file> --domain-root <dir> [--json]\n' +
   '  run --prepared <file> --capabilities <card> --controller <fixture|pi-rpc>\n' +
+  '    [--rpc-request-timeout-ms <1..60000>] [--rpc-operation-timeout-ms <1..86400000>]\n' +
   '  work-run --request <abs work-execution.json> [--apply] [--json]\n' +
   '  role-run --request <abs role-orchestration.json> [--apply] [--json]\n' +
   '    Apply records bounded notification intents; plans write and notify nothing.\n' +
@@ -57,6 +58,8 @@ export interface CollaborationCommandOptions {
   readonly capabilitiesFile: string | null;
   readonly controller: string | null;
   readonly domainRoot: string | null;
+  readonly rpcRequestTimeoutMs?: number;
+  readonly rpcOperationTimeoutMs?: number;
 }
 
 function failure(code: string, message: string): Record<string, unknown> {
@@ -71,9 +74,20 @@ function readGoal(file: string): unknown {
   return JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
 }
 
-function controllerFor(name: string | null): CollaborationController | null {
+function controllerFor(
+  name: string | null,
+  options: CollaborationCommandOptions,
+): CollaborationController | null {
   if (name === 'fixture') return new FixtureController();
-  if (name === 'pi-rpc') return new PiRpcController();
+  if (name === 'pi-rpc')
+    return new PiRpcController({
+      ...(options.rpcRequestTimeoutMs === undefined
+        ? {}
+        : { requestTimeoutMs: options.rpcRequestTimeoutMs }),
+      ...(options.rpcOperationTimeoutMs === undefined
+        ? {}
+        : { operationTimeoutMs: options.rpcOperationTimeoutMs }),
+    });
   return null;
 }
 
@@ -211,7 +225,7 @@ export async function runCollaborationCommand(
       );
       return 2;
     }
-    const controller = controllerFor(options.controller);
+    const controller = controllerFor(options.controller, options);
     if (controller === null) {
       output.stderr(
         'pappra: collab run requires --controller <fixture|pi-rpc>\n',

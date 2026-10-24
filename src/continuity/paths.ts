@@ -18,6 +18,7 @@ import {
   sha256Digest,
 } from '../infra/fs.js';
 import { resolveWorkspaceRoot } from '../workspace/resolve.js';
+import { ensurePrivateState } from '../infra/private-state.js';
 
 /* The shared task identifier rule lives in schemas/continuity.ts. */
 
@@ -240,6 +241,8 @@ export async function writeContinuityBytes(
 ): Promise<Outcome<{ readonly digest: string }>> {
   const boundary = await ensurePrivateTaskBoundary(root, taskId, path);
   if (!boundary.ok) return boundary;
+  const privateState = await ensurePrivateState(root);
+  if (!privateState.ok) return privateState;
   const temporary = await writeTemporary(path, bytes);
   if (!temporary.ok) {
     return failed(diagnosticCodes.fileUnreadable, temporary.message, {
@@ -304,6 +307,8 @@ export async function replaceContinuityBytesIfDigest(
 ): Promise<Outcome<{ readonly digest: string }>> {
   const boundary = await ensurePrivateTaskBoundary(root, taskId, path);
   if (!boundary.ok) return boundary;
+  const privateState = await ensurePrivateState(root);
+  if (!privateState.ok) return privateState;
   const temporary = await writeTemporary(path, bytes);
   if (!temporary.ok) {
     return failed(diagnosticCodes.fileUnreadable, temporary.message, {

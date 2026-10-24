@@ -1,4 +1,5 @@
 import { mkdir, open, rename, rm } from 'node:fs/promises';
+import { ensurePrivateState } from '../infra/private-state.js';
 import { randomUUID } from 'node:crypto';
 import { join, relative, sep } from 'node:path';
 import {
@@ -119,6 +120,8 @@ export async function acquireCodePrepareLock(
   const path = join(directory, 'prepare.lock');
   const boundary = await ensureCodeMutationBoundary(root, path, excludedRoots);
   if (!boundary.ok) return boundary;
+  const prepared = await ensurePrivateState(root);
+  if (!prepared.ok) return prepared;
   try {
     await mkdir(directory, { recursive: true, mode: 0o700 });
     const content = Buffer.from(
@@ -412,6 +415,8 @@ export async function writeCodeRegistration(
   const path = codeRegistrationPath(root, registration.repositoryId);
   const boundary = await ensureCodeMutationBoundary(root, path, excludedRoots);
   if (!boundary.ok) return boundary;
+  const prepared = await ensurePrivateState(root);
+  if (!prepared.ok) return prepared;
   const temporary = `${path}.tmp-${randomUUID()}`;
   const content = Buffer.from(`${JSON.stringify(registration, null, 2)}\n`);
   let owned: OwnedBytes | null = null;

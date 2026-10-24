@@ -32,6 +32,7 @@ import {
   resolveRealpath,
   sha256Digest,
 } from '../infra/fs.js';
+import { ensurePrivateState } from '../infra/private-state.js';
 
 export interface WorkspaceInstallPaths {
   readonly root: string;
@@ -232,6 +233,10 @@ export async function writeBytesAtomic(
   if (boundaryRoot !== undefined) {
     const boundary = await ensureStatePathBoundary(boundaryRoot, path);
     if (!boundary.ok) return boundary;
+    if (isPathInside(workspaceInstallPaths(boundaryRoot).localDir, path)) {
+      const prepared = await ensurePrivateState(boundaryRoot);
+      if (!prepared.ok) return prepared;
+    }
   }
   const temporary = `${path}.tmp-${randomUUID()}`;
   try {
@@ -293,6 +298,18 @@ export async function acquireInstallLock(
         message: boundary.message,
         existing: null,
       };
+    }
+    if (isPathInside(workspaceInstallPaths(boundaryRoot).localDir, path)) {
+      const prepared = await ensurePrivateState(boundaryRoot);
+      if (!prepared.ok)
+        return {
+          ok: false,
+          status: 'failed',
+          lock: null,
+          path,
+          message: prepared.message,
+          existing: null,
+        };
     }
   }
   try {

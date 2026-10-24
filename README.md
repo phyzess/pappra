@@ -61,9 +61,12 @@ npx @phyzess/pappra@beta runtime verify --json
 ```
 
 Runtime content hashes now use UTF-8 byte ordering, independent of system locale.
-Older runtime manifests created with locale-based ordering may require an explicit
-reinstall after upgrading. Verification never rewrites a manifest to adopt an
-unexpected digest. Runtime removal refuses unknown cross-workspace references;
+Beta.15 uses `pappra/runtime-manifest/2` with an explicit digest scheme and does not
+migrate old beta state. Unsupported formats are reported as incompatible, separately
+from corrupted content. Use the current package with `init --reconfigure --apply` to
+initialize its runtime; existing state is preserved until explicitly removed.
+Verification never rewrites a manifest to adopt an unexpected digest.
+Runtime removal refuses unknown cross-workspace references;
 `--force` is an explicit override after checking other workspaces.
 
 Interrupted installations can be inspected and recovered explicitly:
@@ -82,6 +85,11 @@ backups. For runtimes it removes only journal-owned staging, or finalizes an alr
 copy whose manifest and contents still match, without executing the runtime. Live or unknown
 owners, modified files, invalid journals and unproven backup paths are preserved and reported.
 Reconfiguration holds the same workspace lock and journal through replacements and creations.
+
+Every first private-state write creates `.pappra/local/.gitignore` with a final `*`
+rule, including writes performed without init. Checkpoint payloads retain tracked
+diffs, but untracked files contribute only their path, object type and content digest;
+their contents and symlink target text are not copied into the checkpoint.
 
 A workspace that already has a valid `.pappra/workspace.json` is never rewritten silently: a
 plain `init` reuses it and only plans missing local state. `--reconfigure` is the explicit opt-in

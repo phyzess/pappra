@@ -4,6 +4,7 @@ import {
   mkdir,
   open,
   readFile,
+  readdir,
   rename,
   rm,
   rmdir,
@@ -81,9 +82,11 @@ import {
   beginManagedApply,
   completeManagedApply,
   failManagedApply,
+  inspectWorkspaceInstallReadiness,
   recordManagedFile,
   type ManagedApplyContext,
   updateMachineRuntime,
+  verifyWorkspaceInstallReady,
 } from '../install/apply.js';
 import {
   installRuntime,
@@ -377,6 +380,44 @@ export async function resolveInitRoot(
 ): Promise<InitRootResult> {
   const requestedRoot = resolve(rootPath);
   const resolution = await resolveWorkspaceRoot({ startPath: requestedRoot });
+  if (resolution.state === 'incomplete' && resolution.root !== null) {
+    const canonicalRequested = await resolveRealpath(requestedRoot);
+    const marker = join(resolution.root, '.pappra');
+    const local = join(marker, 'local');
+    const markerObservation = await observePath(marker);
+    const localObservation = await observePath(local);
+    const configObservation = await observePath(join(marker, 'workspace.json'));
+    if (
+      canonicalRequested !== null &&
+      samePath(canonicalRequested, resolution.root) &&
+      markerObservation.kind === 'directory' &&
+      configObservation.kind === 'missing' &&
+      ['missing', 'directory'].includes(localObservation.kind) &&
+      (await readdir(marker)).every((name) => name === 'local')
+    ) {
+      const ready = await inspectWorkspaceInstallReadiness(resolution.root);
+      if (!ready.ok)
+        return failure(
+          'unavailable',
+          ready.code,
+          ready.message,
+          [],
+          ready.nextAction,
+        );
+      return {
+        ok: true,
+        value: {
+          requestedRoot,
+          root: resolution.root,
+          registered: false,
+          diagnostics: resolution.diagnostics.filter(
+            (entry) =>
+              entry.code !== diagnosticCodes.workspaceRegistrationIncomplete,
+          ),
+        },
+      };
+    }
+  }
   if (resolution.state === 'unavailable' || resolution.state === 'incomplete') {
     return failureFromDiagnostics(
       'unavailable',
@@ -448,6 +489,15 @@ export async function inspectInitContext(
   const rootResult = await resolveInitRoot(rootPath);
   if (!rootResult.ok) return rootResult;
   const root = rootResult.value.root;
+  const installReady = await inspectWorkspaceInstallReadiness(root);
+  if (!installReady.ok)
+    return failure(
+      'unavailable',
+      installReady.code,
+      installReady.message,
+      [],
+      installReady.nextAction,
+    );
   const rootIdentity = await observeRootIdentity(root);
   if (rootIdentity === null) {
     return failure(
@@ -2899,6 +2949,15 @@ export async function applyInitPlan(
       }
       managed = managedStart.context;
       originalManifest = managed.manifest;
+    } else {
+      const ready = await verifyWorkspaceInstallReady(root);
+      if (!ready.ok)
+        return applyFailure(
+          'conflict',
+          ready.code,
+          ready.message,
+          ready.nextAction ?? 'Run pappra repair before retrying init.',
+        );
     }
     for (const index of replaceIndexes) {
       const file = bundle.plan.files[index]!;

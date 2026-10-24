@@ -11,6 +11,7 @@ import {
   type KnowledgeLock,
 } from '../schemas/document.js';
 import { readTextFileBounded } from '../infra/fs.js';
+import { ensurePrivateState } from '../infra/private-state.js';
 import type { KnowledgeContext } from './context.js';
 import { ensureKnowledgePathBoundary, knowledgePaths } from './paths.js';
 
@@ -39,6 +40,8 @@ export async function acquireKnowledgeLock(
   if (!boundary.ok) {
     return lockFailure(path, 'failed', boundary.message);
   }
+  const prepared = await ensurePrivateState(context.root);
+  if (!prepared.ok) return lockFailure(path, 'failed', prepared.message);
   try {
     await mkdir(dirname(path), { recursive: true });
   } catch (error) {
@@ -153,6 +156,8 @@ export async function writeKnowledgeJournal(
   const path = knowledgeJournalPath(context, parsed.data.operationId);
   const boundary = await ensureKnowledgePathBoundary(context.root, path);
   if (!boundary.ok) return boundary;
+  const prepared = await ensurePrivateState(context.root);
+  if (!prepared.ok) return prepared;
   const temporary = `${path}.tmp-${randomUUID()}`;
   const bytes = Buffer.from(`${JSON.stringify(parsed.data, null, 2)}\n`);
   let handle;

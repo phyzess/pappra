@@ -16,6 +16,7 @@ import test from 'node:test';
 import { repairInstall } from '../../src/install/repair.js';
 import { runCli } from '../../src/cli/run.js';
 import { applyInitPlan, planWorkspaceInit } from '../../src/app/init.js';
+import { runDoctor } from '../../src/app/doctor.js';
 import {
   beginManagedApply,
   recordManagedFile,
@@ -44,6 +45,126 @@ function deadPid(): number {
   assert.equal(child.status, 0);
   return Number(child.stdout.toString());
 }
+
+test('first init can be repaired and retried after a hard interruption before or after its first config write', async () => {
+  for (const interruptBefore of [
+    '.pappra/workspace.json',
+    '.pappra/local/machine.json',
+  ]) {
+    const root = realpathSync(makeTempDir('repair-first-init'));
+    try {
+      createRepository(root);
+      const child = spawnSync(
+        process.execPath,
+        [
+          '--input-type=module',
+          '-e',
+          `import { planWorkspaceInit, applyInitPlan } from ${JSON.stringify(import.meta.resolve('../../src/app/init.js'))};
+const planned = await planWorkspaceInit({root: ${JSON.stringify(root)}, choices: ${JSON.stringify(baseInitChoices())}, runtimeVersion: '0.1.0-dev.0'});
+if (!planned.ok) process.exit(90);
+await applyInitPlan(planned.bundle, {beforeWrite: (file) => {if (file === ${JSON.stringify(interruptBefore)}) process.exit(73);}});
+process.exit(91);`,
+        ],
+        { encoding: 'utf8' },
+      );
+      assert.equal(child.status, 73, child.stderr);
+      const blocked = await planWorkspaceInit({
+        root,
+        choices: baseInitChoices(),
+        runtimeVersion: '0.1.0-dev.0',
+      });
+      assert.equal(blocked.ok, false);
+      if (!blocked.ok)
+        assert.match(blocked.nextAction ?? '', /repair|active init/);
+      const repaired = await repairInstall({ root, apply: true });
+      assert.equal(repaired.ok, true, JSON.stringify(repaired));
+      assert.equal(existsSync(join(root, '.pappra/local/journals')), true);
+      assert.equal(existsSync(join(root, '.pappra/workspace.json')), false);
+      const retry = await planWorkspaceInit({
+        root,
+        choices: baseInitChoices(),
+        runtimeVersion: '0.1.0-dev.0',
+      });
+      assert(retry.ok, JSON.stringify(retry));
+      const applied = await applyInitPlan(retry.bundle);
+      assert.equal(applied.ok, true, JSON.stringify(applied));
+      assert.equal(existsSync(join(root, '.pappra/workspace.json')), true);
+      assert.equal(existsSync(join(root, '.pappra/local/machine.json')), true);
+      const doctor = await runDoctor({
+        root,
+        dataDir: join(root, 'runtime-data'),
+        homeDir: root,
+        pathEnv: '',
+      });
+      assert.equal(doctor.workspace.state, 'registered');
+      assert.equal(
+        doctor.checks.find((check) => check.id === 'install.workspace')?.status,
+        'ok',
+      );
+      assert.equal((await repairInstall({ root })).entries.length, 0);
+      const privateFiles = spawnSync(
+        'git',
+        ['ls-files', '--others', '--exclude-standard', '--', '.pappra/local'],
+        { cwd: root, encoding: 'utf8' },
+      );
+      assert.equal(privateFiles.status, 0, privateFiles.stderr);
+      assert.equal(privateFiles.stdout, '');
+    } finally {
+      cleanup(root);
+    }
+  }
+});
+
+test('a zero-file init cannot accept an incomplete first install or bypass recovery through an old plan', async () => {
+  const root = realpathSync(makeTempDir('repair-zero-file-init'));
+  try {
+    createRepository(root);
+    const first = await planWorkspaceInit({
+      root,
+      choices: baseInitChoices(),
+      runtimeVersion: '0.1.0-dev.0',
+    });
+    assert(first.ok);
+    assert.equal((await applyInitPlan(first.bundle)).ok, true);
+    const empty = await planWorkspaceInit({ root });
+    assert(empty.ok);
+    assert.equal(empty.bundle.plan.files.length, 0);
+    const manifest = (await readWorkspaceManifest(root)).value;
+    assert(manifest !== null);
+    const sourceFile = journalPath(root, manifest.entries[0]!.installId);
+    const source = (await readInstallJournal(sourceFile)).value;
+    assert(source !== null);
+    await writeInstallJournal(
+      sourceFile,
+      { ...source, status: 'applied' },
+      root,
+    );
+    const fresh = await planWorkspaceInit({ root });
+    assert.equal(fresh.ok, false);
+    const stale = await applyInitPlan(empty.bundle);
+    assert.equal(stale.ok, false);
+    assert.match(
+      stale.diagnostics.map((entry) => entry.message).join(' '),
+      /recovery/,
+    );
+    assert.equal(existsSync(join(root, '.pappra/workspace.json')), true);
+    assert.equal(
+      (await readInstallJournal(sourceFile)).value?.status,
+      'applied',
+    );
+    const repaired = await repairInstall({ root, apply: true });
+    assert.equal(repaired.ok, true, JSON.stringify(repaired));
+    const retried = await planWorkspaceInit({
+      root,
+      choices: baseInitChoices(),
+      runtimeVersion: '0.1.0-dev.0',
+    });
+    assert(retried.ok, JSON.stringify(retried));
+    assert.equal((await applyInitPlan(retried.bundle)).ok, true);
+  } finally {
+    cleanup(root);
+  }
+});
 
 async function interruptedRollback(
   root: string,

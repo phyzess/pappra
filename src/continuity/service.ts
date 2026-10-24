@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, unlink } from 'node:fs/promises';
+import { ensurePrivateState } from '../infra/private-state.js';
 import { isAbsolute, join, resolve } from 'node:path';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
@@ -309,6 +310,9 @@ async function acquireTaskLock(
   if (!boundary.ok) {
     return { ok: false, path: paths.lockPath, message: boundary.message };
   }
+  const privateState = await ensurePrivateState(root);
+  if (!privateState.ok)
+    return { ok: false, path: paths.lockPath, message: privateState.message };
   try {
     await mkdir(paths.taskDir, { recursive: true, mode: 0o700 });
   } catch (error) {

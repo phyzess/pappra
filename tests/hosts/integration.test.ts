@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { HostIntegrationService } from '../../src/hosts/integration/service.js';
 import { exportHostPluginBundle } from '../../src/hosts/integration/bundle-export.js';
+import { loadHostBundle } from '../../src/hosts/integration/bundle.js';
 import {
   mapNativeHookEvent,
   runHostHook,
@@ -197,6 +198,16 @@ test('plans, installs, verifies and preserves a user Claude config', async () =>
     }).install('claude', { hostRoot, apply: true });
     assert.equal(second.status, 'unchanged');
 
+    settings.theme = 'light';
+    (settings.hooks as Record<string, unknown>).UserEvent = [
+      { hooks: [{ type: 'command', command: 'echo user-later' }] },
+    ];
+    writeFileSync(join(hostRoot, 'settings.json'), JSON.stringify(settings));
+    assert.equal(
+      (await service.verify('claude', { hostRoot })).status,
+      'verified',
+    );
+
     writeFileSync(
       join(hostRoot, 'settings.json'),
       `${JSON.stringify({ theme: 'light', custom: { keep: true } }, null, 2)}\n`,
@@ -233,6 +244,135 @@ test('plans, installs, verifies and preserves a user Claude config', async () =>
   } finally {
     cleanup(root);
     cleanup(hostRoot);
+  }
+});
+
+test('private host installation protects local state on apply while planning stays read-only', async () => {
+  const root = workspace();
+  try {
+    const service = new HostIntegrationService({
+      root,
+      homeDir: root,
+      pathEnv: '',
+      runtimeEntry: runtimeEntry(),
+      hostVersion: '2.1.292',
+    });
+    const planned = await service.install('claude', { apply: false });
+    assert.equal(planned.status, 'planned');
+    const ignore = join(root, '.pappra/local/.gitignore');
+    assert.equal(existsSync(ignore), false);
+    const applied = await service.install('claude', { apply: true });
+    assert.equal(applied.ok, true);
+    assert.equal(readFileSync(ignore, 'utf8').trim(), '*');
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('hook bundle identity is independent of the installing Node executable', async () => {
+  const original = process.execPath;
+  try {
+    const before = await loadHostBundle('claude', '0.0.0', {
+      hookSource: runtimeEntry(),
+      hookExpression: '/tmp/host/hooks/pappra-hook.mjs',
+    });
+    Object.defineProperty(process, 'execPath', {
+      value: '/some other node version/bin/node',
+    });
+    const after = await loadHostBundle('claude', '0.0.0', {
+      hookSource: runtimeEntry(),
+      hookExpression: '/tmp/host/hooks/pappra-hook.mjs',
+    });
+    assert.equal(after.bundle.bundleDigest, before.bundle.bundleDigest);
+    const template = after.contents.get('templates/claude/hooks.json');
+    assert(template);
+    assert(template.toString().includes('node '));
+    assert(!template.toString().includes(process.execPath));
+  } finally {
+    Object.defineProperty(process, 'execPath', { value: original });
+  }
+});
+
+test('reinstall migrates and deduplicates only marked hooks for the exact script', async () => {
+  for (const host of ['claude', 'codex'] as const) {
+    const root = workspace();
+    const hostRoot = makeTempDir(`host-${host}-node-migration`);
+    try {
+      const service = new HostIntegrationService({
+        root,
+        homeDir: hostRoot,
+        pathEnv: '',
+        runtimeEntry: runtimeEntry(),
+        hostVersion: host === 'claude' ? '2.1.292' : '0.163.0',
+      });
+      assert.equal(
+        (await service.install(host, { hostRoot, apply: true })).ok,
+        true,
+      );
+      const configPath = join(
+        hostRoot,
+        host === 'claude' ? 'settings.json' : 'hooks.json',
+      );
+      const config = JSON.parse(readFileSync(configPath, 'utf8')) as {
+        hooks: Record<
+          string,
+          { hooks: { type: string; command: string; timeout?: number }[] }[]
+        >;
+      };
+      const sessionStart = config.hooks.SessionStart!;
+      const canonical = sessionStart[0]!.hooks[0]!.command;
+      const suffix = canonical.slice('node'.length);
+      const userCommand = `echo${suffix}`;
+      sessionStart.splice(
+        0,
+        sessionStart.length,
+        {
+          hooks: [
+            {
+              type: 'command',
+              command: `'/old Node/bin/node'${suffix}`,
+              timeout: 1,
+            },
+          ],
+        },
+        {
+          hooks: [
+            { type: 'command', command: `'/other/node'${suffix}`, timeout: 1 },
+          ],
+        },
+        { hooks: [{ type: 'command', command: userCommand }] },
+        { hooks: [] },
+      );
+      writeFileSync(configPath, JSON.stringify(config));
+      assert.equal(
+        (await service.verify(host, { hostRoot })).status,
+        'conflict',
+      );
+      assert.equal(
+        (await service.install(host, { hostRoot, apply: true })).status,
+        'applied',
+      );
+      const installed = JSON.parse(
+        readFileSync(configPath, 'utf8'),
+      ) as typeof config;
+      const groups = installed.hooks.SessionStart!;
+      const commands = groups.flatMap((entry) =>
+        entry.hooks.map((hook) => hook.command),
+      );
+      assert.deepEqual(commands, [userCommand, canonical]);
+      assert(groups.some((entry) => entry.hooks.length === 0));
+      assert.equal(
+        (await service.verify(host, { hostRoot })).status,
+        'verified',
+      );
+      assert.equal(
+        (await service.install(host, { hostRoot, apply: true })).status,
+        'unchanged',
+      );
+    } finally {
+      cleanup(root);
+      cleanup(hostRoot);
+    }
   }
 });
 
@@ -281,6 +421,67 @@ test('installs Codex hooks without inventing compact support', async () => {
   }
 });
 
+test('managed hook timeouts can increase without blocking verification or duplicating installation', async () => {
+  const root = workspace();
+  const hostRoot = makeTempDir('host-hook-timeout');
+  try {
+    const service = new HostIntegrationService({
+      root,
+      homeDir: hostRoot,
+      pathEnv: '',
+      runtimeEntry: runtimeEntry(),
+      hostVersion: '2.1.292',
+    });
+    assert.equal(
+      (await service.install('claude', { hostRoot, apply: true })).ok,
+      true,
+    );
+    const path = join(hostRoot, 'settings.json');
+    const settings = JSON.parse(readFileSync(path, 'utf8')) as {
+      hooks: Record<
+        string,
+        { hooks: { type: string; command: string; timeout: number }[] }[]
+      >;
+    };
+    assert.equal(settings.hooks.SessionStart![0]!.hooks[0]!.timeout, 5);
+    settings.hooks.SessionStart![0]!.hooks[0]!.timeout = 30;
+    writeFileSync(path, JSON.stringify(settings));
+    assert.equal(
+      (await service.verify('claude', { hostRoot })).status,
+      'verified',
+    );
+    assert.equal(
+      (await service.install('claude', { hostRoot, apply: true })).ok,
+      true,
+    );
+    const reinstalled = JSON.parse(
+      readFileSync(path, 'utf8'),
+    ) as typeof settings;
+    assert.equal(reinstalled.hooks.SessionStart!.length, 1);
+    assert.equal(reinstalled.hooks.SessionStart![0]!.hooks.length, 1);
+    assert.equal(reinstalled.hooks.SessionStart![0]!.hooks[0]!.timeout, 30);
+    assert.equal(
+      (await service.install('claude', { hostRoot, apply: true })).status,
+      'unchanged',
+    );
+    reinstalled.hooks.SessionStart![0]!.hooks[0]!.timeout = 1;
+    writeFileSync(path, JSON.stringify(reinstalled));
+    const before = readFileSync(path);
+    assert.equal(
+      (await service.verify('claude', { hostRoot })).status,
+      'conflict',
+    );
+    assert.equal(
+      (await service.install('claude', { hostRoot, apply: true })).status,
+      'conflict',
+    );
+    assert.deepEqual(readFileSync(path), before);
+  } finally {
+    cleanup(root);
+    cleanup(hostRoot);
+  }
+});
+
 test('installs a Pi extension shim with a relative runtime reference', async () => {
   const root = workspace();
   const hostRoot = makeTempDir('host-pi');
@@ -304,7 +505,27 @@ test('installs a Pi extension shim with a relative runtime reference', async () 
     assert(!extension.includes('file:///'));
     assert(!extension.includes('src/hosts'));
     assert(extension.includes('createPiExtension'));
-    assert.equal(existsSync(join(hostRoot, 'templates/pi/runtime.mjs')), true);
+    assert.equal(
+      existsSync(join(hostRoot, 'extensions/pappra/runtime.mjs')),
+      true,
+    );
+    assert.equal(existsSync(join(hostRoot, 'templates/pi/runtime.mjs')), false);
+    const loaded = spawnSync(
+      process.execPath,
+      [
+        '--input-type=module',
+        '-e',
+        `const { default: install } = await import(${JSON.stringify(join(hostRoot, 'extensions/pappra/index.ts'))});
+const handlers = new Map();
+install({ on(event, handler) { handlers.set(event, handler); }, registerCommand() {} });
+if (!handlers.has('session_start')) throw new Error('Missing startup handler');
+await handlers.get('session_start')({}, { cwd: ${JSON.stringify(root)}, sessionManager: { getSessionId() { return 'installed-pi-loader'; } } });
+process.stdout.write('loaded');`,
+      ],
+      { cwd: root, encoding: 'utf8', timeout: 10_000 },
+    );
+    assert.equal(loaded.status, 0, loaded.stderr);
+    assert.equal(loaded.stdout, 'loaded');
     assert.equal(
       readFileSync(join(hostRoot, 'skills/pappra/SKILL.md'), 'utf8').includes(
         '# Pappra',
@@ -635,6 +856,23 @@ test('maps only observed native event shapes', () => {
   );
   assert.equal(compact.ok, true);
   if (compact.ok) assert.equal(compact.input.event, 'compact');
+
+  for (const host of ['claude', 'codex'] as const) {
+    for (const source of ['clear', 'compact'] as const) {
+      const sessionStart = mapNativeHookEvent(
+        host,
+        { hook_event_name: 'SessionStart', cwd: '/tmp/example', source },
+        'startup',
+        null,
+      );
+      assert(sessionStart.ok);
+      assert.equal(
+        sessionStart.input.event,
+        source === 'clear' ? 'startup' : 'resume',
+      );
+      assert.equal(sessionStart.input.source, source);
+    }
+  }
 
   const unsupported = mapNativeHookEvent(
     'codex',

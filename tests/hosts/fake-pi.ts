@@ -40,6 +40,7 @@ if (existsSync(sessionFile)) {
 const emit = (record: unknown) =>
   process.stdout.write(`${JSON.stringify(record)}\n`);
 const input = createInterface({ input: process.stdin });
+let stateRequests = 0;
 input.on('line', (line) => {
   const request = parseJson(line);
   if (!object(request)) return;
@@ -65,14 +66,21 @@ input.on('line', (line) => {
     });
   switch (request['type']) {
     case 'get_state':
-      response({
+      stateRequests++;
+      const state = {
         sessionId,
         sessionFile,
         isStreaming: false,
         isCompacting: false,
         pendingMessageCount: 0,
         messageCount: 0,
-      });
+      };
+      if (stateRequests === Number(process.env['FAKE_PI_DELAY_STATE_NUMBER']))
+        setTimeout(
+          () => response(state),
+          Number(process.env['FAKE_PI_RESPONSE_DELAY_MS'] ?? 0),
+        );
+      else response(state);
       break;
     case 'get_messages':
       response({
@@ -95,6 +103,15 @@ input.on('line', (line) => {
       });
       break;
     case 'prompt':
+      if (process.env['FAKE_PI_UNEXPECTED_RESPONSE'] === '1') {
+        emit({
+          type: 'response',
+          id: 'not-an-issued-request',
+          command: 'prompt',
+          success: true,
+        });
+        return;
+      }
       if (process.env['FAKE_PI_ASSISTANT'] === '1') {
         appendFileSync(
           sessionFile,
@@ -107,7 +124,18 @@ input.on('line', (line) => {
         );
       }
       response({ disposition: 'started' });
-      emit({ type: 'agent_settled' });
+      const settle = () => {
+        emit({ type: 'agent_settled' });
+        const total = Number(process.env['FAKE_PI_NOISE_BYTES'] ?? 0);
+        const recordBytes = Number(
+          process.env['FAKE_PI_NOISE_RECORD_BYTES'] ?? 4096,
+        );
+        for (let sent = 0; sent < total; sent += recordBytes)
+          emit({ type: 'message_update', padding: 'x'.repeat(recordBytes) });
+      };
+      const delay = Number(process.env['FAKE_PI_SETTLE_DELAY_MS'] ?? 0);
+      if (delay > 0) setTimeout(settle, delay);
+      else settle();
       break;
     case 'clear_queue':
       response({ steering: [], followUp: [] });

@@ -29,7 +29,7 @@ import { initTask, nowIso, readRecord, taskRootFor } from '../collab/store.js';
 import { observePath, resolveRealpath } from '../infra/fs.js';
 import { isPathInside, samePath } from '../schemas/paths.js';
 import { ensureStatePathBoundary } from '../install/ownership.js';
-import { startOwnedPiRpc } from '../hosts/pi/rpc.js';
+import { startOwnedPiRpc, type PiOptions } from '../hosts/pi/rpc.js';
 
 const MAX_FILE_BYTES = 1024 * 1024;
 
@@ -2035,6 +2035,16 @@ export class FixtureController implements CollaborationController {
 
 export class PiRpcController implements CollaborationController {
   readonly id = 'pi-rpc';
+  constructor(
+    private readonly options: Pick<
+      PiOptions,
+      | 'requestTimeoutMs'
+      | 'operationTimeoutMs'
+      | 'settleTimeoutMs'
+      | 'maxBytes'
+      | 'maxLogBytes'
+    > = {},
+  ) {}
   async start(
     token: object,
     request: ControllerStartRequest,
@@ -2066,6 +2076,7 @@ export class PiRpcController implements CollaborationController {
       };
     }
     const started = await startOwnedPiRpc({
+      ...this.options,
       taskRoot: request.taskRoot,
       cwd: request.assignment.assignee.cwd,
       assignmentFile: request.prepared.assignment_path,

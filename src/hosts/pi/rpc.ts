@@ -33,6 +33,7 @@ export interface PiOptions {
   signalGraceMs?: number;
   streamCloseGraceMs?: number;
   maxBytes?: number;
+  maxLogBytes?: number;
   maxAgeMinutes?: number;
   clock?: number;
 }
@@ -130,14 +131,19 @@ import { createNonce, nowIso, readRecord } from '../../collab/store.js';
 const RPC_SCHEMA = 'harness-collab/pi-rpc/1';
 const EXECUTION_SCHEMA = 'harness-collab/native-execution/1';
 const DEFAULT_REQUEST_TIMEOUT_MS = 15000;
-const DEFAULT_OPERATION_TIMEOUT_MS = 120000;
+const DEFAULT_OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 5000;
 const DEFAULT_SIGNAL_GRACE_MS = 2000;
 const DEFAULT_STREAM_CLOSE_GRACE_MS = 500;
 const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAX_LOG_BYTES = 16 * 1024 * 1024;
+const MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
+const MAX_RETAINED_RECORDS = 256;
+const MAX_RETAINED_BYTES = 1024 * 1024;
+const MAX_REQUESTS = 4096;
 const DEFAULT_MAX_STDERR_BYTES = 64 * 1024;
 const MAX_REQUEST_TIMEOUT_MS = 60000;
-const MAX_OPERATION_TIMEOUT_MS = 600000;
+const MAX_OPERATION_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 const MAX_PROMPT_BYTES = 20000;
 const HEADER_READ_BYTES = 64 * 1024;
 const PHASES = new Set([
@@ -249,12 +255,18 @@ function attachTransport(child: ChildProcess, options: TransportOptions = {}) {
   const nonce = crypto.randomBytes(6).toString('hex');
 
   const decoder = new StringDecoder('utf8');
-  const records: PiRecord[] = [];
+  const records: (Found & { bytes: number })[] = [];
   const pending = new Map<string, Pending>();
+  const expiredRequests = new Map<string, string>();
   const eventWaiters: EventWaiter[] = [];
   let drainQueue: (() => void)[] = [];
   let text = '';
   let bytes = 0;
+  let recordCount = 0;
+  let retainedBytes = 0;
+  let historyTruncated = false;
+  let lateResponses = 0;
+  let lastSettled: Found | null = null;
   let stderrBytes = 0;
   const stderrChunks: Buffer[] = [];
   let sequence = 0;
@@ -298,10 +310,20 @@ function attachTransport(child: ChildProcess, options: TransportOptions = {}) {
   }
 
   function findRecord(predicate: Predicate, fromOrdinal: number) {
-    for (let index = fromOrdinal; index < records.length; index += 1) {
-      if (predicate(records[index]!, index))
-        return { record: records[index]!, ordinal: index };
+    for (const found of records) {
+      if (
+        found.ordinal >= fromOrdinal &&
+        predicate(found.record, found.ordinal)
+      )
+        return found;
     }
+    // The only awaited lifecycle event must survive noisy tool/token traffic.
+    if (
+      lastSettled &&
+      lastSettled.ordinal >= fromOrdinal &&
+      predicate(lastSettled.record, lastSettled.ordinal)
+    )
+      return lastSettled;
     return null;
   }
 
@@ -326,6 +348,7 @@ function attachTransport(child: ChildProcess, options: TransportOptions = {}) {
   }
 
   function handleLine(line: string) {
+    if (fatal) return;
     const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line;
     if (!trimmed.length) return;
     if (onRecord) {
@@ -351,10 +374,31 @@ function attachTransport(child: ChildProcess, options: TransportOptions = {}) {
       );
       return;
     }
-    records.push(record);
+    const ordinal = recordCount++;
+    const recordBytes = Buffer.byteLength(trimmed);
+    records.push({ record, ordinal, bytes: recordBytes });
+    retainedBytes += recordBytes;
+    if (record.type === 'agent_settled')
+      lastSettled = { record: { type: 'agent_settled' }, ordinal };
+    while (
+      records.length > MAX_RETAINED_RECORDS ||
+      retainedBytes > MAX_RETAINED_BYTES
+    ) {
+      retainedBytes -= records.shift()!.bytes;
+      historyTruncated = true;
+    }
     if (record.type === 'response') {
       const waiter = record.id !== undefined ? pending.get(record.id) : null;
       if (!waiter) {
+        if (
+          record.id !== undefined &&
+          expiredRequests.get(record.id) === record.command
+        ) {
+          expiredRequests.delete(record.id);
+          lateResponses++;
+          settleWaiters();
+          return;
+        }
         fail(
           'invalid',
           record.command === 'parse'
@@ -451,22 +495,28 @@ function attachTransport(child: ChildProcess, options: TransportOptions = {}) {
 
   child.stdout.on('data', (chunk) => {
     bytes += chunk.length;
-    if (bytes > maxBytes) {
-      fail(
-        'invalid',
-        'rpc_response_too_large',
-        `${bytes} bytes of stdout exceeds ${maxBytes}`,
-      );
-      child.kill('SIGKILL');
-      return;
-    }
+    if (fatal) return;
     text += decoder.write(chunk);
     let index = text.indexOf('\n');
     while (index !== -1) {
       const line = text.slice(0, index);
       text = text.slice(index + 1);
+      if (Buffer.byteLength(line) > maxBytes) break;
       handleLine(line);
+      if (fatal) {
+        text = '';
+        return;
+      }
       index = text.indexOf('\n');
+    }
+    if (index !== -1 || Buffer.byteLength(text) > maxBytes) {
+      fail(
+        'invalid',
+        'rpc_response_too_large',
+        `one stdout record exceeds ${maxBytes} bytes`,
+      );
+      text = '';
+      child.kill('SIGKILL');
     }
   });
   child.stderr.on('data', (chunk) => {
@@ -506,11 +556,16 @@ function attachTransport(child: ChildProcess, options: TransportOptions = {}) {
       return Promise.reject(
         new PiRpcRefusal('rpc_exited_early', 'needs_input'),
       );
+    if (sequence >= MAX_REQUESTS)
+      return Promise.reject(
+        new PiRpcRefusal('rpc_request_limit', 'needs_input'),
+      );
     const id = `pirpc-${nonce}-${sequence}`;
     sequence += 1;
     return new Promise<PiRecord>((resolve, reject) => {
       const timer = setTimeout(() => {
         pending.delete(id);
+        expiredRequests.set(id, type);
         reject(
           new PiRpcRefusal(
             'rpc_response_deadline',
@@ -539,6 +594,10 @@ function attachTransport(child: ChildProcess, options: TransportOptions = {}) {
     if (streamsClosed)
       return Promise.reject(
         new PiRpcRefusal('rpc_exited_early', 'needs_input'),
+      );
+    if (eventWaiters.length >= MAX_RETAINED_RECORDS)
+      return Promise.reject(
+        new PiRpcRefusal('rpc_waiter_limit', 'needs_input'),
       );
     return new Promise<Found>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -622,8 +681,17 @@ function attachTransport(child: ChildProcess, options: TransportOptions = {}) {
   }
 
   return {
-    records,
-    recordCount: () => records.length,
+    recordCount: () => recordCount,
+    capture: () => ({
+      stdout_bytes: bytes,
+      received_records: recordCount,
+      retained_records: records.length,
+      retained_bytes: retainedBytes,
+      history_truncated: historyTruncated,
+      late_responses: lateResponses,
+      stderr_bytes: stderrBytes,
+      stderr_truncated: stderrBytes > maxStderrBytes,
+    }),
     fatal: () => fatal,
     parentExited: () => declared(),
     streamsDetached: () => streamsDetached,
@@ -840,6 +908,19 @@ export async function startOwnedPiRpc(options: PiOptions) {
   };
 
   let namespaceLost = false;
+  let logBytes = 0;
+  let omittedLogRecords = 0;
+  const logCapture = () => ({
+    max_bytes: opts.maxLogBytes,
+    written_bytes: logBytes,
+    omitted_records: omittedLogRecords,
+    complete:
+      omittedLogRecords === 0 &&
+      !namespaceLost &&
+      rpc.fatal() === null &&
+      rpc.parentExited() &&
+      !rpc.streamsDetached(),
+  });
   const rpc = attachTransport(child, {
     requestTimeoutMs: opts.requestTimeoutMs,
     shutdownTimeoutMs: opts.shutdownTimeoutMs,
@@ -848,6 +929,11 @@ export async function startOwnedPiRpc(options: PiOptions) {
     maxBytes: opts.maxBytes,
     onRecord: (line: string) => {
       if (namespaceLost) return;
+      const lineBytes = Buffer.byteLength(line) + 1;
+      if (omittedLogRecords > 0 || logBytes + lineBytes > opts.maxLogBytes) {
+        omittedLogRecords++;
+        return;
+      }
       try {
         assertNamespaceGuard(opts);
       } catch {
@@ -856,8 +942,14 @@ export async function startOwnedPiRpc(options: PiOptions) {
       }
       try {
         fs.appendFileSync(artifacts.eventsFile, `${line}\n`);
-      } catch {
+        logBytes += lineBytes;
+      } catch (error) {
         namespaceLost = true;
+        throw new PiRpcRefusal(
+          'evidence_write_failed',
+          'failed',
+          errorDetail(error),
+        );
       }
     },
   });
@@ -870,17 +962,24 @@ export async function startOwnedPiRpc(options: PiOptions) {
   let lastPromptOrdinal = 0;
   let operationError: unknown = null;
   let finishPromise: Promise<PiFinish> | null = null;
+  let operationTimer: NodeJS.Timeout | undefined;
 
   const setOperationError = (error: unknown) => {
     operationError = operationError ?? error;
   };
 
-  async function request(type: string, fields: Record<string, unknown> = {}) {
+  async function request(
+    type: string,
+    fields: Record<string, unknown> = {},
+    cleanup = false,
+  ) {
     const remaining = opts.deadlineAt - Date.now();
-    if (remaining <= 0)
+    if (!cleanup && remaining <= 0)
       throw new PiRpcRefusal('operation_deadline', 'needs_input');
     return rpc.request(type, fields, {
-      timeoutMs: Math.min(opts.requestTimeoutMs, remaining),
+      timeoutMs: cleanup
+        ? opts.requestTimeoutMs
+        : Math.min(opts.requestTimeoutMs, remaining),
     });
   }
 
@@ -1093,8 +1192,11 @@ export async function startOwnedPiRpc(options: PiOptions) {
    * reported file must exist, its header must carry the contracted id and cwd, and once bound it
    * may not switch to a different path.
    */
-  async function assertIdentity({ requireBinding = false } = {}) {
-    const response = await request('get_state');
+  async function assertIdentity({
+    requireBinding = false,
+    cleanup = false,
+  } = {}) {
+    const response = await request('get_state', {}, cleanup);
     const data = response.data;
     if (!isObject(data) || typeof data.sessionId !== 'string')
       throw new PiRpcRefusal('state_malformed');
@@ -1303,7 +1405,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
     },
 
     /** Bounded wait for the run started by `prompt` to settle. Used by the run helper. */
-    async awaitSettled({ timeoutMs = opts.settleTimeoutMs } = {}) {
+    async awaitSettled({ timeoutMs = opts.operationTimeoutMs } = {}) {
       try {
         if (proof.prompt?.disposition === 'handled') return null;
         const found = await rpc.waitForEvent(
@@ -1342,7 +1444,10 @@ export async function startOwnedPiRpc(options: PiOptions) {
             : (options.reason ?? 'bounded RPC cancellation request');
         if (verifiedIntent === null)
           assertCurrentAuthority({ requireResources: false });
-        const before = await assertIdentity({ requireBinding: true });
+        const before = await assertIdentity({
+          requireBinding: true,
+          cleanup: true,
+        });
         if (intent !== undefined)
           verifiedIntent = await verifyCancellationIntent(intent);
         assertNamespaceGuard(opts);
@@ -1377,7 +1482,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
         }
         assertNamespaceGuard(opts);
         assertCurrentAuthority({ requireResources: false });
-        const clear = await request('clear_queue');
+        const clear = await request('clear_queue', {}, true);
         entry.clear_queue = {
           id: clear.id,
           steering: Array.isArray(clear.data?.steering)
@@ -1387,7 +1492,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
             ? clear.data.followUp
             : [],
         };
-        const abort = await request('abort');
+        const abort = await request('abort', {}, true);
         entry.abort = {
           id: abort.id,
           success: abort.success === true,
@@ -1402,7 +1507,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
             (record) => record.type === 'agent_settled',
             {
               fromOrdinal: ordinalBeforeAbort,
-              timeoutMs: eventTimeout(opts.settleTimeoutMs),
+              timeoutMs: opts.settleTimeoutMs,
             },
           );
         } catch (error) {
@@ -1413,7 +1518,10 @@ export async function startOwnedPiRpc(options: PiOptions) {
         if (settledEvent)
           entry.agent_settled = { ordinal: settledEvent.ordinal, at: nowIso() };
         try {
-          const after = await assertIdentity({ requireBinding: true });
+          const after = await assertIdentity({
+            requireBinding: true,
+            cleanup: true,
+          });
           entry.native_idle =
             after.data.isStreaming === false &&
             after.data.isCompacting === false &&
@@ -1448,6 +1556,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
      */
     finish(): Promise<PiFinish> {
       if (finishPromise) return finishPromise;
+      clearTimeout(operationTimer);
       finishPromise = (async () => {
         let exit = null;
         let shutdownError: unknown = null;
@@ -1524,6 +1633,8 @@ export async function startOwnedPiRpc(options: PiOptions) {
             shutdown_timeout_ms: opts.shutdownTimeoutMs,
             stream_close_grace_ms: opts.streamCloseGraceMs,
             max_bytes: opts.maxBytes,
+            max_log_bytes: opts.maxLogBytes,
+            cancel_settle_timeout_ms: opts.settleTimeoutMs,
             model_override: null,
             effort_override: null,
           },
@@ -1545,6 +1656,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
           },
           planned_outcome: outcome,
           rpc_child_pid: child.pid ?? null,
+          rpc_capture: { ...rpc.capture(), log: logCapture() },
         };
 
         let namespaceError: string | null = null;
@@ -1605,7 +1717,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
           try {
             fs.writeFileSync(
               artifacts.proofFile,
-              `${JSON.stringify({ ...proof, finished_at: finishedAt, exit }, null, 2)}\n`,
+              `${JSON.stringify({ ...proof, finished_at: finishedAt, exit, rpc_capture: { ...rpc.capture(), log: logCapture() } }, null, 2)}\n`,
               { flag: 'wx', mode: 0o600 },
             );
           } catch (error) {
@@ -1738,6 +1850,8 @@ export async function startOwnedPiRpc(options: PiOptions) {
           evidence: {
             evidence_dir: opts.evidenceDir,
             events_file: artifacts.eventsFile,
+            events_complete: logCapture().complete,
+            events_omitted_records: omittedLogRecords,
             execution_file:
               namespaceError === null && !evidenceError
                 ? artifacts.executionFile
@@ -1764,6 +1878,14 @@ export async function startOwnedPiRpc(options: PiOptions) {
       return finishPromise;
     },
   };
+  operationTimer = setTimeout(
+    () => {
+      setOperationError(new PiRpcRefusal('operation_deadline', 'needs_input'));
+      void session.finish().catch(() => {});
+    },
+    Math.max(1, opts.deadlineAt - Date.now()),
+  );
+  if (typeof operationTimer.unref === 'function') operationTimer.unref();
   // Accepted alias for callers of the earlier revision; like `finish` it takes no arguments,
   // so it cannot override the authoritative outcome.
 
@@ -1771,6 +1893,7 @@ export async function startOwnedPiRpc(options: PiOptions) {
   try {
     await assertIdentity({ requireBinding: false });
   } catch (error) {
+    setOperationError(error);
     const failure = await session.finish();
     return {
       ok: false as const,
@@ -1973,11 +2096,22 @@ function normalizeOwnedOptions(options: PiOptions) {
   const maxBytes =
     options.maxBytes === undefined
       ? DEFAULT_MAX_BYTES
-      : Number.isSafeInteger(options.maxBytes) && options.maxBytes > 0
+      : Number.isSafeInteger(options.maxBytes) &&
+          options.maxBytes > 0 &&
+          options.maxBytes <= MAX_CAPTURE_BYTES
         ? options.maxBytes
         : (() => {
             throw new PiRpcRefusal('max_bytes_out_of_range');
           })();
+  const maxLogBytes =
+    options.maxLogBytes === undefined
+      ? DEFAULT_MAX_LOG_BYTES
+      : boundedTimeout(
+          options.maxLogBytes,
+          DEFAULT_MAX_LOG_BYTES,
+          MAX_CAPTURE_BYTES,
+          'max_log_bytes_out_of_range',
+        );
   const maxAgeMinutes =
     options.maxAgeMinutes === undefined ? 30 : options.maxAgeMinutes;
   if (!Number.isFinite(maxAgeMinutes) || maxAgeMinutes < 0)
@@ -2013,6 +2147,7 @@ function normalizeOwnedOptions(options: PiOptions) {
     signalGraceMs,
     streamCloseGraceMs,
     maxBytes,
+    maxLogBytes,
     maxAgeMinutes,
     namespaceGuard: options.namespaceGuard,
     deadlineAt: Date.now() + operationTimeoutMs,

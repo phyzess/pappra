@@ -161,6 +161,8 @@ function parseOptions(args: readonly string[]) {
       prepared: { type: 'string' },
       capabilities: { type: 'string' },
       controller: { type: 'string' },
+      'rpc-request-timeout-ms': { type: 'string' },
+      'rpc-operation-timeout-ms': { type: 'string' },
       'domain-root': { type: 'string' },
       'task-root': { type: 'string' },
       message: { type: 'string' },
@@ -766,6 +768,32 @@ export async function runCli(
       '--from, --tarball, --bind and --force are only valid for runtime.',
     );
     return 2;
+  }
+
+  const rpcRequestTimeout = values['rpc-request-timeout-ms'];
+  const rpcOperationTimeout = values['rpc-operation-timeout-ms'];
+  for (const [name, value, maximum] of [
+    ['rpc-request-timeout-ms', rpcRequestTimeout, 60_000],
+    ['rpc-operation-timeout-ms', rpcOperationTimeout, 86_400_000],
+  ] as const) {
+    if (value === undefined) continue;
+    if (
+      command !== 'collab' ||
+      collaborationAction !== 'run' ||
+      values.controller !== 'pi-rpc' ||
+      !/^[0-9]+$/.test(value) ||
+      !Number.isSafeInteger(Number(value)) ||
+      Number(value) < 1 ||
+      Number(value) > maximum
+    ) {
+      failure(
+        output,
+        json,
+        'invalid_arguments',
+        `--${name} requires collab run --controller pi-rpc and an integer from 1 to ${maximum}.`,
+      );
+      return 2;
+    }
   }
 
   let info: ReturnType<typeof getPackageInfo>;
@@ -1619,6 +1647,12 @@ export async function runCli(
         capabilitiesFile: values.capabilities ?? null,
         controller: values.controller ?? null,
         domainRoot: values['domain-root'] ?? null,
+        ...(rpcRequestTimeout === undefined
+          ? {}
+          : { rpcRequestTimeoutMs: Number(rpcRequestTimeout) }),
+        ...(rpcOperationTimeout === undefined
+          ? {}
+          : { rpcOperationTimeoutMs: Number(rpcOperationTimeout) }),
       },
       output,
     );

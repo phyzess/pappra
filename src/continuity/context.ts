@@ -200,7 +200,7 @@ export async function snapshotRepository(
     const diffBytes = Buffer.from(diffText, 'utf8');
     const parts: Buffer[] = [
       Buffer.from(
-        `PAPPRA-UNTRACKED/2\nP ${statusBytes.length} ${diffBytes.length}\n`,
+        `PAPPRA-UNTRACKED/3\nP ${statusBytes.length} ${diffBytes.length}\n`,
         'utf8',
       ),
       statusBytes,
@@ -233,7 +233,7 @@ export async function snapshotRepository(
           captureStatus = 'partial';
           continue;
         }
-        body = read.value.bytes;
+        body = Buffer.from(read.value.digest, 'utf8');
         entryKind = 'F';
       } else if (observation.kind === 'symlink') {
         const target = await readlink(absolute).catch(() => null);
@@ -241,16 +241,16 @@ export async function snapshotRepository(
           captureStatus = 'partial';
           continue;
         }
-        body = Buffer.from(target, 'utf8');
+        body = Buffer.from(sha256Digest(target), 'utf8');
         entryKind = 'L';
       } else {
         captureStatus = 'partial';
         continue;
       }
       const pathBytes = Buffer.from(path, 'utf8');
-      // F/L is part of the identity: a regular file body and a symlink target
-      // with identical bytes are still different source objects. The target
-      // text is read with readlink and never resolved or opened.
+      // Untracked bytes (including symlink targets) never enter the payload.
+      // Frame only their path, type and digest; F/L keeps distinct object kinds
+      // separate even when a file's bytes equal a symlink's target text.
       const header = Buffer.from(
         `${entryKind} ${pathBytes.length} ${body.length}\n`,
         'utf8',

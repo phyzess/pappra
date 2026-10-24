@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, rename, rm } from 'node:fs/promises';
+import { ensurePrivateState } from '../infra/private-state.js';
 import { dirname } from 'node:path';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
@@ -444,6 +445,10 @@ export async function writeCatalogFile(
     );
   }
   const bytes = Buffer.from(`${JSON.stringify(parsed.data, null, 2)}\n`);
+  if (scope === 'private') {
+    const prepared = await ensurePrivateState(context.root);
+    if (!prepared.ok) return prepared;
+  }
   const temporary = `${path}.tmp-${randomUUID()}`;
   let handle;
   try {

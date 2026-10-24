@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-export const RUNTIME_MANIFEST_SCHEMA = 'pappra/runtime-manifest/1';
+export const RUNTIME_MANIFEST_SCHEMA = 'pappra/runtime-manifest/2';
+export const RUNTIME_DIGEST_SCHEME = 'sha256-utf8-byte-order-v1';
 export const WORKSPACE_MANIFEST_SCHEMA = 'pappra/install-manifest/1';
 export const INSTALL_JOURNAL_SCHEMA = 'pappra/install-journal/1';
 export const LOCK_SCHEMA = 'pappra/install-lock/1';
@@ -74,6 +75,7 @@ export const runtimeManifestSchema = z.strictObject({
   executable: pathSchema,
   source: runtimeSourceSchema,
   packageDigest: digestSchema,
+  digestScheme: z.literal(RUNTIME_DIGEST_SCHEME),
   smoke: z.strictObject({
     argv: z.array(z.string().max(4096)).max(16),
     exitCode: z.number().int(),

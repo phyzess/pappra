@@ -45,6 +45,22 @@ Observed `.pappra/local/host-events/pi/<digest>.json`:
 the package layout and the generated extension both work. Compact and checkpoint-request
 events were not exercised; they remain unverified for this host.
 
+### Installed Pi extension layout regression check
+
+The project-settings installer now places both `index.ts` and its imported
+`runtime.mjs` in `.pi/extensions/pappra/`. Keeping the runtime under
+`templates/pi/` only satisfied a file-presence check; the native loader could
+not resolve the entry's relative import.
+
+An isolated smoke on 2026-10-24 installed the current extension into a scratch
+workspace, then ran the available Pi `1.4.0` executable with a fresh
+`PI_CODING_AGENT_DIR`, offline mode, no tools/MCP, and RPC mode. It used automatic
+project extension discovery and project trust for that run. `get_commands`
+returned `pappra-checkpoint`, and the actual `session_start` handler wrote one
+`pappra/host-event/1` record. No model prompt was sent and no user host settings
+were changed. This validates the installed entry/runtime layout; it does not
+expand the pinned `1.3.0` capability matrix or establish compact support.
+
 ## Codex 0.163.0 — plugin hooks unsupported, user-scope hooks verified
 
 Codex is the one host whose hooks do not live in the workspace. Two separate findings:
@@ -121,6 +137,28 @@ Observed `.pappra/local/host-events/claude/<digest>.json`:
 The hook command uses `"${CLAUDE_PLUGIN_ROOT}/hooks/pappra-hook.mjs"` (double-quoted; the
 validator rejects the unquoted form). `PostCompact` was not exercised from a non-interactive
 session, so only startup is verified for this host.
+
+### Hook runner and shared-settings ownership
+
+Generated command hooks resolve `node` from the host's `PATH`; they do not pin
+the installer's Node executable. Reinstall recognizes older single-quoted
+absolute Node runners only when the script path, host, lifecycle argument and
+`pappra-managed` marker match the selected installation. It replaces and
+deduplicates those entries while preserving unrelated hooks and settings.
+The default outer hook timeout is five seconds, covering the bounded stdin and
+lifecycle work plus process startup. Larger integer timeouts are retained during
+reinstall and accepted by verification. An edited managed matcher, an invalid
+or too-short timeout, or an extra handler field remains a conflict; the old
+absolute-runner default of one second is upgraded during migration.
+Verification checks the managed entries and packaged files, rather than the
+digest of the entire shared native settings file.
+
+Synthetic stdin checks of the current standalone hook bundle cover both
+Claude and Codex `SessionStart` envelopes with `source: clear` and
+`source: compact`: all four exit successfully with no stderr. `clear` refreshes
+startup context; `compact` refreshes resume context, retaining the original
+source in the local event. This does not claim a new native Codex compact hook:
+Codex `PostCompact` remains unsupported.
 
 ## Pi bootstrap bundle (opt-in, unverified load)
 

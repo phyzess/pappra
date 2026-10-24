@@ -98,6 +98,10 @@ test('preserves user edits to managed matcher and timeout', async () => {
     managed.timeout = 99;
     writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
     const before = readFileSync(path, 'utf8');
+    assert.equal(
+      (await service.verify('claude', { hostRoot })).status,
+      'conflict',
+    );
 
     const second = await service.install('claude', { hostRoot, apply: true });
     assert.equal(second.ok, false);

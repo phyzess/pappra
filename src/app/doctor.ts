@@ -380,6 +380,21 @@ function runtimeCheck(
       nextActions: ['Run pappra init to establish a workspace runtime target.'],
     });
   }
+  if (passive?.status === 'incompatible') {
+    return makeCheck({
+      id: 'runtime.state',
+      code: diagnosticCodes.runtimeStateIncompatible,
+      status: 'error',
+      severity: 'error',
+      title: 'Runtime state requires reinitialization',
+      summary: diagnosticsSummary(passive.diagnostics),
+      source: passive.runtimeRoot,
+      observedAt,
+      nextActions: passive.diagnostics.flatMap((entry) =>
+        entry.hint === null ? [] : [entry.hint],
+      ),
+    });
+  }
   if (machineRuntime === null) {
     if (passive === null) {
       return makeCheck({

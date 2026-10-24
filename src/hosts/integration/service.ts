@@ -28,12 +28,18 @@ import {
 } from '../../schemas/host.js';
 import type { EvidenceRef } from '../../schemas/evidence.js';
 import { observePath, readFileBounded, sha256Digest } from '../../infra/fs.js';
+import { ensurePrivateState } from '../../infra/private-state.js';
 import { isPathInside } from '../../schemas/paths.js';
 import { ensureStatePathBoundary } from '../../install/ownership.js';
 import { getPackageInfo } from '../../package-info.js';
 import { detectPassiveHosts } from '../detect.js';
 import { installPathForBundleFile, loadHostBundle } from './bundle.js';
-import { hostConfigRelativePath, renderHookConfigPatch } from './templates.js';
+import {
+  hostConfigRelativePath,
+  isManagedHookCommand,
+  MIN_HOOK_TIMEOUT_SECONDS,
+  renderHookConfigPatch,
+} from './templates.js';
 
 import {
   HOST_PLUGIN_HOOKS,
@@ -354,29 +360,31 @@ function managedGroupHasUserEdits(
 ): boolean {
   const hookValues = group.hooks;
   if (!Array.isArray(hookValues)) return false;
-  const hasManaged = hookValues.some((hook) =>
-    isExactManagedHook(hook, commands),
-  );
+  const hasManaged = hookValues.some((hook) => isManagedHook(hook, commands));
   if (!hasManaged) return false;
   const extraGroupKeys = Object.keys(group).filter((key) => key !== 'hooks');
   if (extraGroupKeys.length > 0) return true;
   return hookValues.some((hook) => {
-    if (!isExactManagedHook(hook, commands)) return false;
+    if (!isManagedHook(hook, commands)) return false;
     const keys = Object.keys(hook);
+    const validTimeout =
+      typeof hook.timeout === 'number' &&
+      Number.isSafeInteger(hook.timeout) &&
+      hook.timeout >= MIN_HOOK_TIMEOUT_SECONDS;
+    const legacyDefault =
+      hook.timeout === 1 &&
+      typeof hook.command === 'string' &&
+      !commands.has(hook.command);
     return (
       keys.some(
         (key) => key !== 'type' && key !== 'command' && key !== 'timeout',
       ) ||
-      !('timeout' in hook) ||
-      hook.timeout !== 1
+      (!validTimeout && !legacyDefault)
     );
   });
 }
 
-function isExactManagedHook(
-  value: unknown,
-  commands: ReadonlySet<string>,
-): boolean {
+function isManagedHook(value: unknown, commands: ReadonlySet<string>): boolean {
   return (
     typeof value === 'object' &&
     value !== null &&
@@ -385,7 +393,7 @@ function isExactManagedHook(
     value.type === 'command' &&
     'command' in value &&
     typeof value.command === 'string' &&
-    commands.has(value.command)
+    isManagedHookCommand(value.command, commands)
   );
 }
 
@@ -443,6 +451,7 @@ function managedConfig(
     const groups = current === undefined ? [] : (current as unknown[]);
     const commands = managedHookCommands(entries);
     const preserved: unknown[] = [];
+    let managedTimeout = MIN_HOOK_TIMEOUT_SECONDS;
     for (const group of groups) {
       if (
         typeof group !== 'object' ||
@@ -461,18 +470,42 @@ function managedConfig(
             diagnosticCodes.host_install_conflict,
             `Managed host hook entry was edited by the user: ${path}`,
             path,
-            'Review the edited matcher, timeout, or handler fields explicitly; Pappra preserves the edited group and does not reinstall it.',
+            `Review the matcher and handler fields, and use an integer timeout of at least ${MIN_HOOK_TIMEOUT_SECONDS} seconds. Pappra preserves invalid or unsupported edits.`,
           ),
         };
       }
+      if (!group.hooks.some((hook) => isManagedHook(hook, commands))) {
+        preserved.push(group);
+        continue;
+      }
+      for (const hook of group.hooks) {
+        if (
+          isManagedHook(hook, commands) &&
+          typeof hook === 'object' &&
+          hook !== null &&
+          'timeout' in hook &&
+          typeof hook.timeout === 'number'
+        ) {
+          managedTimeout = Math.max(managedTimeout, hook.timeout);
+        }
+      }
       const remaining = group.hooks.filter(
-        (hook) => !isExactManagedHook(hook, commands),
+        (hook) => !isManagedHook(hook, commands),
       );
       if (remaining.length > 0) {
         preserved.push({ ...group, hooks: remaining });
       }
     }
-    nextHooks[event] = [...preserved, ...entries];
+    nextHooks[event] = [
+      ...preserved,
+      ...entries.map((entry) => ({
+        ...entry,
+        hooks: entry.hooks.map((hook) => ({
+          ...hook,
+          timeout: managedTimeout,
+        })),
+      })),
+    ];
   }
   const next = { ...base, hooks: nextHooks };
   return {
@@ -553,14 +586,20 @@ function configHasExpectedHooks(
       ) {
         continue;
       }
+      if (managedGroupHasUserEdits(group, commands)) return false;
       for (const hook of group.hooks) {
-        if (!isExactManagedHook(hook, commands)) continue;
+        if (!isManagedHook(hook, commands)) continue;
         if (
           typeof hook === 'object' &&
           hook !== null &&
           'command' in hook &&
           typeof hook.command === 'string'
         ) {
+          // A stale runner or duplicate entry requires reinstalling, while
+          // unrelated user configuration has no bearing on managed wiring.
+          if (!commands.has(hook.command) || found.has(hook.command)) {
+            return false;
+          }
           found.add(hook.command);
         }
       }
@@ -1497,6 +1536,28 @@ export class HostIntegrationService {
     const applied: string[] = [];
     const residualPaths: string[] = [];
     const diagnostics: Diagnostic[] = [];
+    if (isPathInside(join(this.#root, '.pappra', 'local'), plan.hostRoot)) {
+      const privateState = await ensurePrivateState(this.#root);
+      if (!privateState.ok) {
+        return hostIntegrationResultSchema.parse({
+          schema: 'pappra/host-integration/1',
+          ok: false,
+          status: 'failed',
+          plan,
+          appliedFiles: [],
+          residualPaths: [],
+          diagnostics: [
+            diagnostic(
+              privateState.code,
+              privateState.message,
+              this.#root,
+              privateState.nextAction ??
+                'Protect private workspace state before installing the host.',
+            ),
+          ],
+        });
+      }
+    }
     const lockResult = await acquireHostInstallLock(plan.hostRoot);
     if (!lockResult.ok) {
       return hostIntegrationResultSchema.parse({
@@ -1903,6 +1964,9 @@ export class HostIntegrationService {
     }
     let status: HostVerification['status'] = 'verified';
     for (const file of manifest.files) {
+      // Native settings are shared with the user. Their complete digest is a
+      // write-plan pin, not an ownership claim over unrelated configuration.
+      if (file.path === manifest.configPath) continue;
       const path = join(hostRoot, ...file.path.split('/'));
       const digest = await fileDigest(path);
       if (digest !== file.digest) {
@@ -1929,7 +1993,6 @@ export class HostIntegrationService {
       );
       if (
         !config.ok ||
-        manifestFiles.get(manifest.configPath) !== config.value.digest ||
         !configHasExpectedHooks(
           host === 'codex' ? 'codex' : 'claude',
           config.value.bytes,
@@ -1942,7 +2005,7 @@ export class HostIntegrationService {
           id: 'host.config',
           status: 'error',
           detail:
-            'Host config is missing, differs from its manifest digest, or lacks the exact expected Pappra entries.',
+            'Host config is missing or its managed Pappra hook entries changed, are duplicated, or are incomplete.',
         });
       } else {
         checks.push({

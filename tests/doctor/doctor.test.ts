@@ -223,6 +223,41 @@ test('reports passive runtime content match without claiming current callability
   }
 });
 
+test('reports unsupported beta runtime state as requiring reinitialization without migrating it', async () => {
+  const fixture = isolated();
+  try {
+    createWorkspace(fixture.root);
+    const manifest = await installFor(fixture.root, fixture.data);
+    const file = join(manifest.runtimeRoot, 'install-manifest.json');
+    const bytes = JSON.stringify({
+      ...manifest,
+      schema: 'pappra/runtime-manifest/1',
+      digestScheme: undefined,
+    });
+    writeFileSync(file, bytes);
+    const report = await runDoctor({
+      root: fixture.root,
+      dataDir: fixture.data,
+      homeDir: fixture.home,
+      pathEnv: fixture.bin,
+    });
+    assert.equal(report.runtime.passiveStatus, 'incompatible');
+    assert.equal(
+      check(report, 'runtime.state').code,
+      'runtime_state_incompatible',
+    );
+    assert(
+      check(report, 'runtime.state').nextActions.some((action) =>
+        action.includes('reconfigure'),
+      ),
+    );
+    assert.equal(readFileSync(file, 'utf8'), bytes);
+    assert(doctorReportSchema.safeParse(report).success);
+  } finally {
+    for (const path of Object.values(fixture)) cleanup(path);
+  }
+});
+
 test('reports corrupted runtime content without repairing it', async () => {
   const fixture = isolated();
   try {

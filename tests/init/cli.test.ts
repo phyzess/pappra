@@ -65,6 +65,21 @@ function runtimeEnv(temporary: string): NodeJS.ProcessEnv {
   return { PAPPRA_DATA_HOME: join(temporary, 'pappra-data') };
 }
 
+/** Explicit no-op apply still serializes with installers and recovery. */
+function assertUnchangedAfterApply(
+  workspaceRoot: string,
+  before: ReadonlyMap<string, string>,
+): void {
+  const after = snapshotTree(workspaceRoot);
+  const directory = '.pappra/local';
+  // Creating/removing apply.lock changes this directory's mtime. Preserve all
+  // file bytes/timestamps and every other directory's metadata in the check.
+  assert.match(before.get(directory) ?? '', /^dir:/);
+  assert.match(after.get(directory) ?? '', /^dir:/);
+  after.set(directory, before.get(directory)!);
+  assert.deepEqual(after, before);
+}
+
 test('init runtime preview is read-only; --apply ensures and reuses an isolated runtime', async () => {
   const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-cli-'));
   const dataDir = join(temporary, 'pappra-data');
@@ -200,7 +215,7 @@ test('init runtime preview is read-only; --apply ensures and reuses an isolated 
         'No knowledge documents are registered by init.',
       ),
     );
-    assert.deepEqual(snapshotTree(temporary), beforeHumanApply);
+    assertUnchangedAfterApply(temporary, beforeHumanApply);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
@@ -263,7 +278,7 @@ test('init --no-runtime reports no-changes and exit 0 once a matching runtime is
       (settledApply as Record<string, unknown>).appliedFiles,
       [],
     );
-    assert.deepEqual(snapshotTree(workspace), before);
+    assertUnchangedAfterApply(workspace, before);
     assert.equal(existsSync(join(temporary, 'pappra-data')), false);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -848,7 +863,7 @@ test('default init preserves applied configuration and reports runtime lock resi
         'workspace configuration state reported above remains in place',
       ),
     );
-    assert.deepEqual(snapshotTree(workspace), beforeHumanFailure);
+    assertUnchangedAfterApply(workspace, beforeHumanFailure);
     assert.deepEqual(snapshotTree(dataDir), userDataBefore);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -919,7 +934,7 @@ test('default init preserves applied configuration when a corrupt runtime blocks
         'configuration state reported above remains in place',
       ),
     );
-    assert.deepEqual(snapshotTree(workspace), beforeHumanFailure);
+    assertUnchangedAfterApply(workspace, beforeHumanFailure);
     assert.deepEqual(snapshotTree(dataDir), userDataBefore);
   } finally {
     rmSync(temporary, { recursive: true, force: true });
@@ -1066,7 +1081,7 @@ ${result.stderr}`,
       humanRepeat.stdout.includes(runtimePaths(version, dataDir).runtimeRoot),
     );
     assert(humanRepeat.stdout.includes('Runtime operation result: reused'));
-    assert.deepEqual(snapshotTree(temporary), beforeHumanRepeat);
+    assertUnchangedAfterApply(temporary, beforeHumanRepeat);
 
     const repeated = invoke(
       ['init', '--config', choices, '--apply', '--json'],

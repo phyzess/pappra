@@ -33,7 +33,12 @@ import {
   writeWorkspaceManifest,
 } from './ownership.js';
 import { observePath, sha256Digest } from '../infra/fs.js';
-import { errorMessage } from '../schemas/outcome.js';
+import {
+  errorMessage,
+  failed,
+  succeeded,
+  type Outcome,
+} from '../schemas/outcome.js';
 
 export interface FileIdentity {
   readonly dev: number;
@@ -685,6 +690,90 @@ async function findIncompleteWorkspaceJournal(
     }
   }
   return { incomplete, unreadable };
+}
+
+/** Read-only gate shared by initial planning and every apply, including no-op plans. */
+export async function inspectWorkspaceInstallReadiness(
+  root: string,
+  ownLock = false,
+): Promise<Outcome<null>> {
+  const paths = workspaceInstallPaths(root);
+  const boundary = await ensureStatePathBoundary(root, paths.lockPath);
+  if (!boundary.ok) return boundary;
+  if (!ownLock && (await observePath(paths.lockPath)).kind !== 'missing') {
+    return failed(
+      diagnosticCodes.initApplyFailed,
+      'Workspace installation is locked.',
+      {
+        nextAction:
+          'Wait for the active init, or run pappra repair to inspect an interrupted install.',
+      },
+    );
+  }
+  const scan = await findIncompleteWorkspaceJournal(root);
+  if (scan.incomplete !== null || scan.unreadable.length > 0) {
+    return failed(
+      diagnosticCodes.initPlanStale,
+      `Workspace installation requires recovery: ${scan.incomplete ?? scan.unreadable[0]}`,
+      {
+        nextAction:
+          'Run pappra repair for this workspace, then regenerate the init plan.',
+      },
+    );
+  }
+  const manifest = await readWorkspaceManifest(root);
+  if (manifest.diagnostics.length > 0)
+    return failed(
+      diagnosticCodes.initPlanStale,
+      manifest.diagnostics[0]!.message,
+      { nextAction: 'Inspect install-manifest.json before retrying init.' },
+    );
+  if (manifest.value !== null) {
+    const identity = await rootIdentityOf(root);
+    if (
+      manifest.value.workspaceRoot !== root ||
+      identity === null ||
+      manifest.value.rootIdentity.dev !== identity.dev ||
+      manifest.value.rootIdentity.ino !== identity.ino
+    ) {
+      return failed(
+        diagnosticCodes.initPlanStale,
+        'Workspace installation belongs to another root identity.',
+        {
+          nextAction:
+            'Inspect the local install manifest; it was not adopted or rewritten.',
+        },
+      );
+    }
+  }
+  return succeeded(null);
+}
+
+/** Serialize a zero-file apply with installation and recovery, without adding an empty journal. */
+export async function verifyWorkspaceInstallReady(
+  root: string,
+): Promise<Outcome<null>> {
+  const paths = workspaceInstallPaths(root);
+  const lock = await acquireInstallLock(
+    paths.lockPath,
+    'apply-workspace-files',
+    root,
+    root,
+  );
+  if (!lock.ok || lock.lock === null)
+    return failed(
+      diagnosticCodes.initApplyFailed,
+      lock.message ?? 'Workspace installation is locked.',
+      { nextAction: 'Run pappra repair to inspect the install lock.' },
+    );
+  let result: Outcome<null>;
+  try {
+    result = await inspectWorkspaceInstallReadiness(root, true);
+  } finally {
+    const released = await releaseInstallLock(lock.path, lock.lock.token);
+    if (!released.ok) result = released;
+  }
+  return result!;
 }
 
 /** Updates the managed machine.json runtime location after a verified install. */

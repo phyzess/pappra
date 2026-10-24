@@ -210,7 +210,10 @@ await import(${JSON.stringify(`file://${fake}`)});
       join(prepared.prepared.prepared_dir, 'prepared.json'),
       {
         capabilitiesFile: box.cardFile,
-        controller: new PiRpcController(),
+        controller: new PiRpcController({
+          requestTimeoutMs: 5000,
+          operationTimeoutMs: 2 * 60 * 60 * 1000,
+        }),
         controllerId: 'pi-rpc',
       },
     );
@@ -233,6 +236,14 @@ await import(${JSON.stringify(`file://${fake}`)});
     if (!finished.ok) return;
     assert.equal(finished.value.status, 'unknown');
     assert.equal(finished.value.outputs.length > 0, true);
+    const execution = JSON.parse(
+      fs.readFileSync(
+        join(prepared.prepared.task_root, 'p10/evidence/pi-rpc.execution.json'),
+        'utf8',
+      ),
+    );
+    assert.equal(execution.limits.request_timeout_ms, 5000);
+    assert.equal(execution.limits.operation_timeout_ms, 2 * 60 * 60 * 1000);
     const text = fs.readFileSync(log, 'utf8');
     assert.match(text, /"type":"prompt","message":"FROZEN_TASK_PROMPT/);
     assert.doesNotMatch(text, /--no-mcp|--tools/);

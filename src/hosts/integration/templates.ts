@@ -1,7 +1,9 @@
-import { basename } from 'node:path';
+import { basename, isAbsolute } from 'node:path';
 import type { HostName, HostLifecycleEvent } from '../../schemas/host.js';
 
 export const PAPPRA_MANAGED_MARKER = 'pappra-managed';
+// Covers bounded stdin collection plus lifecycle work and process startup.
+export const MIN_HOOK_TIMEOUT_SECONDS = 5;
 
 export interface RenderedHostTemplate {
   readonly path: string;
@@ -26,7 +28,31 @@ export function renderHookCommand(
   event: HostLifecycleEvent,
   hookExpression: string,
 ): string {
-  return `${shellQuote(process.execPath)} ${pathExpression(hookExpression)} ${shellQuote(host)} ${shellQuote(event)} # ${PAPPRA_MANAGED_MARKER}`;
+  return `node ${pathExpression(hookExpression)} ${shellQuote(host)} ${shellQuote(event)} # ${PAPPRA_MANAGED_MARKER}`;
+}
+
+/** Recognizes only our exact script/host/event/marker suffix and a Node runner. */
+export function isManagedHookCommand(
+  command: string,
+  expectedCommands: ReadonlySet<string>,
+): boolean {
+  for (const expected of expectedCommands) {
+    if (command === expected) return true;
+    const suffix = expected.slice('node'.length);
+    if (!command.endsWith(suffix)) continue;
+    const runner = command.slice(0, -suffix.length);
+    // Previous packages single-quoted process.execPath. Recognize that one
+    // shell word without interpreting arbitrary shell syntax or user commands.
+    if (!/^'(?:[^']|'\\'')*'$/.test(runner)) continue;
+    const executable = runner.slice(1, -1).replaceAll("'\\''", "'");
+    if (
+      isAbsolute(executable) &&
+      ['node', 'node.exe'].includes(basename(executable))
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 interface HookEntry {
@@ -46,7 +72,7 @@ export function renderHookConfigPatch(
       {
         type: 'command',
         command: renderHookCommand(host, event, hookExpression),
-        timeout: 1,
+        timeout: MIN_HOOK_TIMEOUT_SECONDS,
       },
     ],
   });
