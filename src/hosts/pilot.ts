@@ -88,6 +88,7 @@ function buildArgv({
       ...(trustProject ? ['--approve'] : []),
       resume ? '--session' : '--session-id',
       (resume ?? sessionId)!,
+      '--',
       prompt,
     ];
     return { command: 'pi', argv, session_selector: resume ?? sessionId };
@@ -106,6 +107,7 @@ function buildArgv({
           '--skip-git-repo-check',
           '-c',
           `sandbox_mode="${sandbox}"`,
+          '--',
           prompt,
         ]
       : [
@@ -116,6 +118,7 @@ function buildArgv({
           '-s',
           sandbox,
           '--skip-git-repo-check',
+          '--',
           prompt,
         ];
     return { command: 'codex', argv: base, session_selector: resume ?? null };
@@ -148,6 +151,7 @@ function buildArgv({
       String(maxBudgetUsd),
       resume ? '--resume' : '--session-id',
       (resume ?? sessionId)!,
+      '--',
       prompt,
     ];
     return { command: 'claude', argv, session_selector: resume ?? sessionId };

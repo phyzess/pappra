@@ -31,7 +31,7 @@ import {
 } from '../../workspace/config.js';
 import { CheckpointService } from '../../continuity/service.js';
 import { ensureStatePathBoundary } from '../../install/ownership.js';
-import { readAutoResume, readTaskPin } from '../../app/task-pin.js';
+import { readAutoResume, readTaskPin } from '../../continuity/task-pin.js';
 import { nativeEventFor } from './support.js';
 
 const DEFAULT_MAX_INPUT_BYTES = 1024 * 1024;
@@ -80,6 +80,8 @@ export function renderHostHookOutput(
   result: HostHookResult,
 ): string | null {
   if (result.context === null || result.event === null) return null;
+  // PostCompact is an observation hook, not SessionStart context injection.
+  if (host === 'claude' && result.event === 'compact') return null;
   const context =
     result.context.length > 8000
       ? `${result.context.slice(0, 7997)}...`
@@ -132,9 +134,10 @@ async function boundedAdvisory(
   event: HostLifecycleEvent,
   taskId: string | null,
   workspaceName: string,
+  workspaceId: string,
 ): Promise<string> {
   const lines = [
-    `Pappra workspace "${workspaceName}" is registered for lifecycle event ${event}.`,
+    `Pappra workspace ${JSON.stringify(workspaceName)} is registered for lifecycle event ${event}.`,
   ];
   if (taskId === null) {
     lines.push(
@@ -146,16 +149,24 @@ async function boundedAdvisory(
       taskId,
       currentSession: null,
     });
-    if (!resumed.ok || resumed.packet === null) {
+    if (
+      !resumed.ok ||
+      resumed.packet === null ||
+      resumed.packet.workspaceId !== workspaceId ||
+      resumed.packet.taskId !== taskId ||
+      resumed.packet.identityChecks.some((check) => check.status !== 'ok')
+    ) {
       lines.push(
         `Checkpoint ${taskId} is unavailable or incomplete; manual pappra checkpoint/resume is required.`,
       );
     } else {
       lines.push(`Checkpoint ${taskId} is available for manual review.`);
-      lines.push(`Objective: ${resumed.packet.boundedContext.objective}`);
+      lines.push(
+        `Advisory objective: ${JSON.stringify(resumed.packet.boundedContext.objective)}`,
+      );
       if (resumed.packet.boundedContext.nextActions.length > 0) {
         lines.push(
-          `Next actions: ${resumed.packet.boundedContext.nextActions.join('; ')}`,
+          `Advisory next actions: ${JSON.stringify(resumed.packet.boundedContext.nextActions)}`,
         );
       }
       if (!resumed.packet.executionAllowed) {
@@ -754,6 +765,7 @@ export async function runHostHook(
     value.event,
     value.taskId ?? (autoResume ? pinnedTask!.taskId : null),
     workspaceRead.value.name,
+    workspaceRead.value.workspaceId,
   );
   if (clock() - started > deadline) {
     return result({

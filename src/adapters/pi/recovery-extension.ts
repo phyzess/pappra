@@ -1,8 +1,25 @@
-import path from 'node:path';
+// Pi recovery adapter: composes the opt-in recovery extension above `src/app`
+// and `src/hosts`.
+//
+// Loading this extension installs supported startup/settled/manual
+// reconciliation triggers that each run the durable recovery executor once per
+// observed trigger, gated by the ACTUAL host session (not a configuration
+// assertion) and deduplicated by the executor's durable canonical cause. It does
+// not touch the accepted observation-only native-event producer, never spawns a
+// session or a hidden daemon, never polls for model/worker completion, and never
+// answers approval automatically. There is no known reconnect event: if no
+// supported trigger fires, nothing is reconciled, and a missing host observation
+// stays explicit rather than being manufactured to unblock an enqueue. An initial
+// no-op does not suppress a later genuine cause, and recovery's own settled event
+// cannot re-issue an already-reserved cause (no self-loop).
+//
+// Composition lives here rather than in `src/hosts/integration`: the host layer
+// must not depend on application orchestration. The configuration format is owned
+// by the lower-layer reader re-exported below, so bundle export inside `src/hosts`
+// validates the same bytes without reaching this module.
 import { fileURLToPath } from 'node:url';
 
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { readBoundedFile } from '../../app/bounded-file.js';
 import {
   createHerdrRecoveryController,
   executeRecovery,
@@ -11,26 +28,20 @@ import {
   type RecoveryExecutionResult,
   type RecoveryExpectedSession,
 } from '../../app/collab-recovery-executor.js';
-import type { RecoveryPolicy } from '../../app/collab-recovery-projection.js';
-import type { Identity } from '../../collab/types.js';
+import {
+  readPiRecoveryConfig,
+  type PiRecoveryConfig,
+} from '../../hosts/integration/recovery-config.js';
 
-/**
- * Separate, explicitly configured opt-in Pi recovery controller.
- *
- * Loading this extension installs supported startup/settled/manual reconciliation triggers that each run
- * the durable recovery executor once per observed trigger, gated by the ACTUAL host session (not a
- * configuration assertion) and deduplicated by the executor's durable canonical cause. It does not touch
- * the accepted observation-only native-event producer, never spawns a session or a hidden daemon, never
- * polls for model/worker completion, and never answers approval automatically. There is no known reconnect
- * event: if no supported trigger fires, nothing is reconciled, and a missing host observation stays
- * explicit rather than being manufactured to unblock an enqueue. An initial no-op does not suppress a later
- * genuine cause, and recovery's own settled event cannot re-issue an already-reserved cause (no self-loop).
- */
+export {
+  PI_RECOVERY_CONFIG_SCHEMA,
+  readPiRecoveryConfig,
+  type PiRecoveryConfig,
+  type PiRecoveryConfigLoad,
+  type PiRecoveryExpected,
+} from '../../hosts/integration/recovery-config.js';
 
-export const PI_RECOVERY_CONFIG_SCHEMA = 'pappra/pi-recovery-config/1' as const;
 export const PI_RECOVERY_STATUS_SCHEMA = 'pappra/pi-recovery-status/1' as const;
-
-const MAX_CONFIG_BYTES = 64 * 1024;
 
 export type RecoveryTrigger = 'session_start' | 'agent_settled' | 'manual';
 
@@ -40,35 +51,6 @@ export interface RecoveryHostFacts {
   readonly cwd: string | null;
 }
 
-export interface PiRecoveryExpected {
-  readonly session_id: string;
-  readonly cwd: string;
-  readonly binding_ref: string;
-  readonly binding_digest: string;
-  readonly pane_id: string;
-  readonly harness: string;
-}
-
-export interface PiRecoveryConfig {
-  readonly schema: typeof PI_RECOVERY_CONFIG_SCHEMA;
-  readonly taskRoot: string;
-  readonly planFile: string;
-  readonly self: Identity;
-  readonly policy: RecoveryPolicy;
-  readonly expected: PiRecoveryExpected;
-  readonly mode: RecoveryExecutionMode;
-  readonly target: { readonly agent: string };
-  readonly requestId: string;
-}
-
-export type PiRecoveryConfigLoad =
-  | {
-      readonly ok: true;
-      readonly config: PiRecoveryConfig;
-      readonly digest: string;
-    }
-  | { readonly ok: false; readonly code: string; readonly message: string };
-
 const LIMITATIONS: readonly string[] = Object.freeze([
   'opt_in_explicit_configuration_only_no_ambient_task_discovery',
   'actual_host_session_gated_not_a_configuration_assertion',
@@ -77,109 +59,6 @@ const LIMITATIONS: readonly string[] = Object.freeze([
   'no_new_session_hidden_daemon_completion_poll_or_approval_auto',
   'submission_or_queue_acceptance_is_not_consumption_or_completion',
 ]);
-
-function isIdentity(value: unknown): value is Identity {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    typeof (value as Identity).agent_id === 'string' &&
-    typeof (value as Identity).session_id === 'string' &&
-    (typeof (value as Identity).harness === 'string' ||
-      (value as Identity).harness === null)
-  );
-}
-
-function validateConfig(parsed: unknown): PiRecoveryConfig | null {
-  if (typeof parsed !== 'object' || parsed === null) return null;
-  const raw = parsed as Record<string, unknown>;
-  if (raw.schema !== PI_RECOVERY_CONFIG_SCHEMA) return null;
-  if (typeof raw.taskRoot !== 'string' || typeof raw.planFile !== 'string')
-    return null;
-  if (!isIdentity(raw.self)) return null;
-  const policy = raw.policy as RecoveryPolicy | undefined;
-  if (
-    typeof policy !== 'object' ||
-    policy === null ||
-    (policy.role !== 'writer' &&
-      policy.role !== 'coordinator' &&
-      policy.role !== 'reviewer')
-  )
-    return null;
-  const expected = raw.expected as Record<string, unknown> | undefined;
-  if (
-    typeof expected !== 'object' ||
-    expected === null ||
-    Object.keys(expected).sort().join('|') !==
-      'binding_digest|binding_ref|cwd|harness|pane_id|session_id' ||
-    typeof expected.session_id !== 'string' ||
-    expected.session_id.length === 0 ||
-    typeof expected.cwd !== 'string' ||
-    !path.isAbsolute(expected.cwd) ||
-    typeof expected.binding_ref !== 'string' ||
-    !path.isAbsolute(expected.binding_ref) ||
-    typeof expected.binding_digest !== 'string' ||
-    !/^sha256:[0-9a-f]{64}$/.test(expected.binding_digest) ||
-    typeof expected.pane_id !== 'string' ||
-    !/^[A-Za-z0-9]+:p[A-Za-z0-9]+$/.test(expected.pane_id) ||
-    typeof expected.harness !== 'string' ||
-    expected.harness.length === 0
-  )
-    return null;
-  if (raw.mode !== 'plan' && raw.mode !== 'apply') return null;
-  const target = raw.target as Record<string, unknown> | undefined;
-  if (
-    typeof target !== 'object' ||
-    target === null ||
-    typeof target.agent !== 'string'
-  )
-    return null;
-  if (typeof raw.requestId !== 'string' || raw.requestId.length === 0)
-    return null;
-  return {
-    schema: PI_RECOVERY_CONFIG_SCHEMA,
-    taskRoot: raw.taskRoot,
-    planFile: raw.planFile,
-    self: {
-      agent_id: raw.self.agent_id,
-      session_id: raw.self.session_id,
-      harness: raw.self.harness,
-    },
-    policy: {
-      role: policy.role,
-      ...(Array.isArray(policy.authorizedSubtasks)
-        ? { authorizedSubtasks: [...policy.authorizedSubtasks] }
-        : {}),
-    },
-    expected: {
-      session_id: expected.session_id,
-      cwd: expected.cwd,
-      binding_ref: expected.binding_ref,
-      binding_digest: expected.binding_digest,
-      pane_id: expected.pane_id,
-      harness: expected.harness,
-    },
-    mode: raw.mode,
-    target: { agent: target.agent },
-    requestId: raw.requestId,
-  };
-}
-
-/** Read and validate the sibling recovery configuration through the bounded no-follow reader. */
-export function readPiRecoveryConfig(file: string): PiRecoveryConfigLoad {
-  const read = readBoundedFile(file, MAX_CONFIG_BYTES);
-  if (!read.ok)
-    return { ok: false, code: `config_${read.code}`, message: file };
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(read.text);
-  } catch {
-    return { ok: false, code: 'config_unparseable', message: file };
-  }
-  const config = validateConfig(parsed);
-  if (config === null)
-    return { ok: false, code: 'config_invalid', message: file };
-  return { ok: true, config, digest: read.digest };
-}
 
 export type ReconcileOutcome =
   | {

@@ -16,6 +16,7 @@ import type { ManagedPiRequest } from '../../src/app/managed-pi.js';
 import { runManagedPiSdkRuntime } from '../../src/app/managed-pi-sdk-runtime.js';
 import { ManagedPiJournal } from '../../src/hosts/pi/managed-session.js';
 import { managedPiHostIdentity } from '../../src/hosts/pi/managed-host-identity.js';
+import { captureProcessIdentity } from '../../src/infra/process-identity.js';
 import { buildMessage } from '../../src/collab/envelope.js';
 import { submitMessage } from '../../src/collab/messages.js';
 import { claimResources } from '../../src/collab/resources.js';
@@ -36,6 +37,7 @@ function fixture(
     pending?: boolean;
     error?: boolean;
     foreignHost?: boolean;
+    priorBoot?: boolean;
   } = {},
 ) {
   const domain = makeTaskDomain('managed-resume', ['sample']);
@@ -225,6 +227,15 @@ function fixture(
     cwd: domain.root,
     model: 'openai/gpt-6-luna',
     process_pid: pid,
+    ...(options.priorBoot
+      ? {
+          process_identity: {
+            ...captureProcessIdentity()!,
+            pid: source.pid,
+            boot: sha('prior-boot'),
+          },
+        }
+      : {}),
     host_identity: options.foreignHost
       ? `sha256:${'0'.repeat(64)}`
       : managedPiHostIdentity(),
@@ -426,6 +437,47 @@ test('a live reservation owner is preserved and blocks duplicate admission', asy
       1,
     );
     releaseManagedPiResume(auth);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('same-machine previous-boot checkpoint and reservations can resume without trusting reused PIDs', async () => {
+  const f = fixture({ priorBoot: true, foreignHost: true });
+  try {
+    const self = captureProcessIdentity();
+    assert(self);
+    f.change((record) => {
+      record.managed_pi_resume_admissions = [
+        {
+          reservation_id: 'prior-boot-reservation',
+          source_run_id: f.source.controller_run_id,
+          pid: process.pid,
+          host_identity: sha('prior-host-boot'),
+          process_identity: { ...self, boot: sha('prior-boot') },
+          status: 'reserved',
+        },
+      ];
+    });
+    const authorization = await prepareManagedPiResume(f.request);
+    assert.equal(
+      (readRecord(f.task)!.managed_pi_resume_admissions as unknown[]).length,
+      1,
+    );
+    assert.equal(releaseManagedPiResume(authorization), true);
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('release failure is reported without throwing over the original runtime error', async () => {
+  const f = fixture();
+  try {
+    const authorization = await prepareManagedPiResume(f.request);
+    f.change((record) => {
+      record.managed_pi_resume_admissions = 'malformed';
+    });
+    assert.equal(releaseManagedPiResume(authorization), false);
   } finally {
     f.cleanup();
   }

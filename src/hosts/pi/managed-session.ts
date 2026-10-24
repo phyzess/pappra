@@ -87,7 +87,8 @@ export interface ManagedPiSessionSnapshot {
     readonly sequence: number;
     readonly headDigest: string;
     readonly healthy: boolean;
-    readonly rawTerminalInputJournaled: true;
+    readonly rawTerminalInputJournaled: false;
+    readonly terminalInputMetadataJournaled: true;
   };
   readonly transcript: ManagedPiTranscriptObservation;
   readonly nativeInventory: {
@@ -236,7 +237,7 @@ export class ManagedPiJournal {
   }
 }
 
-/** Write-ahead helper: no ingress reaches Pi unless its complete bytes were fsynced first. */
+/** Write-ahead admission metadata, without retaining terminal input or secrets. */
 export function forwardJournaledManagedInput(
   journal: ManagedPiJournal,
   chunk: Uint8Array,
@@ -245,8 +246,7 @@ export function forwardJournaledManagedInput(
   if (journal.fenced) return false;
   try {
     journal.append('terminal_input', {
-      encoding: 'base64',
-      bytes: Buffer.from(chunk).toString('base64'),
+      input_digest: `sha256:${createHash('sha256').update(chunk).digest('hex')}`,
       byte_length: chunk.byteLength,
     });
   } catch {
@@ -329,6 +329,7 @@ import os
 import pty
 import select
 import signal
+import time
 import struct
 import sys
 import termios
@@ -389,10 +390,12 @@ control_buffer = b""
 control_open = True
 stdin_open = True
 output_open = True
+master_open = True
+orphan_deadline = None
 reaped = False
 status = 0
 while True:
-    read_fds = [master_fd]
+    read_fds = [master_fd] if master_open and output_open else []
     if control_open:
         read_fds.append(4)
     if stdin_open:
@@ -410,10 +413,15 @@ while True:
                 except OSError:
                     output_open = False
                     signal_owned(pi_pid, "TERM")
+                    if orphan_deadline is None:
+                        orphan_deadline = time.monotonic() + 1.0
+            else:
+                master_open = False
         except OSError as error:
             if error.errno not in (errno.EIO, errno.EBADF):
                 os.write(2, ("managed Pi bridge: PTY read failed: " + str(error) + "\n").encode())
             output_open = False
+            master_open = False
     if 0 in ready and stdin_open:
         try:
             data = os.read(0, 65536)
@@ -438,6 +446,8 @@ while True:
         if not chunk:
             control_open = False
             signal_owned(pi_pid, "TERM")
+            if orphan_deadline is None:
+                orphan_deadline = time.monotonic() + 1.0
         else:
             control_buffer += chunk
             while b"\n" in control_buffer:
@@ -456,6 +466,9 @@ while True:
                             pass
                 except (ValueError, OSError, TypeError):
                     pass
+    if orphan_deadline is not None and time.monotonic() >= orphan_deadline:
+        signal_owned(pi_pid, "KILL")
+        orphan_deadline = None
     if not reaped:
         try:
             waited, status = os.waitpid(pi_pid, os.WNOHANG)
@@ -1132,6 +1145,15 @@ class ManagedPiSessionController implements ManagedPiSession {
   private readonly terminalError: () => void;
   private rawBefore: boolean;
   private closed = false;
+  private signalStopping = false;
+  private readonly terminationSignal = () => {
+    if (this.signalStopping) return;
+    this.signalStopping = true;
+    this.restoreTerminal();
+    void this.stopOwnedChild().catch(() =>
+      this.failIo('signal_shutdown_failed'),
+    );
+  };
 
   constructor(input: {
     options: ManagedPiSessionOptions;
@@ -1224,6 +1246,8 @@ class ManagedPiSessionController implements ManagedPiSession {
     });
     this.child.on('error', () => this.failIo('pty_bridge_failed'));
     this.child.once('close', () => {
+      process.off('SIGTERM', this.terminationSignal);
+      process.off('SIGHUP', this.terminationSignal);
       process.stdout.removeListener('drain', this.outputDrain);
       process.stdin.removeListener('error', this.terminalError);
       process.stdout.removeListener('error', this.terminalError);
@@ -1247,6 +1271,8 @@ class ManagedPiSessionController implements ManagedPiSession {
     process.stdin.on('data', this.inputData);
     process.stdout.on('resize', this.resize);
     process.on('SIGWINCH', this.resize);
+    process.on('SIGTERM', this.terminationSignal);
+    process.on('SIGHUP', this.terminationSignal);
   }
 
   get identity(): ManagedPiProcessIdentity {
@@ -1473,7 +1499,8 @@ class ManagedPiSessionController implements ManagedPiSession {
         sequence: this.journal.currentSequence,
         headDigest: this.journal.currentDigest,
         healthy: this.journal.healthy,
-        rawTerminalInputJournaled: true,
+        rawTerminalInputJournaled: false,
+        terminalInputMetadataJournaled: true,
       },
       transcript,
       nativeInventory: {
@@ -1606,6 +1633,8 @@ class ManagedPiSessionController implements ManagedPiSession {
     if (!this.piExit || !this.helperExit)
       throw new ManagedPiSessionError('cannot_close_live_session');
     this.closed = true;
+    process.off('SIGTERM', this.terminationSignal);
+    process.off('SIGHUP', this.terminationSignal);
     this.fenceIngress('controller_closed');
     this.server.close();
     try {

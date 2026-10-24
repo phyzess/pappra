@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   chmodSync,
   mkdtempSync,
@@ -305,7 +306,12 @@ test('managed ingress is fsynced before forwarding and is fenced fail-closed', (
       (bytes) => {
         const records = readJournal(journalPath);
         assert.equal(records.at(-1)?.kind, 'terminal_input');
-        assert.equal(records.at(-1)?.bytes, input.toString('base64'));
+        assert.equal(records.at(-1)?.bytes, undefined);
+        assert.equal(records.at(-1)?.byte_length, input.byteLength);
+        assert.equal(
+          records.at(-1)?.input_digest,
+          `sha256:${createHash('sha256').update(input).digest('hex')}`,
+        );
         forwarded = Buffer.from(bytes);
       },
     );
@@ -500,6 +506,58 @@ test(
     assert.match(output, /TTY=True/);
     assert.match(output, /INPUT=go/);
     await once(child, 'close');
+    assert.equal(child.exitCode, 0);
+  },
+);
+
+test(
+  'orphaned PTY bridge reaps a TERM-ignoring child after closed PTY output',
+  { timeout: 10_000 },
+  async (t) => {
+    const program = [
+      'import os, signal, time',
+      'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+      'signal.signal(signal.SIGHUP, signal.SIG_IGN)',
+      'print("READY", flush=True)',
+      'os.close(0); os.close(1); os.close(2)',
+      'while True: time.sleep(1)',
+    ].join('\n');
+    const child = spawn(
+      'python3',
+      [
+        '-u',
+        '-c',
+        managedPiPtyBridgeSourceForTests,
+        'orphaned-bridge',
+        'python3',
+        '-c',
+        program,
+      ],
+      { stdio: ['pipe', 'pipe', 'pipe', 'pipe', 'pipe'] },
+    );
+    const closed = once(child, 'close');
+    child.stdout?.resume();
+    child.stderr?.resume();
+    const status = new JsonLineReader(child.stdio[3] as Readable);
+    const started = await status.next();
+    t.after(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        try {
+          process.kill(Number(started['piPid']), 'SIGKILL');
+        } catch {
+          /* reaped */
+        }
+        child.kill('SIGKILL');
+      }
+    });
+    // Allow the owned child to install its handlers and close all PTY handles.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    (child.stdio[4] as Writable).end();
+    const exit = await status.next();
+    assert.equal(exit['kind'], 'pi_exit');
+    assert.equal(exit['piPid'], started['piPid']);
+    assert.equal(exit['signal'], 'SIGKILL');
+    await closed;
     assert.equal(child.exitCode, 0);
   },
 );

@@ -200,7 +200,7 @@ test('split preserves focus and start passes only the exact Pi session and gate 
     '--pane',
     'w1:p2',
     '--timeout',
-    '45000',
+    '180000',
     '--',
     '--session-id',
     sessionId,

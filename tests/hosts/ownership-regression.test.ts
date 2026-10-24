@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -9,23 +10,27 @@ import {
   statSync,
   symlinkSync,
   writeFileSync,
+  cpSync,
 } from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { HostIntegrationService } from '../../src/hosts/integration/service.js';
+import { FixtureHostIntegrationService as HostIntegrationService } from './integration-fixture.js';
 import {
   renderHostHookOutput,
   runHostHook,
 } from '../../src/hosts/integration/hook.js';
 import type { HostHookInput } from '../../src/schemas/host.js';
+import { CheckpointService } from '../../src/continuity/service.js';
 import {
   baseWorkspaceConfig,
   cleanup,
   makeTempDir,
   writeWorkspaceConfig,
+  writeMachineConfig,
+  baseMachineConfig,
 } from '../workspace/fixtures.js';
 
 function runtimeEntry(): string {
@@ -296,6 +301,73 @@ test('renders nested Codex output and stops publication at the deadline', async 
     );
   } finally {
     cleanup(slowRoot);
+  }
+});
+
+test('Claude PostCompact records an observation without SessionStart-shaped context output', async () => {
+  const root = workspace();
+  try {
+    const observed = await runHostHook({
+      ...hook(root, 'post-compact-output'),
+      event: 'compact',
+    });
+    assert.equal(observed.status, 'processed');
+    assert.equal(renderHostHookOutput('claude', observed), null);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('startup context rejects a checkpoint copied from a different workspace identity', async () => {
+  const source = makeTempDir('hook-source-workspace');
+  const target = makeTempDir('hook-target-workspace');
+  try {
+    for (const root of [source, target]) {
+      writeWorkspaceConfig(
+        root,
+        baseWorkspaceConfig({ workspaceId: randomUUID() }),
+      );
+      writeMachineConfig(root, baseMachineConfig(root));
+    }
+    const saved = await new CheckpointService(source).save({
+      taskId: 'hook-task',
+      objective: 'FOREIGN_CHECKPOINT_SENTINEL',
+      acceptance: [],
+      constraints: [],
+      decisions: [],
+      attempted: [],
+      nextActions: ['FOREIGN_ACTION_SENTINEL'],
+      limitations: [],
+      authorSession: 'hook-test',
+      contextCompleteness: 'complete',
+      nativeRefs: [],
+    });
+    assert.equal(saved.ok, true, JSON.stringify(saved.diagnostics));
+    const destination = join(target, '.pappra', 'local', 'tasks');
+    mkdirSync(destination, { recursive: true, mode: 0o700 });
+    cpSync(
+      join(source, '.pappra', 'local', 'tasks', 'hook-task'),
+      join(destination, 'hook-task'),
+      { recursive: true },
+    );
+    const local = await runHostHook({
+      ...hook(source, 'local-context'),
+      taskId: 'hook-task',
+    });
+    assert(local.context?.includes('FOREIGN_CHECKPOINT_SENTINEL'));
+    const foreign = await runHostHook({
+      ...hook(target, 'foreign-context'),
+      taskId: 'hook-task',
+    });
+    assert.equal(foreign.status, 'processed');
+    assert.equal(
+      foreign.context?.includes('FOREIGN_CHECKPOINT_SENTINEL'),
+      false,
+    );
+    assert.equal(foreign.context?.includes('FOREIGN_ACTION_SENTINEL'), false);
+  } finally {
+    cleanup(source);
+    cleanup(target);
   }
 });
 

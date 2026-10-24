@@ -1,6 +1,7 @@
+import { object as isRecord } from '../../infra/validation.js';
 import fs from 'node:fs';
 import path from 'node:path';
-import { readBoundedFile } from '../../app/bounded-file.js';
+import { readBoundedFile } from '../../infra/bounded-file.js';
 import type {
   BootstrapGuardClaim,
   BootstrapGuardIdentity,
@@ -68,9 +69,6 @@ const failure = (code: string, message: string): PiBootstrapConfigFailure => ({
   code,
   message,
 });
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isSafeText = (value: unknown, max = MAX_ID): value is string =>
   typeof value === 'string' &&

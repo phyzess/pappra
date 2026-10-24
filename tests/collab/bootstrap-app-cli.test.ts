@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { captureProcessIdentity } from '../../src/infra/process-identity.js';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -984,6 +985,131 @@ function admitCancellation(value: Fixture, messageId: string, clock: number) {
   );
   return submitMessage(value.taskRoot, message, { clock });
 }
+
+test('explicit startup budget is validated and forwarded to the owned agent', async () => {
+  const value = fixture('bootstrap-start-budget');
+  try {
+    const request = {
+      ...value.request,
+      target: { ...value.request.target, start_timeout_ms: 300_000 },
+    };
+    const host = fakeOps(value);
+    const start = host.ops.startAgent;
+    let budget = 0;
+    host.ops.startAgent = async (input) => {
+      budget = input.timeoutMs ?? 0;
+      return start(input);
+    };
+    const result = await applyVisibleBootstrap(
+      request,
+      dependencies(value, host, {}, request),
+    );
+    assert.equal(result.status, 'applied', JSON.stringify(result));
+    assert.equal(budget, 300_000);
+    for (const timeout of [0, -1, 600_001]) {
+      assert.equal(
+        validateVisibleBootstrapRequest({
+          ...request,
+          target: { ...request.target, start_timeout_ms: timeout },
+        }).ok,
+        false,
+      );
+    }
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('a dead owner can retry an exact bootstrap reservation only before any native intent', async () => {
+  for (const phase of ['reserved', 'split_intent']) {
+    const value = fixture(`bootstrap-dead-owner-${phase}`);
+    try {
+      const identity = captureProcessIdentity();
+      assert(identity);
+      const saved = transact(value.taskRoot, {
+        actor: 'fixture',
+        purpose: 'seed-interrupted-bootstrap',
+        apply(record) {
+          record.launch_reservations = [
+            {
+              reservation_id: 'dead-bootstrap',
+              subtask_id: 'work',
+              attempt: 1,
+              kind: 'pi',
+              mode: 'visible-bootstrap',
+              holder: SUCCESSOR,
+              requested_session_id: SUCCESSOR.session_id,
+              transport: 'herdr',
+              reserved_at: new Date(NOW).toISOString(),
+              released_at: null,
+              outcome: null,
+              phase,
+              bootstrap: {
+                request_id: value.request.request_id,
+                request_digest: `sha256:${createHash('sha256').update(JSON.stringify(value.request)).digest('hex')}`,
+                process_identity: {
+                  ...identity,
+                  boot: `sha256:${'0'.repeat(64)}`,
+                },
+                phase,
+                created_pane_id: null,
+                receipts: [],
+              },
+            },
+          ];
+          return { record, op: 'fixture', summary: {}, result: null };
+        },
+      });
+      assert(saved.ok);
+      const host = fakeOps(value);
+      const result = await applyVisibleBootstrap(
+        value.request,
+        dependencies(value, host),
+      );
+      if (phase === 'reserved') {
+        assert.equal(result.status, 'applied', JSON.stringify(result));
+        assert.equal(host.counts.split, 1);
+      } else {
+        assert.equal(result.code, 'request_in_progress_or_ambiguous');
+        assert.equal(host.counts.split, 0);
+      }
+    } finally {
+      value.cleanup();
+    }
+  }
+});
+
+test('known failed agent start releases its reservation only after proving and closing the empty owned pane', async () => {
+  const value = fixture('bootstrap-start-no-effect');
+  try {
+    const host = fakeOps(value);
+    host.ops.startAgent = async () => ({
+      ok: false,
+      status: 'failed',
+      code: 'spawn_failed',
+      detail: 'fixture no process spawned',
+      correlationId: null,
+      receipt: {
+        ...commandReceipt('agent.start'),
+        spawned: false,
+        code: null,
+        spawn_error: 'ENOENT',
+      },
+    });
+    const result = await applyVisibleBootstrap(
+      value.request,
+      dependencies(value, host),
+    );
+    assert.equal(result.status, 'failed');
+    assert.equal(host.counts.close, 1);
+    assert.equal(host.counts.prompt, 0);
+    const reservation = readRecord(value.taskRoot)!.launch_reservations![0]!;
+    assert.notEqual(reservation.released_at, null);
+    assert.equal(reservation.outcome, 'not_started');
+  } finally {
+    value.cleanup();
+  }
+});
 
 test('plan is read-only and projects the exact visible Pi gate launch', async () => {
   const value = fixture('bootstrap-plan');

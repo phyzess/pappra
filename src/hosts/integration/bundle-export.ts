@@ -17,8 +17,11 @@ import { loadHostBundle } from './bundle.js';
 import type { PiBootstrapConfig } from './bootstrap-config.js';
 import { renderHookConfigPatch } from './templates.js';
 
-import { readBoundedFile } from '../../app/bounded-file.js';
-import { readPiRecoveryConfig } from './pi-recovery-extension.js';
+import { readBoundedFile } from '../../infra/bounded-file.js';
+import {
+  PI_RECOVERY_MAX_CONFIG_BYTES,
+  readPiRecoveryConfig,
+} from './recovery-config.js';
 export interface HostPluginBundle {
   readonly host: HostName;
   readonly outDir: string;
@@ -495,7 +498,10 @@ export async function exportHostPluginBundle(options: {
       const validated = readPiRecoveryConfig(options.recovery.configFile);
       if (!validated.ok)
         throw new Error(`recovery config is invalid (${validated.code})`);
-      const pinned = readBoundedFile(options.recovery.configFile, 64 * 1024);
+      const pinned = readBoundedFile(
+        options.recovery.configFile,
+        PI_RECOVERY_MAX_CONFIG_BYTES,
+      );
       if (!pinned.ok || pinned.digest !== validated.digest)
         throw new Error(
           'recovery config changed or became unreadable during validation',

@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import fs from 'node:fs';
 import { managedPiSocketPeerPid } from './managed-pi-repair-stop.js';
 import { readBoundedFile } from './bounded-file.js';
@@ -14,7 +15,8 @@ import type {
 
 const READ_TIMEOUT_MS = 10_000;
 const SPLIT_TIMEOUT_MS = 20_000;
-const START_TIMEOUT_MS = 45_000;
+const START_TIMEOUT_MS = 180_000;
+const MAX_START_TIMEOUT_MS = 600_000;
 const CLOSE_TIMEOUT_MS = 10_000;
 const MAX_CAPTURE_CHARS = 32 * 1024;
 const PANE_ID = /^[A-Za-z0-9]+:p[A-Za-z0-9]+$/;
@@ -236,10 +238,6 @@ interface ParsedEnvelope {
   readonly errorCode: string | null;
   readonly errorMessage: string | null;
   readonly parseError: string | null;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function nullableText(value: unknown): string | null {
@@ -961,7 +959,7 @@ export function createHerdrBootstrapOps(
         !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(input.openrouterModel) ||
         !Number.isSafeInteger(timeoutMs) ||
         timeoutMs < 1 ||
-        timeoutMs > START_TIMEOUT_MS
+        timeoutMs > MAX_START_TIMEOUT_MS
       )
         return failManaged(
           'failed',

@@ -243,3 +243,24 @@ export const hostInstallManifestSchema = z.strictObject({
   trustRequired: z.boolean(),
 });
 export type HostInstallManifest = z.infer<typeof hostInstallManifestSchema>;
+
+export const hostUninstallResultSchema = z.strictObject({
+  schema: z.literal('pappra/host-uninstall/1'),
+  host: hostNameSchema,
+  hostRoot: absolutePathSchema,
+  ok: z.boolean(),
+  status: z.enum([
+    'planned',
+    'removed',
+    'unchanged',
+    'partial',
+    'conflict',
+    'failed',
+  ]),
+  plannedFiles: z.array(z.string().min(1).max(2048)).max(512),
+  removedFiles: z.array(z.string().min(1).max(2048)).max(512),
+  retainedPaths: z.array(absolutePathSchema).max(512),
+  quarantinedLocks: z.array(absolutePathSchema).max(32),
+  diagnostics: z.array(z.unknown()).max(32),
+});
+export type HostUninstallResult = z.infer<typeof hostUninstallResultSchema>;

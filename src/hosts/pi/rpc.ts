@@ -106,7 +106,7 @@ import {
 import { describeResource } from '../../collab/canonical.js';
 import { buildMessage, sha256File } from '../../collab/envelope.js';
 import { submitMessage } from '../../collab/messages.js';
-import { readMessageFromTaskRoot } from '../../app/collab-messages.js';
+import { readMessageFromTaskRoot } from '../../collab/persisted-messages.js';
 import { findAttempt } from '../../collab/lifecycle.js';
 import { createNonce, nowIso, readRecord } from '../../collab/store.js';
 

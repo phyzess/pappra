@@ -15,6 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { npmCli, pnpmCommand, projectRoot, runNode } from './project.js';
+import { testSubprocessEnvironment } from './test-environment.js';
 
 const temporary = mkdtempSync(join(tmpdir(), 'pappra-package-'));
 try {
@@ -35,6 +36,7 @@ try {
       shell: false,
       timeout: 60_000,
       maxBuffer: 1024 * 1024,
+      env: testSubprocessEnvironment(),
     },
   );
   if (packed.error) throw packed.error;
@@ -53,26 +55,77 @@ try {
   });
   assert(files.includes('dist/cli/main.js'));
   assert(files.includes('dist/index.d.ts'));
+  // The beta publishes a deliberately compact map: core subpaths plus one
+  // curated experimental barrel and its Pi adapter. Nothing points at the
+  // internal `src/app` layout, and no per-surface collaboration or managed-Pi
+  // path exists merely so an older beta import keeps working.
+  const manifest = JSON.parse(
+    readFileSync(join(projectRoot, 'package.json'), 'utf8'),
+  ) as { readonly exports: Record<string, unknown> };
+  const exportTarget = (key: string): string => {
+    const entry = manifest.exports[key];
+    assert(entry !== undefined, `Missing package export: ${key}`);
+    if (typeof entry === 'string') return entry;
+    assert(typeof entry === 'object' && entry !== null);
+    assert('import' in entry && typeof entry.import === 'string');
+    return entry.import;
+  };
+  const CORE_SUBPATHS = [
+    '.',
+    './workspace',
+    './knowledge',
+    './continuity',
+    './code',
+    './schemas',
+    './install',
+    './hosts',
+    './init',
+    './doctor',
+    './collab',
+    './experimental',
+    './experimental/pi',
+    './package.json',
+  ];
+  assert(
+    Object.keys(manifest.exports).length <= 14,
+    'The published export map must stay at or below 14 subpaths.',
+  );
+  assert.deepEqual(
+    Object.keys(manifest.exports).sort(),
+    [...CORE_SUBPATHS].sort(),
+    'The published export map must match the compact beta contract exactly.',
+  );
+  for (const key of CORE_SUBPATHS) {
+    const target = exportTarget(key);
+    assert(
+      !target.startsWith('./dist/app/'),
+      `${key} must not expose the internal src/app layout.`,
+    );
+    assert(
+      !/^\.\/dist\/hosts\/(?:pi|integration)\//.test(target),
+      `${key} must not expose the internal src/hosts layout.`,
+    );
+  }
+  for (const key of CORE_SUBPATHS) {
+    const target = exportTarget(key);
+    if (!target.startsWith('./dist/')) continue;
+    const modulePath = target.slice('./'.length);
+    assert(
+      files.includes(modulePath),
+      `Missing published module: ${modulePath}`,
+    );
+    assert(
+      files.includes(modulePath.replace(/\.js$/, '.d.ts')),
+      `Missing published types: ${modulePath}`,
+    );
+  }
   for (const file of [
-    'dist/collab/work-plan.js',
-    'dist/app/collab-work-plan.js',
-    'dist/app/collab-role-plan.js',
-    'dist/hosts/pi/managed-session.js',
-    'dist/hosts/pi/managed-session-extension.js',
-    'dist/app/collab-work-execution.js',
-    'dist/app/collab-recovery.js',
-    'dist/app/collab-recovery-projection.js',
-    'dist/app/collab-recovery-executor.js',
-    'dist/app/collab-session-transition.js',
-    'dist/hosts/integration/pi-recovery-extension.js',
-    'dist/hosts/integration/pi-session-transition-extension.js',
     'dist/hosts/integration/pappra-recovery-extension.mjs',
     'dist/hosts/integration/pappra-session-transition-extension.mjs',
+    'dist/adapters/pi/recovery-extension.js',
+    'dist/adapters/pi/session-transition-extension.js',
   ])
-    assert(
-      files.includes(file),
-      `Missing public collaboration package file: ${file}`,
-    );
+    assert(files.includes(file), `Missing public host artifact: ${file}`);
   assert(files.includes('assets/manifest.json'));
   assert(files.includes('assets/integrations/skills/pappra/SKILL.md'));
   assert(
@@ -132,6 +185,7 @@ try {
         shell: false,
         timeout: 120_000,
         maxBuffer: 4 * 1024 * 1024,
+        env: testSubprocessEnvironment(),
       },
     );
   let installedResult = installTarball(true);
@@ -161,7 +215,13 @@ try {
   const version = spawnSync(
     process.execPath,
     [join(installed, 'dist/cli/main.js'), '--version', '--json'],
-    { cwd: consumer, encoding: 'utf8', shell: false, timeout: 10_000 },
+    {
+      cwd: consumer,
+      encoding: 'utf8',
+      shell: false,
+      timeout: 10_000,
+      env: testSubprocessEnvironment(),
+    },
   );
   if (version.error) throw version.error;
   assert.equal(version.status, 0, version.stderr);
@@ -172,29 +232,67 @@ try {
     join(projectRoot, '.build/scripts/scripts/fixtures/consumer.js'),
     join(consumer, 'consumer.js'),
   );
-  runNode(['consumer.js', metadata.version], consumer);
+  runNode(
+    ['consumer.js', metadata.version],
+    consumer,
+    360_000,
+    testSubprocessEnvironment(),
+  );
   const collaborationConsumer = join(consumer, 'collaboration-consumer.mjs');
   writeFileSync(
     collaborationConsumer,
     [
       "import * as root from '@phyzess/pappra';",
-      "import { validateWorkPlan, evaluateWorkPlan } from '@phyzess/pappra/collab/work-plan';",
-      "import { inspectWorkPlan } from '@phyzess/pappra/collab/work-plan-inspection';",
-      "import { runWorkExecution } from '@phyzess/pappra/collab/work-execution';",
-      "import { inspectRecovery } from '@phyzess/pappra/collab/recovery';",
-      "import { executeRecovery } from '@phyzess/pappra/collab/recovery-executor';",
-      "import { validateSessionTransitionRequest } from '@phyzess/pappra/collab/session-transition';",
-      "import { PI_RECOVERY_CONFIG_SCHEMA } from '@phyzess/pappra/hosts/pi-recovery';",
-      "import { PI_SESSION_TRANSITION_EXTENSION_ID } from '@phyzess/pappra/hosts/pi-session-transition';",
-      'for (const value of [validateWorkPlan, evaluateWorkPlan, inspectWorkPlan, runWorkExecution, inspectRecovery, executeRecovery, validateSessionTransitionRequest]) {',
+      "import * as collabSurface from '@phyzess/pappra/collab';",
+      "import * as experimental from '@phyzess/pappra/experimental';",
+      "import * as pi from '@phyzess/pappra/experimental/pi';",
+      "import * as hostsSurface from '@phyzess/pappra/hosts';",
+      'const { validateWorkPlan, evaluateWorkPlan } = collabSurface.workPlan;',
+      'const { inspectWorkPlan } = experimental.collabWorkPlanInspection;',
+      'const { runWorkExecution } = experimental.collabWorkExecution;',
+      'const { inspectRecovery } = experimental.collabRecovery;',
+      'const { executeRecovery } = experimental.collabRecoveryExecutor;',
+      'const { validateSessionTransitionRequest } = experimental.collabSessionTransition;',
+      'const { admitLaunch } = experimental.collabAdmission;',
+      'for (const value of [validateWorkPlan, evaluateWorkPlan, inspectWorkPlan, runWorkExecution, inspectRecovery, executeRecovery, validateSessionTransitionRequest, admitLaunch]) {',
       '  if (typeof value !== "function") throw new Error("public collaboration API missing");',
       '}',
-      'if (!root.collabWorkExecution || !root.collabRecoveryExecutor || !root.collabSessionTransition) throw new Error("root namespace export missing");',
-      'if (PI_RECOVERY_CONFIG_SCHEMA !== "pappra/pi-recovery-config/1") throw new Error("recovery host export missing");',
-      'if (PI_SESSION_TRANSITION_EXTENSION_ID !== "pappra/pi-session-transition-host/1") throw new Error("transition host export missing");',
+      'if ("collabWorkExecution" in root || "collabRecoveryExecutor" in root || "collabSessionTransition" in root || "collaboration" in root || "managedPi" in root) throw new Error("stable root still exposes automation");',
+      'if (typeof root.getPackageInfo !== "function" || typeof root.HostIntegrationService !== "function") throw new Error("root core surface missing");',
+      'if ("piManaged" in hostsSurface || "piManagedSdk" in hostsSurface || "piRecovery" in hostsSurface || "piSessionTransition" in hostsSurface) throw new Error("stable hosts barrel still exposes managed or extension namespaces");',
+      'if (!experimental.collabWorkPlan || typeof experimental.collabWorkPlan.validateWorkPlan !== "function") throw new Error("experimental work plan namespace missing");',
+      'if (!experimental.collabRolePlan.expandRolePlan) throw new Error("role plan namespace missing");',
+      'if (!experimental.collabRecoveryProjection || !experimental.collabAutomaticHandoff) throw new Error("recovery projection namespace missing");',
+      'if (pi.piRecovery.PI_RECOVERY_CONFIG_SCHEMA !== "pappra/pi-recovery-config/1") throw new Error("recovery host export missing");',
+      'if (pi.piSessionTransition.PI_SESSION_TRANSITION_EXTENSION_ID !== "pappra/pi-session-transition-host/1") throw new Error("transition host export missing");',
+      'if (!pi.piManaged.startManagedPiSession || !pi.piManagedSdk.startManagedPiSdkSession) throw new Error("managed Pi adapter missing");',
+      'if ("breakLock" in collabSurface.store) throw new Error("unsafe store.breakLock is public");',
+      'const removed = [',
+      '  "@phyzess/pappra/collaboration",',
+      '  "@phyzess/pappra/collab/recovery",',
+      '  "@phyzess/pappra/collab/recovery-executor",',
+      '  "@phyzess/pappra/collab/work-plan",',
+      '  "@phyzess/pappra/collab/admission",',
+      '  "@phyzess/pappra/hosts/pi-managed",',
+      '  "@phyzess/pappra/hosts/pi-recovery",',
+      '];',
+      'for (const specifier of removed) {',
+      '  let code = null;',
+      '  try {',
+      '    await import(specifier);',
+      '  } catch (error) {',
+      '    code = error && typeof error === "object" && "code" in error ? error.code : null;',
+      '  }',
+      '  if (code !== "ERR_PACKAGE_PATH_NOT_EXPORTED") throw new Error(`removed subpath still resolves: ${specifier} (${code})`);',
+      '}',
     ].join('\n'),
   );
-  runNode(['collaboration-consumer.mjs'], consumer);
+  runNode(
+    ['collaboration-consumer.mjs'],
+    consumer,
+    360_000,
+    testSubprocessEnvironment(),
+  );
 
   const lifecycleRoot = join(temporary, 'installed workspace ünicode');
   const lifecycleHome = join(temporary, 'fixture home');
@@ -227,13 +325,12 @@ try {
   );
   const installedCli = join(installed, 'dist/cli/main.js');
   assert.equal(installedCli.includes(projectRoot), false);
-  const lifecycleEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+  const lifecycleEnv: NodeJS.ProcessEnv = testSubprocessEnvironment({
     HOME: lifecycleHome,
     XDG_CONFIG_HOME: join(lifecycleHome, 'config'),
     XDG_DATA_HOME: join(lifecycleHome, 'data'),
     XDG_STATE_HOME: join(lifecycleHome, 'state'),
-  };
+  });
   const runInstalled = (args: readonly string[]) =>
     spawnSync(process.execPath, [installedCli, ...args], {
       cwd: lifecycleRoot,
@@ -406,10 +503,12 @@ try {
   assert.equal(resumeValue.executionAllowed, false);
 
   const runtimeDataDir = join(temporary, 'runtime data');
-  const runtimeEnvironment: NodeJS.ProcessEnv = {
-    ...process.env,
-    PAPPRA_DATA_HOME: runtimeDataDir,
-  };
+  const runtimeEnvironment: NodeJS.ProcessEnv = testSubprocessEnvironment(
+    {
+      PAPPRA_DATA_HOME: runtimeDataDir,
+    },
+    { allowPappra: ['PAPPRA_DATA_HOME'] },
+  );
   const runRuntime = (args: readonly string[]) =>
     spawnSync(process.execPath, [installedCli, ...args], {
       cwd: lifecycleRoot,
@@ -554,7 +653,13 @@ try {
     const executable = spawnSync(
       join(consumer, 'node_modules/.bin/pappra'),
       ['--help'],
-      { cwd: consumer, encoding: 'utf8', shell: false, timeout: 10_000 },
+      {
+        cwd: consumer,
+        encoding: 'utf8',
+        shell: false,
+        timeout: 10_000,
+        env: testSubprocessEnvironment(),
+      },
     );
     if (executable.error) throw executable.error;
     assert.equal(executable.status, 0, executable.stderr);
@@ -671,6 +776,7 @@ try {
     encoding: 'utf8',
     shell: false,
     timeout: 10_000,
+    env: testSubprocessEnvironment(),
   });
   if (sourceStatusBefore.error) throw sourceStatusBefore.error;
   assert.equal(sourceStatusBefore.status, 0, sourceStatusBefore.stderr);
@@ -779,9 +885,10 @@ try {
     '--json',
   ]);
   if (projectResumeResult.error) throw projectResumeResult.error;
-  assert.equal(projectResumeResult.status, 1, projectResumeResult.stderr);
+  assert.equal(projectResumeResult.status, 0, projectResumeResult.stderr);
   const projectResume = parseInstalled(projectResumeResult.stdout);
   assert.equal(projectResume.schema, 'pappra/resume-packet/1');
+  assert.equal(projectResume.verificationStatus, 'current');
   assert.equal(projectResume.executionAllowed, false);
   assert.equal(projectResume.contextCompleteness, 'complete');
   // Let npm's existing 120-second install deadline produce its own diagnostic.
@@ -800,6 +907,7 @@ try {
     encoding: 'utf8',
     shell: false,
     timeout: 10_000,
+    env: testSubprocessEnvironment(),
   });
   if (sourceStatusAfter.error) throw sourceStatusAfter.error;
   assert.equal(sourceStatusAfter.status, 0, sourceStatusAfter.stderr);

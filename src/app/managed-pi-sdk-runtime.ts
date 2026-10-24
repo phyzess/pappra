@@ -575,6 +575,7 @@ export async function runManagedPiSdkRuntime(
     }
     process.once('SIGINT', onSignal);
     process.once('SIGTERM', onSignal);
+    process.once('SIGHUP', onSignal);
     await Promise.race([
       controller.runPromise,
       control!.stopped,
@@ -587,6 +588,7 @@ export async function runManagedPiSdkRuntime(
       ready = false;
       process.off('SIGINT', onSignal);
       process.off('SIGTERM', onSignal);
+      process.off('SIGHUP', onSignal);
       if (retirementWatch) clearInterval(retirementWatch);
       await readiness?.close();
       unbindInitialLifecycle?.();

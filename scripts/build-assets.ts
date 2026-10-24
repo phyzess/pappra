@@ -10,6 +10,7 @@ cpSync(join(projectRoot, 'src/assets'), join(projectRoot, 'assets'), {
 chmodSync(join(projectRoot, 'dist/cli/main.js'), 0o755);
 
 const hostRuntime = join(projectRoot, 'dist/hosts/integration');
+const adapters = join(projectRoot, 'dist/adapters/pi');
 await build({
   entryPoints: [join(hostRuntime, 'hook-entry.js')],
   absWorkingDir: projectRoot,
@@ -66,7 +67,7 @@ await build({
   ],
 });
 await build({
-  entryPoints: [join(hostRuntime, 'pi-recovery-extension.js')],
+  entryPoints: [join(adapters, 'recovery-extension.js')],
   absWorkingDir: projectRoot,
   outfile: join(hostRuntime, 'pappra-recovery-extension.mjs'),
   bundle: true,
@@ -86,7 +87,7 @@ await build({
   ],
 });
 await build({
-  entryPoints: [join(hostRuntime, 'pi-session-transition-extension.js')],
+  entryPoints: [join(adapters, 'session-transition-extension.js')],
   absWorkingDir: projectRoot,
   outfile: join(hostRuntime, 'pappra-session-transition-extension.mjs'),
   bundle: true,

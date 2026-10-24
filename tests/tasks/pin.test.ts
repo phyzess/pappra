@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import fsPromises from 'node:fs/promises';
 import { syncBuiltinESMExports } from 'node:module';
-import { join, relative } from 'node:path';
+import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import {
@@ -52,7 +52,7 @@ async function withPatched<T>(
   }
 }
 
-test('task pin is explicit and auto-resume is a workspace switch', async () => {
+test('task pin is explicit and auto-resume is a private checkout preference', async () => {
   const root = makeTempDir('task-pin');
   try {
     writeWorkspaceConfig(root, baseWorkspaceConfig());
@@ -319,118 +319,64 @@ test('pin removal revalidates before deletion and preserves outside files', asyn
   }
 });
 
-test('configuration update preserves bytes, extensions and backups', async () => {
-  const root = makeTempDir('task-pin-config');
+test('auto-resume is private, shared configuration is byte-identical, and cloned workspaces inherit no preference', async () => {
+  const root = makeTempDir('task-pin-private-preference');
+  const clone = makeTempDir('task-pin-clone');
   try {
-    writeWorkspaceConfig(root, config());
-    assert.equal('message' in (await setAutoResume(root, true)), false);
-    const updated = JSON.parse(
-      fs.readFileSync(join(root, '.pappra', 'workspace.json'), 'utf8'),
-    ) as Record<string, unknown>;
+    writeWorkspaceConfig(root, {
+      ...config(),
+      continuity: { autoResume: true },
+    });
+    const configPath = join(root, '.pappra/workspace.json');
+    const before = fs.readFileSync(configPath);
     assert.equal(
-      (updated.continuity as Record<string, unknown>).autoResume,
-      true,
-    );
-    assert.equal(updated.name, 'reliability-workspace');
-    assert.deepEqual(updated.extensions, { 'pappra.test': { keep: true } });
-    assert.equal(
-      fs.existsSync(join(root, '.pappra', 'local', 'apply.lock')),
+      await readAutoResume(root),
       false,
+      'shared legacy preference is never inferred',
     );
-    const backups = fs.existsSync(join(root, '.pappra', 'local', 'backups'))
-      ? fs.readdirSync(join(root, '.pappra', 'local', 'backups'))
-      : [];
-    assert.equal(backups.length, 1);
-    const backupConfig = join(
-      root,
-      '.pappra',
-      'local',
-      'backups',
-      backups[0]!,
-      '.pappra',
-      'workspace.json',
-    );
-    const backup = JSON.parse(fs.readFileSync(backupConfig, 'utf8')) as Record<
-      string,
-      unknown
-    >;
-    assert.equal(backup.continuity, undefined);
+    assert.equal('message' in (await setAutoResume(root, true)), false);
     assert.equal(await readAutoResume(root), true);
-  } finally {
-    cleanup(root);
-  }
-});
-
-test('configuration edit after the backup write is refused without overwriting it', async () => {
-  const root = makeTempDir('task-pin-config-backup-race');
-  try {
-    writeWorkspaceConfig(root, config());
-    const configPath = join(root, '.pappra', 'workspace.json');
-    const lockPath = join(root, '.pappra', 'local', 'apply.lock');
-    const original = fsPromises.writeFile;
-    let intercepted = false;
-    const result = await withPatched(
-      () => {
-        (fsPromises as unknown as Record<string, unknown>)['writeFile'] =
-          async (...args: Parameters<typeof fsPromises.writeFile>) => {
-            const written = await original(...args);
-            if (!intercepted && String(args[0]).includes('/backups/')) {
-              intercepted = true;
-              const next = config();
-              next.name = 'concurrent-user-edit';
-              fs.writeFileSync(
-                configPath,
-                `${JSON.stringify(next, null, 2)}\n`,
-              );
-            }
-            return written;
-          };
-        return () => {
-          (fsPromises as unknown as Record<string, unknown>)['writeFile'] =
-            original;
-        };
-      },
-      () => setAutoResume(root, true),
-    );
-    assert.equal(intercepted, true);
-    assert.ok(hasMessage(result));
-    assert.match(result.message, /changed before publication|changed after/i);
-    const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<
-      string,
-      unknown
-    >;
-    assert.equal(saved.name, 'concurrent-user-edit');
-    assert.equal(saved.continuity, undefined);
-    assert.equal(fs.existsSync(lockPath), false);
-    const backups = fs.readdirSync(join(root, '.pappra', 'local', 'backups'));
-    assert.equal(backups.length, 1);
-    const backup = JSON.parse(
-      fs.readFileSync(
-        join(
-          root,
-          '.pappra',
-          'local',
-          'backups',
-          backups[0]!,
-          '.pappra',
-          'workspace.json',
-        ),
-        'utf8',
-      ),
+    assert.deepEqual(fs.readFileSync(configPath), before);
+    const preferencePath = join(root, '.pappra/local/task-preferences.json');
+    const preference = JSON.parse(
+      fs.readFileSync(preferencePath, 'utf8'),
     ) as Record<string, unknown>;
-    assert.equal(backup.name, 'reliability-workspace');
-    assert.equal(backup.continuity, undefined);
+    assert.equal(preference.schema, 'pappra/task-preferences/1');
+    assert.equal(preference.autoResume, true);
+    assert.equal(preference.workspaceId, config().workspaceId);
+    assert.equal(
+      fs.readFileSync(join(root, '.pappra/local/.gitignore'), 'utf8'),
+      '*\n',
+    );
+    assert.equal(fs.existsSync(join(root, '.pappra/local/backups')), false);
+    assert.equal(fs.existsSync(join(root, '.pappra/local/apply.lock')), false);
+    if (process.platform !== 'win32')
+      assert.equal(fs.statSync(preferencePath).mode & 0o777, 0o600);
+    fs.mkdirSync(join(clone, '.pappra'), { recursive: true });
+    fs.writeFileSync(join(clone, '.pappra/workspace.json'), before);
+    assert.equal(await readAutoResume(clone), false);
+    await pinTask(root, 'T-PRIVATE');
+    await unpinTask(root);
+    assert.equal(await readAutoResume(root), true);
+    assert.equal('message' in (await setAutoResume(root, false)), false);
+    assert.equal(await readAutoResume(root), false);
+    assert.deepEqual(fs.readFileSync(configPath), before);
   } finally {
     cleanup(root);
+    cleanup(clone);
   }
 });
 
-test('configuration edit before the temp publication is refused without publishing', async () => {
-  const root = makeTempDir('task-pin-config-temp-race');
+test('private preference edit before publication is preserved and the lock is released', async () => {
+  const root = makeTempDir('task-pin-preference-cas');
   try {
     writeWorkspaceConfig(root, config());
-    const configPath = join(root, '.pappra', 'workspace.json');
-    const lockPath = join(root, '.pappra', 'local', 'apply.lock');
+    const path = join(root, '.pappra/local/task-preferences.json');
+    const edited = JSON.stringify({
+      schema: 'pappra/task-preferences/1',
+      workspaceId: config().workspaceId,
+      autoResume: false,
+    });
     const original = fsPromises.writeFile;
     let intercepted = false;
     const result = await withPatched(
@@ -440,15 +386,10 @@ test('configuration edit before the temp publication is refused without publishi
             const written = await original(...args);
             if (
               !intercepted &&
-              String(args[0]).includes('/.pappra/workspace.json.tmp-')
+              String(args[0]).includes('/task-preferences.json.tmp-')
             ) {
               intercepted = true;
-              const next = config();
-              next.name = 'temp-seam-edit';
-              fs.writeFileSync(
-                configPath,
-                `${JSON.stringify(next, null, 2)}\n`,
-              );
+              fs.writeFileSync(path, edited);
             }
             return written;
           };
@@ -460,19 +401,14 @@ test('configuration edit before the temp publication is refused without publishi
       () => setAutoResume(root, true),
     );
     assert.equal(intercepted, true);
-    assert.ok(hasMessage(result));
-    assert.match(result.message, /changed before publication|changed after/i);
-    const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<
-      string,
-      unknown
-    >;
-    assert.equal(saved.name, 'temp-seam-edit');
-    assert.equal(saved.continuity, undefined);
-    assert.equal(fs.existsSync(lockPath), false);
+    assert(hasMessage(result));
+    assert.match(result.message, /preferences changed before publication/i);
+    assert.equal(fs.readFileSync(path, 'utf8'), edited);
+    assert.equal(fs.existsSync(join(root, '.pappra/local/apply.lock')), false);
     assert.equal(
       fs
-        .readdirSync(join(root, '.pappra'))
-        .some((entry) => entry.startsWith('workspace.json.tmp-')),
+        .readdirSync(join(root, '.pappra/local'))
+        .some((name) => name.startsWith('task-preferences.json.tmp-')),
       false,
     );
   } finally {
@@ -480,99 +416,83 @@ test('configuration edit before the temp publication is refused without publishi
   }
 });
 
-test('redirected nested backup parent is refused before an outside write', async () => {
-  const root = fs.realpathSync(makeTempDir('task-pin-backup-parent-race'));
+test('unrelated concurrent shared configuration edits survive preference publication', async () => {
+  const root = makeTempDir('task-pin-shared-edit');
   try {
     writeWorkspaceConfig(root, config());
-    const configPath = join(root, '.pappra', 'workspace.json');
-    const backups = join(root, '.pappra', 'local', 'backups');
-    const outside = join(root, 'outside-backups');
-    fs.mkdirSync(outside);
-    const original = fsPromises.mkdir;
+    const configPath = join(root, '.pappra/workspace.json');
+    const original = fsPromises.writeFile;
     let intercepted = false;
-    let outsideBackup: string | null = null;
+    let editedBytes = '';
     const result = await withPatched(
       () => {
-        (fsPromises as unknown as Record<string, unknown>)['mkdir'] = async (
-          ...args: Parameters<typeof fsPromises.mkdir>
-        ) => {
-          const created = await original(...args);
-          if (!intercepted && String(args[0]).startsWith(`${backups}/`)) {
-            intercepted = true;
-            const relativeParent = relative(backups, String(args[0]));
-            outsideBackup = join(outside, relativeParent, 'workspace.json');
-            fs.mkdirSync(join(outside, relativeParent), { recursive: true });
-            fs.renameSync(backups, `${backups}-real`);
-            fs.symlinkSync(outside, backups, 'dir');
-          }
-          return created;
-        };
+        (fsPromises as unknown as Record<string, unknown>)['writeFile'] =
+          async (...args: Parameters<typeof fsPromises.writeFile>) => {
+            const written = await original(...args);
+            if (
+              !intercepted &&
+              String(args[0]).includes('/task-preferences.json.tmp-')
+            ) {
+              intercepted = true;
+              editedBytes = JSON.stringify({
+                ...config(),
+                name: 'user-config-edit',
+              });
+              fs.writeFileSync(configPath, editedBytes);
+            }
+            return written;
+          };
         return () => {
-          (fsPromises as unknown as Record<string, unknown>)['mkdir'] =
+          (fsPromises as unknown as Record<string, unknown>)['writeFile'] =
             original;
         };
       },
       () => setAutoResume(root, true),
     );
     assert.equal(intercepted, true);
-    assert.ok(hasMessage(result));
-    assert.match(result.message, /backup parent|outside/i);
-    assert.equal(outsideBackup !== null && fs.existsSync(outsideBackup), false);
-    const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<
-      string,
-      unknown
-    >;
-    assert.equal(saved.name, 'reliability-workspace');
-    assert.equal(saved.continuity, undefined);
-    assert.equal(
-      fs.existsSync(join(root, '.pappra', 'local', 'apply.lock')),
-      false,
-    );
+    assert.equal('message' in result, false, JSON.stringify(result));
+    assert.equal(fs.readFileSync(configPath, 'utf8'), editedBytes);
+    assert.equal(await readAutoResume(root), true);
   } finally {
     cleanup(root);
   }
 });
 
-test('configuration replacement while waiting for the lock is refused', async () => {
-  const root = makeTempDir('task-pin-config-race');
+test('redirected or foreign private preferences are disabled and preserved', async () => {
+  const { root, outside, local } = workspaceWithOutside(
+    'task-pin-private-unsafe',
+  );
   try {
-    writeWorkspaceConfig(root, config());
-    const configPath = join(root, '.pappra', 'workspace.json');
-    const lockPath = join(root, '.pappra', 'local', 'apply.lock');
-    const original = fsPromises.open;
-    let intercepted = false;
-    const result = await withPatched(
-      () => {
-        (fsPromises as unknown as Record<string, unknown>)['open'] = async (
-          ...args: Parameters<typeof fsPromises.open>
-        ) => {
-          if (
-            !intercepted &&
-            String(args[0]).endsWith('/.pappra/local/apply.lock')
-          ) {
-            intercepted = true;
-            const next = config();
-            next.name = 'concurrent-edit';
-            fs.writeFileSync(configPath, `${JSON.stringify(next, null, 2)}\n`);
-          }
-          return original(...args);
-        };
-        return () => {
-          (fsPromises as unknown as Record<string, unknown>)['open'] = original;
-        };
-      },
-      () => setAutoResume(root, true),
+    fs.mkdirSync(local, { recursive: true });
+    const target = join(outside, 'preferences.json');
+    const value = JSON.stringify({
+      schema: 'pappra/task-preferences/1',
+      workspaceId: config().workspaceId,
+      autoResume: true,
+    });
+    fs.writeFileSync(target, value);
+    const path = join(local, 'task-preferences.json');
+    fs.symlinkSync(target, path);
+    assert.equal(await readAutoResume(root), false);
+    assert(hasMessage(await setAutoResume(root, true)));
+    assert.equal(fs.readFileSync(target, 'utf8'), value);
+    fs.rmSync(path);
+    fs.writeFileSync(
+      path,
+      JSON.stringify({
+        schema: 'pappra/task-preferences/1',
+        workspaceId: 'af90ab7c-9e86-4ad0-9548-c4c2ccb7375e',
+        autoResume: true,
+      }),
     );
-    assert.equal(intercepted, true);
-    assert.ok(hasMessage(result));
-    assert.match(result.message, /changed after it was read|changed while/i);
-    const saved = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<
-      string,
-      unknown
-    >;
-    assert.equal(saved.name, 'concurrent-edit');
-    assert.equal(saved.continuity, undefined);
-    assert.equal(fs.existsSync(lockPath), false);
+    const foreign = fs.readFileSync(path);
+    assert.equal(await readAutoResume(root), false);
+    assert(hasMessage(await setAutoResume(root, true)));
+    assert.deepEqual(fs.readFileSync(path), foreign);
+    fs.writeFileSync(path, '{malformed');
+    assert.equal(await readAutoResume(root), false);
+    assert(hasMessage(await setAutoResume(root, true)));
+    assert.equal(fs.readFileSync(path, 'utf8'), '{malformed');
   } finally {
     cleanup(root);
   }

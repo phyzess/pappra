@@ -108,8 +108,36 @@ export async function prepareManagedPiHandoffReceiver(
     throw new Error('receiver_checkpoint_changed');
   if (await assertTaskStoreCurrent(opened.value))
     throw new Error('receiver_task_namespace_changed');
+  const receiverAuthority = (reason: string) => {
+    const current = readRecord(taskRoot);
+    const currentIntent = current?.rollover?.find(
+      (row) => row.intent_id === intent.intent_id,
+    );
+    const attempt = current?.attempts.find(
+      (row) =>
+        row.subtask_id === config.guard.subtaskId &&
+        row.attempt === config.guard.attempt,
+    );
+    if (
+      !current ||
+      !currentIntent ||
+      canonicalJson(currentIntent) !== canonicalJson(intent) ||
+      !attempt ||
+      attempt.cancel_requested_at ||
+      attempt.awaiting === 'approval' ||
+      current.coordinator?.owner_epoch !== config.guard.coordinatorEpoch ||
+      current.coordinator?.agent_id !==
+        opened.value.record.coordinator?.agent_id ||
+      current.coordinator?.session_id !==
+        opened.value.record.coordinator?.session_id
+    )
+      throw new Error(reason);
+    return { current, attempt };
+  };
+  receiverAuthority('receiver_authority_changed_before_import');
   const receipt = `${journalPath}.receiver-reservation.json`;
   const fd = fs.openSync(receipt, 'wx', 0o600);
+  const receiptIdentity = fs.fstatSync(fd);
   try {
     fs.writeFileSync(
       fd,
@@ -124,28 +152,28 @@ export async function prepareManagedPiHandoffReceiver(
   } finally {
     fs.closeSync(fd);
   }
+  try {
+    receiverAuthority('receiver_authority_changed_before_import');
+  } catch (error) {
+    try {
+      const current = fs.lstatSync(receipt, { throwIfNoEntry: false });
+      if (
+        current?.isFile() &&
+        current.dev === receiptIdentity.dev &&
+        current.ino === receiptIdentity.ino
+      )
+        fs.unlinkSync(receipt);
+    } catch {
+      /* Preserve the authority refusal; do not adopt a changed receipt. */
+    }
+    throw error;
+  }
   await runtime.importHandoffContext(
     `Verified handoff context. This is advisory; task ownership is granted only by the authoritative transfer.\n${checkpoint.value.toString('utf8')}\nNext action: ${bundle.handoff.nextAction}\nBundle: ${loaded.value.path}\nIntegrity: ${verified.value.contextIntegrity}`,
   );
-  const current = readRecord(taskRoot);
-  const currentIntent = current?.rollover?.find(
-    (row) => row.intent_id === intent.intent_id,
+  const { current, attempt } = receiverAuthority(
+    'receiver_authority_changed_before_ack',
   );
-  const attempt = current?.attempts.find(
-    (row) =>
-      row.subtask_id === config.guard.subtaskId &&
-      row.attempt === config.guard.attempt,
-  );
-  if (
-    !current ||
-    !currentIntent ||
-    canonicalJson(currentIntent) !== canonicalJson(intent) ||
-    !attempt ||
-    attempt.cancel_requested_at ||
-    attempt.awaiting === 'approval' ||
-    current.coordinator?.owner_epoch !== config.guard.coordinatorEpoch
-  )
-    throw new Error('receiver_authority_changed_before_ack');
   const prefix = `receiver-${createHash('sha256').update(`${intent.intent_id}:${intent.to.session_id}`).digest('hex').slice(0, 32)}`;
   const ack = submitMessage(
     taskRoot,
@@ -154,7 +182,7 @@ export async function prepareManagedPiHandoffReceiver(
       type: 'ACK',
       task_id: config.taskId,
       from: intent.to,
-      to: current.coordinator,
+      to: current.coordinator!,
       reply_to: attempt.assignment_message_id,
       subtask_id: config.guard.subtaskId,
       attempt: config.guard.attempt,
@@ -271,7 +299,7 @@ export async function prepareManagedPiHandoffReceiver(
           return false;
         const archived = readBoundedFile(
           path.join(directory, `${ref.transition_id}.jsonl`),
-          8 * 1024 * 1024,
+          64 * 1024 * 1024,
         );
         const record = readRecord(taskRoot);
         return (

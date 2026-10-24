@@ -12,7 +12,7 @@
  * AFTER the bounded read, so a replaced/redirected/symlinked ancestor during the read interval denies the
  * call instead of silently rebinding; it never creates directories (it does NOT use
  * `resolveDomainRoot`/`taskRootFor`, which `mkdir`) and never resolves from cwd or a cache. The record is
- * read via `src/app/bounded-file.ts` (`readBoundedFile`, reused unchanged): a bounded (8 MiB), regular-file,
+ * read via `src/infra/bounded-file.ts` (`readBoundedFile`): a bounded (8 MiB), regular-file,
  * no-follow, non-blocking descriptor read refusing symlink/FIFO/device/directory targets and oversized
  * content. The record file's observable identity and change metadata (inode, size, mtime, ctime) are
  * captured before and after the read; a replacement or in-place change during the read is resolved with a
@@ -36,7 +36,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { readBoundedFile } from '../../app/bounded-file.js';
+import { readBoundedFile } from '../../infra/bounded-file.js';
 import { RECORD_FILE, domainIdOf } from '../../collab/store.js';
 import type { TaskRecord } from '../../collab/types.js';
 import { isTaskRecord } from '../../collab/validation.js';

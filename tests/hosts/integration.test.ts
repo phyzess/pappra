@@ -10,7 +10,7 @@ import {
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { HostIntegrationService } from '../../src/hosts/integration/service.js';
+import { FixtureHostIntegrationService as HostIntegrationService } from './integration-fixture.js';
 import { exportHostPluginBundle } from '../../src/hosts/integration/bundle-export.js';
 import { loadHostBundle } from '../../src/hosts/integration/bundle.js';
 import {

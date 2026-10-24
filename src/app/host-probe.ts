@@ -4,7 +4,10 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { HostName } from '../schemas/host.js';
-import { HOST_SUPPORT } from '../hosts/integration/support.js';
+import {
+  HOST_SUPPORT,
+  isSupportedVersion,
+} from '../hosts/integration/support.js';
 
 export interface HostProbeResult {
   readonly host: HostName;
@@ -57,12 +60,11 @@ export function probeHost(host: HostName): HostProbeResult {
       version,
       pinnedVersion,
       protocol: 'version-only',
-      ok: version === pinnedVersion,
+      ok: isSupportedVersion(host, version),
       details: { matchesPinnedVersion: version === pinnedVersion },
-      message:
-        version === pinnedVersion
-          ? 'Version matches the pinned support matrix; lifecycle callability still needs a real session.'
-          : `Version ${version} does not match the pinned ${pinnedVersion}.`,
+      message: isSupportedVersion(host, version)
+        ? 'Version matches an observed event contract; lifecycle callability still needs a real session.'
+        : `Version ${version} does not match the pinned ${pinnedVersion}.`,
     };
   }
   const directory = mkdtempSync(join(tmpdir(), 'pappra-pi-probe-'));

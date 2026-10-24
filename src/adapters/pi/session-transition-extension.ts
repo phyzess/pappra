@@ -1,3 +1,10 @@
+// Pi session-transition adapter: composes the opt-in transition extension above
+// `src/app` and `src/hosts`.
+//
+// The native observation and freeze primitives stay in `src/hosts/integration`;
+// only the orchestration composition and its application imports live here, so
+// the host layer keeps no application dependency.
+import { object as isRecord } from '../../infra/validation.js';
 import path from 'node:path';
 import {
   loadSessionTransitionRequest,
@@ -10,14 +17,14 @@ import {
   registerPiNativeEvents,
   type NativeEventProducer,
   type PiNativeEventHost,
-} from './pi-native-events.js';
+} from '../../hosts/integration/pi-native-events.js';
 import {
   registerPiRolloverFreeze,
   type FreezeOutcome,
   type FreezeToken,
   type PiFreezeHost,
   type RolloverFreezeController,
-} from './pi-rollover-extension.js';
+} from '../../hosts/integration/pi-rollover-extension.js';
 
 export const PI_SESSION_TRANSITION_EXTENSION_ID =
   'pappra/pi-session-transition-host/1';
@@ -56,10 +63,6 @@ interface PiCommandHost {
       ) => void | Promise<void>;
     },
   ): void;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function contextSessionId(context: unknown): string | null {

@@ -12,7 +12,8 @@ import type { CliOutput } from '../output.js';
 export const taskUsage =
   'pappra task <pin|unpin|show> [taskId] [--auto-resume] [--json]\n\n' +
   'pin records the current task in .pappra/local/current-task. Hooks inject a resume\n' +
-  'packet only when the workspace continuity.autoResume switch is on (--auto-resume).';
+  "packet only when this checkout's private auto-resume preference is on (--auto-resume).\n" +
+  'The preference lives in .pappra/local/task-preferences.json and never rewrites workspace.json.';
 
 export interface TaskCommandOptions {
   readonly cwd: string;

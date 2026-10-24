@@ -1,4 +1,9 @@
+import { object as isRecord } from '../infra/validation.js';
 import crypto from 'node:crypto';
+import {
+  captureProcessIdentity,
+  observeProcessIdentity,
+} from '../infra/process-identity.js';
 import { readManagedSourceAssignment } from './managed-pi-source-admission.js';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -78,7 +83,8 @@ const MAX_BUNDLE_FILE_BYTES = 8 * 1024 * 1024;
 const MAX_BUNDLE_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_RECEIPTS = 12;
 const READ_TIMEOUT_MS = 10_000;
-const START_TIMEOUT_MS = 45_000;
+const START_TIMEOUT_MS = 180_000;
+const MAX_START_TIMEOUT_MS = 600_000;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const PANE_ID = /^[A-Za-z0-9]+:p[A-Za-z0-9]+$/;
@@ -156,6 +162,7 @@ export interface VisibleBootstrapRequest {
     readonly cwd: string;
     readonly direction?: 'right' | 'down';
     readonly preserve_focus: true;
+    readonly start_timeout_ms?: number;
   };
   readonly selected_model: {
     readonly preserve_daily: true;
@@ -287,9 +294,6 @@ type Prepared =
   | { readonly ok: true; readonly context: BootstrapContext }
   | { readonly ok: false; readonly report: VisibleBootstrapReport };
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 function isText(value: unknown, max = 4096): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= max;
 }
@@ -914,11 +918,21 @@ export function validateVisibleBootstrapRequest(
   const target = value['target'];
   if (
     !isRecord(target) ||
-    !hasOnlyKeys(target, ['choice', 'cwd', 'direction', 'preserve_focus']) ||
+    !hasOnlyKeys(target, [
+      'choice',
+      'cwd',
+      'direction',
+      'preserve_focus',
+      'start_timeout_ms',
+    ]) ||
     (target['choice'] !== 'reuse' && target['choice'] !== 'sibling') ||
     !isText(target['cwd'], 4096) ||
     !path.isAbsolute(target['cwd']) ||
     target['preserve_focus'] !== true ||
+    (target['start_timeout_ms'] !== undefined &&
+      (!Number.isSafeInteger(target['start_timeout_ms']) ||
+        Number(target['start_timeout_ms']) < 1 ||
+        Number(target['start_timeout_ms']) > MAX_START_TIMEOUT_MS)) ||
     (target['direction'] !== undefined &&
       target['direction'] !== 'right' &&
       target['direction'] !== 'down')
@@ -2047,7 +2061,7 @@ function planReport(
             '--pane',
             paneId!,
             '--timeout',
-            String(START_TIMEOUT_MS),
+            String(context.request.target.start_timeout_ms ?? START_TIMEOUT_MS),
             '--',
             '--session-id',
             request.participant.native_session_selector,
@@ -2617,6 +2631,19 @@ function bootstrapData(entry: LaunchReservation): Record<string, unknown> {
   const value = entry['bootstrap'];
   return isRecord(value) ? value : {};
 }
+function deadNoEffectBootstrap(entry: LaunchReservation): boolean {
+  const data = bootstrapData(entry);
+  return (
+    entry.released_at === null &&
+    entry.outcome === null &&
+    entry.phase === 'reserved' &&
+    data['phase'] === 'reserved' &&
+    data['created_pane_id'] === null &&
+    Array.isArray(data['receipts']) &&
+    data['receipts'].length === 0 &&
+    observeProcessIdentity(data['process_identity']) === 'dead'
+  );
+}
 function reservationSummary(entry: LaunchReservation): Record<string, unknown> {
   const data = bootstrapData(entry);
   return {
@@ -2673,14 +2700,19 @@ function reserveRequest(
               reason: 'request_id_content_conflict',
               existing: prior,
             };
-          return {
-            ok: false as const,
-            reason:
-              prior.released_at === null
-                ? 'request_reconcile_required'
-                : 'request_already_recorded',
-            existing: prior,
-          };
+          if (deadNoEffectBootstrap(prior)) {
+            record.launch_reservations = (
+              record.launch_reservations ?? []
+            ).filter((entry) => entry !== prior);
+          } else
+            return {
+              ok: false as const,
+              reason:
+                prior.released_at === null
+                  ? 'request_reconcile_required'
+                  : 'request_already_recorded',
+              existing: prior,
+            };
         }
         const attempt = findAttempt(
           record,
@@ -2720,6 +2752,7 @@ function reserveRequest(
           outcome: null,
           phase: 'reserved',
           bootstrap: {
+            process_identity: captureProcessIdentity(),
             request_id: request.request_id,
             request_digest: context.requestDigest,
             request_file: context.requestFile,
@@ -3992,7 +4025,7 @@ async function applySibling(
       bootstrapExtensionPath: request.bootstrap.extension_entry,
       configPath: runtimePaths.paths.configPath,
       configDigest: config.digest,
-      timeoutMs: START_TIMEOUT_MS,
+      timeoutMs: context.request.target.start_timeout_ms ?? START_TIMEOUT_MS,
       ...(runtimePaths.paths.automaticHandoffFile === undefined
         ? {}
         : { automaticHandoffFile: runtimePaths.paths.automaticHandoffFile }),
@@ -4045,19 +4078,29 @@ async function applySibling(
       paneId: pane.paneId,
       sessionId: request.participant.native_session_selector,
       extensionEntry: request.bootstrap.extension_entry,
+      timeoutMs: request.target.start_timeout_ms ?? START_TIMEOUT_MS,
       ...(request.selected_model.openrouter_model
         ? { openrouterModel: request.selected_model.openrouter_model }
         : {}),
       onReceipt: persistReceipt(context, reservationId, now),
     });
     if (!started.ok) {
+      const cleanup =
+        started.status === 'unknown'
+          ? null
+          : await closeOwnedEmptyPane(context, reservationId, pane, now);
+      const noEffect = cleanup?.state === 'closed_owned_pane';
       const saved = phase({
         phase:
           started.status === 'unknown'
             ? 'agent_start_unknown'
             : 'agent_start_failed',
-        outcome: started.status === 'unknown' ? 'unknown' : 'failed',
+        outcome: noEffect ? 'not_started' : 'unknown',
+        release: noEffect,
         detail: started.code,
+        ...(cleanup
+          ? { extra: { cleanup: { state: cleanup.state, code: cleanup.code } } }
+          : {}),
       });
       return terminalReport(
         context,
@@ -4778,7 +4821,7 @@ export async function planVisibleBootstrap(
       'request_reservation_ambiguous',
       'Multiple durable reservations already use this request id.',
     );
-  if (prior !== null) {
+  if (prior !== null && !deadNoEffectBootstrap(prior)) {
     const digest = bootstrapData(prior)['request_digest'];
     if (digest !== requestDigestOf(input))
       return failureReport(
@@ -4859,7 +4902,7 @@ export async function applyVisibleBootstrap(
       'request_reservation_ambiguous',
       'Multiple reservations already use this request id.',
     );
-  if (prior !== null) {
+  if (prior !== null && !deadNoEffectBootstrap(prior)) {
     if (bootstrapData(prior)['request_digest'] !== requestDigest)
       return failureReport(
         'apply',

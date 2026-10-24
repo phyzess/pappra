@@ -416,8 +416,14 @@ test('managed SDK adapter inventories native queues, gates ingress, publishes ev
     readJournal(journalPath).some(
       (record) =>
         record['kind'] === 'sdk_semantic_input_admitted' &&
-        JSON.stringify(record).includes('semantic task input'),
+        record['argument_count'] === 1 &&
+        typeof record['arguments_digest'] === 'string' &&
+        record['arguments'] === undefined,
     ),
+  );
+  assert.equal(
+    readFileSync(journalPath, 'utf8').includes('semantic task input'),
+    false,
   );
 
   const capturing = controller.captureSummary('cause-1');

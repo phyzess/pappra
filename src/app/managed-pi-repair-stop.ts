@@ -1,4 +1,8 @@
 import crypto from 'node:crypto';
+import {
+  captureProcessIdentity,
+  type LocalProcessIdentity,
+} from '../infra/process-identity.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -44,6 +48,7 @@ interface RegisteredRuntime {
   readonly agent_id: string;
   readonly session_id: string;
   readonly pid: number;
+  readonly process_identity?: LocalProcessIdentity | null;
   readonly descriptor_file: string;
   readonly controller_run_id: string;
   readonly input_revision: string;
@@ -133,6 +138,7 @@ export async function registerManagedPiRuntime(
     agent_id: attempt.assignee.agent_id,
     session_id: scope.session_id,
     pid: process.pid,
+    process_identity: captureProcessIdentity(),
     descriptor_file: descriptorFile,
     controller_run_id: decoded.runId,
     input_revision: attempt.input_revision,

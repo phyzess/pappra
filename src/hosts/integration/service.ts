@@ -17,6 +17,7 @@ import type {
   HostPlanFile,
   HostVerification,
   HostVerificationCheck,
+  HostUninstallResult,
 } from '../../schemas/host.js';
 import {
   hostCapabilitiesSchema,
@@ -25,14 +26,26 @@ import {
   hostIntegrationResultSchema,
   hostNameSchema,
   hostVerificationSchema,
+  hostUninstallResultSchema,
 } from '../../schemas/host.js';
 import type { EvidenceRef } from '../../schemas/evidence.js';
 import { observePath, readFileBounded, sha256Digest } from '../../infra/fs.js';
 import { ensurePrivateState } from '../../infra/private-state.js';
+import { updateJsonProperty } from '../../infra/json-property.js';
+import { captureProcessIdentity } from '../../infra/process-identity.js';
+import {
+  inspectPrivateLock,
+  publishPrivateLock,
+  reclaimDeadPrivateLock,
+} from '../../infra/private-lock.js';
 import { isPathInside } from '../../schemas/paths.js';
-import { ensureStatePathBoundary } from '../../install/ownership.js';
+import {
+  ensureStatePathBoundary,
+  removeOwnedFile,
+} from '../../install/ownership.js';
 import { getPackageInfo } from '../../package-info.js';
 import { detectPassiveHosts } from '../detect.js';
+import { observeHostVersion } from '../version.js';
 import { installPathForBundleFile, loadHostBundle } from './bundle.js';
 import {
   hostConfigRelativePath,
@@ -60,6 +73,7 @@ const BUNDLE_FILE = 'pappra-host.json';
 const DEFAULT_MAX_CONFIG_BYTES = 1024 * 1024;
 
 export interface HostIntegrationOptions {
+  readonly versionProbe?: (host: HostName) => string | null;
   readonly root: string;
   readonly homeDir: string;
   readonly pathEnv: string;
@@ -510,7 +524,84 @@ function managedConfig(
   const next = { ...base, hooks: nextHooks };
   return {
     ok: true,
-    bytes: Buffer.from(`${JSON.stringify(next, null, 2)}\n`),
+    bytes: updateJsonProperty(existing, 'hooks', next['hooks']),
+  };
+}
+
+function removeManagedConfig(
+  host: 'claude' | 'codex',
+  existing: Buffer,
+  expression: string,
+  file: string,
+): { ok: true; bytes: Buffer } | { ok: false; diagnostic: Diagnostic } {
+  const parsed = parseJsonObject(existing, file);
+  if (!parsed.ok) return parsed;
+  const hooks = parsed.value['hooks'];
+  if (hooks === undefined) return { ok: true, bytes: existing };
+  if (typeof hooks !== 'object' || hooks === null || Array.isArray(hooks))
+    return {
+      ok: false,
+      diagnostic: diagnostic(
+        diagnosticCodes.host_config_invalid,
+        'Host hooks must be an object.',
+        file,
+        'Inspect the configuration; no hook was removed.',
+      ),
+    };
+  const next = { ...hooks } as Record<string, unknown>;
+  for (const [event, entries] of Object.entries(
+    renderHookConfigPatch(host, expression).hooks,
+  )) {
+    const groups = next[event];
+    if (groups === undefined) continue;
+    if (!Array.isArray(groups))
+      return {
+        ok: false,
+        diagnostic: diagnostic(
+          diagnosticCodes.host_config_invalid,
+          'Host event hooks must be an array.',
+          file,
+          'Inspect the configuration; no hook was removed.',
+        ),
+      };
+    const commands = managedHookCommands(entries);
+    const kept: unknown[] = [];
+    for (const value of groups) {
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        Array.isArray(value) ||
+        !('hooks' in value) ||
+        !Array.isArray(value.hooks)
+      ) {
+        kept.push(value);
+        continue;
+      }
+      if (managedGroupHasUserEdits(value, commands))
+        return {
+          ok: false,
+          diagnostic: diagnostic(
+            diagnosticCodes.host_install_conflict,
+            'An edited managed hook was preserved.',
+            file,
+            'Review the edited hook explicitly before uninstalling its assets.',
+          ),
+        };
+      const remaining = value.hooks.filter(
+        (hook: unknown) => !isManagedHook(hook, commands),
+      );
+      if (remaining.length === value.hooks.length) kept.push(value);
+      else if (remaining.length > 0) kept.push({ ...value, hooks: remaining });
+    }
+    if (kept.length > 0) next[event] = kept;
+    else delete next[event];
+  }
+  return {
+    ok: true,
+    bytes:
+      JSON.stringify(next) === JSON.stringify(hooks)
+        ? existing
+        : updateJsonProperty(existing, 'hooks', next),
   };
 }
 
@@ -522,11 +613,15 @@ function validateManifestIdentity(
   hookExpression: string,
   migrate: boolean,
 ): Diagnostic | null {
+  const portable =
+    host === 'pi' ||
+    (manifest.runtimeEntry === hookExpression &&
+      hookExpression.startsWith('${CLAUDE_PROJECT_DIR}/'));
   if (
     manifest.host !== host ||
-    resolve(manifest.hostRoot) !== hostRoot ||
+    (!portable && resolve(manifest.hostRoot) !== hostRoot) ||
     manifest.configPath !== configPath ||
-    (!migrate && manifest.runtimeEntry !== hookExpression)
+    (!migrate && host !== 'pi' && manifest.runtimeEntry !== hookExpression)
   ) {
     return diagnostic(
       diagnosticCodes.host_install_conflict,
@@ -1096,6 +1191,11 @@ async function writeAtomic(
     await mkdir(dirname(path), { recursive: true, mode: 0o700 });
     const handle = await open(temporary, 'wx', 0o600);
     try {
+      if (options.replace) {
+        const before = await observePath(path);
+        if (before.kind === 'file' && before.stats)
+          await handle.chmod(before.stats.mode & 0o777);
+      }
       const stats = await handle.stat();
       if (!stats.isFile()) throw new Error('temporary is not a regular file');
       owned = {
@@ -1210,8 +1310,90 @@ interface HostInstallLock {
   readonly rootReal: string;
 }
 
+/** CLI force is an explicit stop-all-host-writers assertion, not asset ownership. */
+async function quarantineUnknownHostLock(
+  workspaceRoot: string,
+  hostRoot: string,
+): Promise<string | null> {
+  const file = join(hostRoot, '.pappra-host.lock');
+  if (await assertSafeTarget(hostRoot, file)) return null;
+  const owner = await inspectPrivateLock(file);
+  if (owner.state !== 'unknown') return null;
+  const observed = await observePath(file);
+  const bytes = await readFileBounded(file, 64 * 1024);
+  if (observed.kind !== 'file' || !observed.stats || !bytes.ok) return null;
+  const privateState = await ensurePrivateState(workspaceRoot);
+  if (!privateState.ok) return null;
+  const directory = join(
+    workspaceRoot,
+    '.pappra',
+    'local',
+    'host-lock-archive',
+  );
+  const id = randomUUID();
+  const archive = join(directory, `${id}.lock`);
+  if (!(await ensureStatePathBoundary(workspaceRoot, archive)).ok) return null;
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const saved = await writeAtomic(archive, bytes.value.bytes, {
+    replace: false,
+    beforeDigest: null,
+    root: directory,
+  });
+  if (!saved.ok) return null;
+  const receiptFile = `${archive}.receipt.json`;
+  const receipt = Buffer.from(
+    `${JSON.stringify(
+      {
+        schema: 'pappra/host-lock-quarantine/1',
+        source: file,
+        archive,
+        digest: bytes.value.digest,
+        identity: { dev: observed.stats.dev, ino: observed.stats.ino },
+        owner: 'unknown',
+        operator_assertion: { all_host_writers_stopped: true },
+        copy_fsynced_before_removal: true,
+        created_at: now(),
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  if (
+    !(
+      await writeAtomic(receiptFile, receipt, {
+        replace: false,
+        beforeDigest: null,
+        root: directory,
+      })
+    ).ok
+  )
+    return null;
+  const archiveDirectory = await open(directory, 'r');
+  try {
+    await archiveDirectory.sync();
+  } finally {
+    await archiveDirectory.close();
+  }
+  const freshOwner = await inspectPrivateLock(file);
+  if (freshOwner.state !== 'unknown') return null;
+  const removed = await removeOwnedFile(hostRoot, {
+    path: '.pappra-host.lock',
+    installId: id,
+    operation: 'create',
+    beforeDigest: null,
+    afterDigest: bytes.value.digest,
+    backupRef: null,
+    backupDigest: null,
+    identity: { dev: observed.stats.dev, ino: observed.stats.ino },
+    owner: 'pappra',
+    verifiedAt: now(),
+  });
+  return removed.ok ? archive : null;
+}
+
 async function acquireHostInstallLock(
   hostRoot: string,
+  host: HostName,
 ): Promise<
   | { readonly ok: true; readonly lock: HostInstallLock }
   | { readonly ok: false; readonly diagnostic: Diagnostic }
@@ -1233,20 +1415,39 @@ async function acquireHostInstallLock(
     };
   }
   try {
-    const token = randomUUID();
     const rootReal = await realpath(hostRoot);
-    const handle = await open(path, 'wx', 0o600);
+    const token = `${JSON.stringify({ schema: 'pappra/host-install-lock/1', token: randomUUID(), pid: process.pid, process_identity: captureProcessIdentity() ?? undefined })}\n`;
+    const revalidate = async () => {
+      if (
+        (await realpath(hostRoot)) !== rootReal ||
+        (await assertSafeTarget(hostRoot, path)) !== null
+      )
+        throw new Error('Host lock namespace changed.');
+    };
     try {
-      const stats = await handle.stat();
-      await handle.writeFile(token);
-      await handle.sync();
-      return {
-        ok: true,
-        lock: { path, token, dev: stats.dev, ino: stats.ino, rootReal },
-      };
-    } finally {
-      await handle.close().catch(() => undefined);
+      await publishPrivateLock(path, Buffer.from(token), revalidate);
+    } catch (error) {
+      if (
+        (error as NodeJS.ErrnoException).code !== 'EEXIST' ||
+        (await inspectPrivateLock(path)).state !== 'dead'
+      )
+        throw error;
+      await reclaimDeadPrivateLock(path, revalidate);
+      await publishPrivateLock(path, Buffer.from(token), revalidate);
     }
+    const observed = await observePath(path);
+    if (observed.kind !== 'file' || !observed.stats)
+      throw new Error('Host lock identity unavailable.');
+    return {
+      ok: true,
+      lock: {
+        path,
+        token,
+        dev: observed.stats.dev,
+        ino: observed.stats.ino,
+        rootReal,
+      },
+    };
   } catch (error) {
     const code =
       typeof error === 'object' &&
@@ -1263,7 +1464,7 @@ async function acquireHostInstallLock(
           : diagnosticCodes.host_install_partial,
         `Cannot acquire host install lock ${path}: ${error instanceof Error ? error.message : String(error)}`,
         path,
-        'Inspect the lock; stale locks require explicit manual resolution.',
+        `A live or unverified owner is preserved. Stop all writers for this host root, then use pappra host uninstall --host ${host} --host-root ${JSON.stringify(hostRoot)} --force --apply to quarantine an unknown legacy lock. Verified live owners are never overridden.`,
       ),
     };
   }
@@ -1307,6 +1508,7 @@ export class HostIntegrationService {
   readonly #hostVersion: string | null;
   readonly #selectedHosts: readonly HostName[];
   readonly #observedAt: string;
+  readonly #versionProbe: (host: HostName) => string | null;
 
   constructor(options: HostIntegrationOptions) {
     this.#root = resolve(options.root);
@@ -1316,6 +1518,9 @@ export class HostIntegrationService {
     this.#hostVersion = options.hostVersion ?? null;
     this.#selectedHosts = options.selectedHosts ?? ['pi', 'codex', 'claude'];
     this.#observedAt = options.observedAt ?? now();
+    this.#versionProbe =
+      options.versionProbe ??
+      ((host) => observeHostVersion(host, this.#pathEnv));
   }
 
   detect(): readonly HostCapabilities[] {
@@ -1369,7 +1574,7 @@ export class HostIntegrationService {
       options.hostRoot ?? join(this.#root, '.pappra', 'local', 'hosts', host),
     );
     const hookSource = resolve(options.runtimeEntry ?? this.#runtimeEntry);
-    const version = options.hostVersion ?? this.#hostVersion;
+    const version = this.#versionProbe(host);
     if (!isSupportedVersion(host, version)) {
       throw new Error(
         `Host ${host} version ${version ?? '(unknown)'} is outside the pinned support matrix.`,
@@ -1436,7 +1641,7 @@ export class HostIntegrationService {
         options.hostRoot ?? join(this.#root, '.pappra', 'local', 'hosts', host),
       );
       const hookSource = resolve(options.runtimeEntry ?? this.#runtimeEntry);
-      const version = options.hostVersion ?? this.#hostVersion;
+      const version = this.#versionProbe(host);
       if (!isSupportedVersion(host, version)) {
         return hostIntegrationResultSchema.parse({
           schema: 'pappra/host-integration/1',
@@ -1558,7 +1763,7 @@ export class HostIntegrationService {
         });
       }
     }
-    const lockResult = await acquireHostInstallLock(plan.hostRoot);
+    const lockResult = await acquireHostInstallLock(plan.hostRoot, host);
     if (!lockResult.ok) {
       return hostIntegrationResultSchema.parse({
         schema: 'pappra/host-integration/1',
@@ -1755,7 +1960,7 @@ export class HostIntegrationService {
     const hostRoot = resolve(
       options.hostRoot ?? join(this.#root, '.pappra', 'local', 'hosts', host),
     );
-    const version = options.hostVersion ?? this.#hostVersion;
+    const version = this.#versionProbe(host);
     const capabilities = this.describe(host);
     const checks: HostVerificationCheck[] = [];
     if (!isSupportedVersion(host, version)) {
@@ -2034,6 +2239,292 @@ export class HostIntegrationService {
       diagnostics: [],
       residualPaths: [],
     });
+  }
+
+  async uninstall(
+    host: HostName,
+    options: HostTargetOptions & {
+      readonly apply: boolean;
+      readonly force?: boolean;
+    },
+  ): Promise<HostUninstallResult> {
+    const hostRoot = resolve(
+      options.hostRoot ?? join(this.#root, '.pappra', 'local', 'hosts', host),
+    );
+    const plannedFiles: string[] = [];
+    const removedFiles: string[] = [];
+    const retainedPaths: string[] = [];
+    const quarantinedLocks: string[] = [];
+    const diagnostics: Diagnostic[] = [];
+    const result = (status: HostUninstallResult['status'], ok: boolean) => {
+      if (!ok && diagnostics.length === 0)
+        diagnostics.push(
+          diagnostic(
+            diagnosticCodes.host_install_conflict,
+            'Host uninstall preserved edited, unsafe or unreadable content.',
+            retainedPaths[0] ?? hostRoot,
+            'Inspect the reported preserved paths; no unknown user content is removed automatically.',
+          ),
+        );
+      return hostUninstallResultSchema.parse({
+        schema: 'pappra/host-uninstall/1',
+        host,
+        hostRoot,
+        ok,
+        status,
+        plannedFiles,
+        removedFiles,
+        retainedPaths: [...new Set(retainedPaths)],
+        quarantinedLocks,
+        diagnostics: diagnostics.slice(0, 32),
+      });
+    };
+    const manifestPath = join(hostRoot, BUNDLE_FILE);
+    const boundary = await assertSafeTarget(hostRoot, manifestPath);
+    if (boundary) {
+      diagnostics.push(boundary);
+      return result('conflict', false);
+    }
+    const lockPath = join(hostRoot, '.pappra-host.lock');
+    const lockOwner = await inspectPrivateLock(lockPath);
+    const lockFile = await observePath(lockPath);
+    if (
+      lockOwner.state === 'alive' ||
+      (lockFile.kind !== 'missing' &&
+        lockOwner.state === 'unknown' &&
+        !options.force)
+    ) {
+      retainedPaths.push(lockPath);
+      diagnostics.push(
+        diagnostic(
+          diagnosticCodes.host_install_conflict,
+          lockOwner.state === 'alive'
+            ? 'A verified live host writer holds this lock; --force cannot override it.'
+            : 'The host lock owner is unknown; it was preserved.',
+          lockPath,
+          `Stop all host writers, then use pappra host uninstall --host ${host} --host-root ${JSON.stringify(hostRoot)} --force --apply to archive an unknown lock. --force asserts all host writers are stopped and never permits deleting edited assets.`,
+        ),
+      );
+      return result('conflict', false);
+    }
+    if (
+      lockFile.kind !== 'missing' &&
+      lockOwner.state === 'unknown' &&
+      options.force
+    ) {
+      plannedFiles.push('.pappra-host.lock');
+      if (options.apply) {
+        const archived = await quarantineUnknownHostLock(
+          this.#root,
+          hostRoot,
+        ).catch(() => null);
+        if (!archived) {
+          retainedPaths.push(lockPath);
+          return result('conflict', false);
+        }
+        quarantinedLocks.push(archived);
+        removedFiles.push('.pappra-host.lock');
+      }
+    }
+    const manifestRead = await readFileBounded(manifestPath, 256 * 1024);
+    if (!manifestRead.ok) {
+      if (manifestRead.code === diagnosticCodes.fileNotFound)
+        return result(
+          removedFiles.length > 0
+            ? 'removed'
+            : plannedFiles.length > 0
+              ? 'planned'
+              : 'unchanged',
+          true,
+        );
+      retainedPaths.push(manifestPath);
+      return result('conflict', false);
+    }
+    const manifest = await this.readManifest(hostRoot);
+    const expression = hookTarget(
+      host,
+      this.#root,
+      hostRoot,
+      this.#runtimeEntry,
+    ).expression;
+    if (!manifest) {
+      retainedPaths.push(manifestPath);
+      return result('conflict', false);
+    }
+    const identity = validateManifestIdentity(
+      manifest,
+      host,
+      hostRoot,
+      hostConfigRelativePath(host),
+      expression,
+      false,
+    );
+    if (identity) {
+      diagnostics.push(identity);
+      return result('conflict', false);
+    }
+    let payload;
+    try {
+      payload = await loadHostBundle(host, getPackageInfo().version, {
+        hookExpression: expression,
+      });
+    } catch {
+      retainedPaths.push(manifestPath);
+      return result('failed', false);
+    }
+    const allowed = new Set(
+      [...payload.contents.keys()].map((file) =>
+        installPathForBundleFile(host, file),
+      ),
+    );
+    const configRelative = hostConfigRelativePath(host);
+    let config: { path: string; before: string; bytes: Buffer } | null = null;
+    if (host !== 'pi' && configRelative) {
+      const file = join(hostRoot, configRelative);
+      const unsafe = await assertSafeTarget(hostRoot, file);
+      if (unsafe) {
+        diagnostics.push(unsafe);
+        retainedPaths.push(file);
+        return result('conflict', false);
+      }
+      const read = await readFileBounded(file, DEFAULT_MAX_CONFIG_BYTES);
+      if (read.ok) {
+        const patch = removeManagedConfig(
+          host,
+          read.value.bytes,
+          expression,
+          file,
+        );
+        if (!patch.ok) {
+          diagnostics.push(patch.diagnostic);
+          retainedPaths.push(file);
+          return result('conflict', false);
+        }
+        if (!patch.bytes.equals(read.value.bytes)) {
+          plannedFiles.push(configRelative);
+          config = {
+            path: file,
+            before: read.value.digest,
+            bytes: patch.bytes,
+          };
+        }
+      } else if (read.code !== diagnosticCodes.fileNotFound) {
+        retainedPaths.push(file);
+        return result('conflict', false);
+      }
+    }
+    const candidates: { path: string; digest: string }[] = [];
+    for (const entry of manifest.files) {
+      if (entry.path === configRelative) continue;
+      const file = join(hostRoot, ...entry.path.split('/'));
+      if (!allowed.has(entry.path)) {
+        retainedPaths.push(file);
+        continue;
+      }
+      const unsafe = await assertSafeTarget(hostRoot, file);
+      if (unsafe) {
+        diagnostics.push(unsafe);
+        retainedPaths.push(file);
+        continue;
+      }
+      const read = await readFileBounded(file, 8 * 1024 * 1024);
+      if (!read.ok && read.code === diagnosticCodes.fileNotFound) continue;
+      if (!read.ok || read.value.digest !== entry.digest) {
+        retainedPaths.push(file);
+        continue;
+      }
+      plannedFiles.push(entry.path);
+      candidates.push({ path: entry.path, digest: entry.digest });
+    }
+    if (
+      host === 'pi' &&
+      retainedPaths.some((file) =>
+        isPathInside(join(hostRoot, 'extensions'), file),
+      )
+    ) {
+      // An edited entrypoint may still import its runtime companion.
+      for (let index = candidates.length - 1; index >= 0; index -= 1) {
+        const entry = candidates[index]!;
+        if (!entry.path.startsWith('extensions/')) continue;
+        retainedPaths.push(join(hostRoot, ...entry.path.split('/')));
+        plannedFiles.splice(plannedFiles.indexOf(entry.path), 1);
+        candidates.splice(index, 1);
+      }
+    }
+    if (retainedPaths.length === 0) plannedFiles.push(BUNDLE_FILE);
+    if (!options.apply)
+      return result(
+        retainedPaths.length ? 'partial' : 'planned',
+        retainedPaths.length === 0,
+      );
+    const lock = await acquireHostInstallLock(hostRoot, host);
+    if (!lock.ok) {
+      diagnostics.push(lock.diagnostic);
+      return result('conflict', false);
+    }
+    let status: HostUninstallResult['status'] = 'removed';
+    try {
+      const freshManifest = await readFileBounded(manifestPath, 256 * 1024);
+      if (
+        !freshManifest.ok ||
+        freshManifest.value.digest !== manifestRead.value.digest
+      ) {
+        retainedPaths.push(manifestPath);
+        status = 'conflict';
+      } else {
+        if (config) {
+          const written = await writeAtomic(config.path, config.bytes, {
+            replace: true,
+            beforeDigest: config.before,
+            root: hostRoot,
+          });
+          if (!written.ok) {
+            diagnostics.push(written.diagnostic);
+            retainedPaths.push(config.path);
+            status = 'conflict';
+          }
+        }
+        const remove = async (entry: { path: string; digest: string }) => {
+          const file = join(hostRoot, ...entry.path.split('/'));
+          const observed = await observePath(file);
+          if (observed.kind === 'missing') return;
+          if (observed.kind !== 'file' || !observed.stats) {
+            retainedPaths.push(file);
+            return;
+          }
+          const removed = await removeOwnedFile(hostRoot, {
+            path: entry.path,
+            installId: randomUUID(),
+            operation: 'create',
+            beforeDigest: null,
+            afterDigest: entry.digest,
+            backupRef: null,
+            backupDigest: null,
+            identity: { dev: observed.stats.dev, ino: observed.stats.ino },
+            owner: 'pappra',
+            verifiedAt: now(),
+          });
+          if (removed.ok) removedFiles.push(entry.path);
+          else retainedPaths.push(file);
+        };
+        if (status !== 'conflict') {
+          for (const entry of candidates) await remove(entry);
+          if (retainedPaths.length === 0)
+            await remove({
+              path: BUNDLE_FILE,
+              digest: manifestRead.value.digest,
+            });
+        }
+      }
+    } catch {
+      status = 'failed';
+      retainedPaths.push(manifestPath);
+    } finally {
+      if (!(await releaseHostInstallLock(lock.lock)))
+        retainedPaths.push(lock.lock.path);
+    }
+    if (status === 'removed' && retainedPaths.length > 0) status = 'partial';
+    return result(status, status === 'removed');
   }
 
   async readManifest(hostRoot: string): Promise<HostInstallManifest | null> {

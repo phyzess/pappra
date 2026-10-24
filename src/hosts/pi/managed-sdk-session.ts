@@ -1,3 +1,4 @@
+import { object as isRecord } from '../../infra/validation.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import {
@@ -5,15 +6,16 @@ import {
   managedProviderResponseId,
 } from './managed-provider-diagnostics.js';
 import { managedPiHostIdentity } from './managed-host-identity.js';
+import { captureProcessIdentity } from '../../infra/process-identity.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { canonicalJson } from '../../collab/envelope.js';
-import type { ManagedPiExecutionScope } from '../../app/collab-session-transition.js';
+import type { ManagedPiExecutionScope } from '../../schemas/managed-pi-execution.js';
 import {
   assertManagedPiSdkResumeAuthorization,
   type ManagedPiSdkResumeAuthorization,
-} from '../../app/managed-pi-resume-admission.js';
+} from './resume-capability.js';
 import {
   createManagedPiJournalArtifacts,
   ManagedPiSessionError,
@@ -490,8 +492,25 @@ function verifySdkPrivateSourceHashes(sdkModulePath: string) {
   }
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
+/** Read-only compatibility gate: never create a session or freeze a source. */
+export function verifyManagedPiSdkInstallation(sdkModulePath: string): void {
+  if (!path.isAbsolute(sdkModulePath))
+    throw new ManagedPiSessionError('sdk_module_path_must_be_absolute');
+  const packageFile = path.join(
+    path.dirname(path.dirname(sdkModulePath)),
+    'package.json',
+  );
+  const stat = fs.lstatSync(packageFile);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024)
+    throw new ManagedPiSessionError('sdk_package_invalid');
+  const manifest: unknown = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+  if (
+    !isRecord(manifest) ||
+    manifest['name'] !== '@earendil-works/pi-coding-agent' ||
+    manifest['version'] !== SDK_VERSION
+  )
+    throw new ManagedPiSessionError('unsupported_sdk_version');
+  verifySdkPrivateSourceHashes(sdkModulePath);
 }
 
 interface CapturedPrivateQueues {
@@ -1021,11 +1040,18 @@ export class ManagedPiSdkSessionController {
           );
         try {
           this.input.fence.invalidateResumeCheckpoint(`semantic_${name}`);
+          const serializedArguments = JSON.stringify(args);
           this.input.journal.append(
             name === 'executeBash'
               ? 'sdk_user_bash_admitted'
               : 'sdk_semantic_input_admitted',
-            { session_id: session.sessionId, channel: name, arguments: args },
+            {
+              session_id: session.sessionId,
+              channel: name,
+              argument_count: args.length,
+              arguments_digest: `sha256:${createHash('sha256').update(serializedArguments).digest('hex')}`,
+              arguments_byte_length: Buffer.byteLength(serializedArguments),
+            },
           );
         } catch (error) {
           this.input.fence.fence('semantic_input_journal_failed');
@@ -1125,10 +1151,19 @@ export class ManagedPiSdkSessionController {
         });
       }
       if (type === 'queue_update') {
+        const queueDigests = (value: unknown) =>
+          Array.isArray(value)
+            ? value.map(
+                (item) =>
+                  `sha256:${createHash('sha256')
+                    .update(JSON.stringify(item) ?? 'undefined')
+                    .digest('hex')}`,
+              )
+            : null;
         this.input.journal.append('sdk_queue_observed', {
           session_id: session.sessionId,
-          steering: event['steering'],
-          follow_up: event['followUp'],
+          steering: queueDigests(event['steering']),
+          follow_up: queueDigests(event['followUp']),
         });
       } else if (
         type === 'tool_execution_start' ||
@@ -1576,6 +1611,7 @@ export class ManagedPiSdkSessionController {
     this.input.journal.append('sdk_runtime_disposed', {
       session_id: finalSnapshot.session.sessionId,
       process_pid: process.pid,
+      process_identity: captureProcessIdentity(),
       process_exit: 'not_owned',
       blockers: finalSnapshot.blockers,
     });

@@ -9,8 +9,22 @@ import { transact } from '../collab/store.js';
 import type { TaskRecord } from '../collab/types.js';
 import { createLocalTaskRecordReader } from '../hosts/integration/pi-bootstrap-runtime.js';
 import type { ManagedPiSdkSessionSnapshot } from '../hosts/pi/managed-sdk-session.js';
+import {
+  assertManagedPiSdkResumeAuthorization,
+  issueManagedPiResumeCapability,
+  isManagedPiResumeCapabilityReserved,
+  markManagedPiResumeCapabilityRegistered,
+  revokeManagedPiResumeCapability,
+  type ManagedPiSdkResumeAuthorization,
+} from '../hosts/pi/resume-capability.js';
 import { managedPiHostIdentity } from '../hosts/pi/managed-host-identity.js';
-import type { ManagedPiExecutionScope } from './collab-session-transition.js';
+import {
+  captureProcessIdentity,
+  isLocalProcessIdentity,
+  observeProcessIdentity,
+  type LocalProcessIdentity,
+} from '../infra/process-identity.js';
+import type { ManagedPiExecutionScope } from '../schemas/managed-pi-execution.js';
 import type { ManagedPiRequest } from './managed-pi.js';
 import { readBoundedFile } from './bounded-file.js';
 
@@ -20,23 +34,8 @@ export interface ManagedPiResumeConfig {
   readonly sourceRunId: string;
 }
 
-/** In-process authority; serialized objects never grant permission to reopen history. */
-export interface ManagedPiSdkResumeAuthorization {
-  readonly sessionId: string;
-  readonly cwd: string;
-  readonly sessionFile: string;
-  readonly transcriptDigest: string;
-  readonly scope: ManagedPiExecutionScope;
-  readonly checkpointSequence: number;
-  readonly checkpointDigest: string;
-  readonly sourceRunId: string;
-  readonly sourcePid: number;
-  readonly hostIdentity: string;
-  readonly registeredInputs: readonly {
-    readonly requestId: string;
-    readonly inputDigest: string;
-  }[];
-}
+export { assertManagedPiSdkResumeAuthorization };
+export type { ManagedPiSdkResumeAuthorization };
 
 export interface ManagedPiResumeRuntimeRegistration {
   readonly schema: 'pappra/managed-pi-runtime/1';
@@ -71,7 +70,6 @@ interface ResumeState {
   readonly reservationId: string;
   readonly newJournal: string;
   readonly authorityDigest: string;
-  registered: boolean;
 }
 
 const AUTHORIZATIONS = new WeakMap<object, ResumeState>();
@@ -150,9 +148,14 @@ function assertPinned(expected: FilePin, maxBytes: number): void {
     fail('source_file_changed');
 }
 
-function assertDead(pid: number): void {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid)
-    fail('source_pid_invalid');
+function assertDead(pid: number, identity?: LocalProcessIdentity): void {
+  if (!Number.isSafeInteger(pid) || pid <= 0) fail('source_pid_invalid');
+  if (identity) {
+    if (identity.pid !== pid || observeProcessIdentity(identity) !== 'dead')
+      fail('source_still_alive_or_unverified');
+    return;
+  }
+  if (pid === process.pid) fail('source_pid_invalid');
   try {
     process.kill(pid, 0);
   } catch (error) {
@@ -368,6 +371,11 @@ function reservations(record: TaskRecord): Record<string, unknown>[] {
 
 /** Reclaim only owners proven dead; a reused or inaccessible PID stays reserved. */
 function reservationOwnerDead(row: Record<string, unknown>): boolean {
+  if (isLocalProcessIdentity(row.process_identity))
+    return (
+      row.process_identity.pid === row.pid &&
+      observeProcessIdentity(row.process_identity) === 'dead'
+    );
   if (!Number.isSafeInteger(row.pid) || Number(row.pid) <= 0) return false;
   if (
     typeof row.host_identity === 'string' &&
@@ -471,7 +479,6 @@ export async function prepareManagedPiResume(
       findAttempt(record, scope.subtask_id, scope.attempt)?.input_revision
   )
     return fail('source_registration_mismatch');
-  assertDead(source.pid);
   const journal = pin(config.sourceJournalPath, MAX_JOURNAL_BYTES);
   const descriptor = pin(source.descriptor_file, 4096);
   const control = parse(descriptor.text);
@@ -501,8 +508,17 @@ export async function prepareManagedPiResume(
     return fail('checkpoint_missing_or_mismatched');
   assertIdle(checkpoint.snapshot);
   const hostIdentity = managedPiHostIdentity();
-  if (!hostIdentity || checkpoint.host_identity !== hostIdentity)
+  const sourceProcessIdentity = isLocalProcessIdentity(
+    checkpoint.process_identity,
+  )
+    ? checkpoint.process_identity
+    : undefined;
+  if (
+    !hostIdentity ||
+    (!sourceProcessIdentity && checkpoint.host_identity !== hostIdentity)
+  )
     return fail('source_host_mismatch');
+  assertDead(source.pid, sourceProcessIdentity);
   if (
     checkpoint.snapshot.session.sessionId !== scope.session_id ||
     checkpoint.snapshot.session.sessionFile !== config.sourceSessionFile ||
@@ -573,23 +589,28 @@ export async function prepareManagedPiResume(
   for (const claim of frozenScope.claim_epochs) Object.freeze(claim);
   Object.freeze(frozenScope.claim_epochs);
   Object.freeze(frozenScope);
-  const authorization: ManagedPiSdkResumeAuthorization = Object.freeze({
-    sessionId: scope.session_id,
-    cwd: scope.cwd,
-    sessionFile: config.sourceSessionFile,
-    transcriptDigest: transcript.pin.digest,
-    scope: frozenScope,
-    checkpointSequence: Number(checkpoint.sequence),
-    checkpointDigest: String(checkpoint.digest),
-    sourceRunId: source.controller_run_id,
-    sourcePid: source.pid,
-    hostIdentity,
-    registeredInputs: Object.freeze(
-      [...inputMap].map(([requestId, inputDigest]) =>
-        Object.freeze({ requestId, inputDigest }),
-      ),
-    ),
-  });
+  const authorization: ManagedPiSdkResumeAuthorization =
+    issueManagedPiResumeCapability(
+      {
+        sessionId: scope.session_id,
+        cwd: scope.cwd,
+        sessionFile: config.sourceSessionFile,
+        transcriptDigest: transcript.pin.digest,
+        scope: frozenScope,
+        checkpointSequence: Number(checkpoint.sequence),
+        checkpointDigest: String(checkpoint.digest),
+        sourceRunId: source.controller_run_id,
+        sourcePid: source.pid,
+        ...(sourceProcessIdentity ? { sourceProcessIdentity } : {}),
+        hostIdentity,
+        registeredInputs: Object.freeze(
+          [...inputMap].map(([requestId, inputDigest]) =>
+            Object.freeze({ requestId, inputDigest }),
+          ),
+        ),
+      },
+      (expected) => assertCurrentResumeAdmission(authorization, expected),
+    );
   const reservationId = digest(
     canonicalJson({
       session: scope.session_id,
@@ -608,13 +629,12 @@ export async function prepareManagedPiResume(
     reservationId,
     newJournal: request.journalPath,
     authorityDigest,
-    registered: false,
   };
   const saved = transact(scope.task_root, {
     actor: 'managed-pi-resume',
     purpose: 'reserve-exact-session-resume',
     apply(current) {
-      assertDead(source.pid);
+      assertDead(source.pid, sourceProcessIdentity);
       if (
         authority(current, scope) !== authorityDigest ||
         canonicalJson(sourceRuntime(current, scope.session_id)) !==
@@ -636,6 +656,7 @@ export async function prepareManagedPiResume(
         source_run_id: source.controller_run_id,
         checkpoint_digest: checkpoint.digest,
         pid: process.pid,
+        process_identity: captureProcessIdentity(),
         host_identity: hostIdentity,
         journal_path: request.journalPath,
         status: 'reserved',
@@ -667,32 +688,40 @@ export async function prepareManagedPiResume(
 /** Release this process's exact reservation after startup failure or runtime shutdown. */
 export function releaseManagedPiResume(
   value: ManagedPiSdkResumeAuthorization,
-): void {
+): boolean {
   const state = AUTHORIZATIONS.get(value);
-  if (!state || state.pid !== process.pid) return;
-  const released = transact(value.scope.task_root, {
-    actor: 'managed-pi-resume',
-    purpose: 'release-exact-session-resume',
-    apply(record) {
-      record[RESERVATIONS] = reservations(record).filter(
-        (row) =>
-          row.reservation_id !== state.reservationId ||
-          row.pid !== state.pid ||
-          row.journal_path !== state.newJournal,
-      );
-      return {
-        record,
-        op: 'release-managed-pi-resume',
-        summary: { session_id: value.sessionId },
-        result: null,
-      };
-    },
-  });
-  if (!released.ok) return fail('release_failed');
-  AUTHORIZATIONS.delete(value);
+  if (!state || state.pid !== process.pid) return true;
+  try {
+    const released = transact(value.scope.task_root, {
+      actor: 'managed-pi-resume',
+      purpose: 'release-exact-session-resume',
+      apply(record) {
+        record[RESERVATIONS] = reservations(record).filter(
+          (row) =>
+            row.reservation_id !== state.reservationId ||
+            row.pid !== state.pid ||
+            row.journal_path !== state.newJournal,
+        );
+        return {
+          record,
+          op: 'release-managed-pi-resume',
+          summary: { session_id: value.sessionId },
+          result: null,
+        };
+      },
+    });
+    if (!released.ok) return false;
+    revokeManagedPiResumeCapability(value);
+    AUTHORIZATIONS.delete(value);
+    return true;
+  } catch {
+    // Cleanup failure must not replace the original startup/runtime error.
+    // The exact dead process identity permits a later admission to reclaim it.
+    return false;
+  }
 }
 
-export function assertManagedPiSdkResumeAuthorization(
+function assertCurrentResumeAdmission(
   value: ManagedPiSdkResumeAuthorization,
   expected: { sessionId: string; cwd: string },
 ): void {
@@ -700,14 +729,14 @@ export function assertManagedPiSdkResumeAuthorization(
   if (
     !state ||
     state.pid !== process.pid ||
-    state.registered ||
+    !isManagedPiResumeCapabilityReserved(value) ||
     value.sessionId !== expected.sessionId ||
     value.cwd !== expected.cwd
   )
     return fail('authorization_invalid');
   if (managedPiHostIdentity() !== value.hostIdentity)
     return fail('source_host_mismatch');
-  assertDead(value.sourcePid);
+  assertDead(value.sourcePid, value.sourceProcessIdentity);
   assertPinned(state.journal, MAX_JOURNAL_BYTES);
   assertPinned(state.descriptor, 4096);
   assertPinned(state.transcript, MAX_TRANSCRIPT_BYTES);
@@ -730,7 +759,7 @@ export function consumeManagedPiResumeRegistration(
   const state = AUTHORIZATIONS.get(value);
   if (
     !state ||
-    state.registered ||
+    !isManagedPiResumeCapabilityReserved(value) ||
     state.pid !== process.pid ||
     !validReservation(record, state, 'reserved') ||
     authority(record, value.scope) !== state.authorityDigest ||
@@ -744,7 +773,7 @@ export function consumeManagedPiResumeRegistration(
     canonicalJson(next.scope) !== canonicalJson(value.scope)
   )
     return fail('registration_not_authorized');
-  assertDead(value.sourcePid);
+  assertDead(value.sourcePid, value.sourceProcessIdentity);
   assertPinned(state.journal, MAX_JOURNAL_BYTES);
   assertPinned(state.descriptor, 4096);
   const reservation = reservations(record).find(
@@ -779,7 +808,7 @@ export function canExecuteManagedPiResume(
     const registered =
       current.pid === process.pid &&
       current.descriptor_file === `${state.newJournal}.control.json`;
-    if (registered) state.registered = true;
+    if (registered) markManagedPiResumeCapabilityRegistered(value);
     return registered;
   } catch {
     return false;

@@ -26,7 +26,7 @@ import {
   readPiRecoveryConfig,
   type PiRecoveryConfig,
   type RecoveryHostFacts,
-} from '../../src/hosts/integration/pi-recovery-extension.js';
+} from '../../src/adapters/pi/recovery-extension.js';
 import { makeTaskDomain } from '../collab/task-resources-fixtures.js';
 
 const WRITER_A: Identity = {

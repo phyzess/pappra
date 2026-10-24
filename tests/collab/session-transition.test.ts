@@ -886,6 +886,32 @@ test('managed receiver verifies context before ACK and cannot start work before 
       },
     } as unknown as ManagedPiSdkSessionController;
     const journalPath = join(value.root, 'receiver.jsonl');
+    const setApproval = (blocked: boolean) =>
+      transact(value.taskRoot, {
+        actor: 'fixture',
+        purpose: 'receiver-approval-gate',
+        apply(record) {
+          if (blocked) record.attempts[0]!.awaiting = 'approval';
+          else delete record.attempts[0]!.awaiting;
+          return { record, op: 'fixture', summary: {}, result: null };
+        },
+      });
+    assert(setApproval(true).ok);
+    await assert.rejects(
+      prepareManagedPiHandoffReceiver(
+        runtime,
+        config.config,
+        referenceFile,
+        journalPath,
+      ),
+      /receiver_authority_changed_before_import/,
+    );
+    assert.equal(imports.length, 0);
+    assert.equal(
+      fs.existsSync(`${journalPath}.receiver-reservation.json`),
+      false,
+    );
+    assert(setApproval(false).ok);
     const receiver = await prepareManagedPiHandoffReceiver(
       runtime,
       config.config,
@@ -1021,6 +1047,52 @@ test('plan is read-only and installed Pi evidence blocks before freeze or succes
     assert.equal(current.handoffs?.[0]?.state, 'requested');
     assert.equal(current.claims?.[0]?.holder.agent_id, SOURCE.agent_id);
     assert.equal(current.claims?.[0]?.resource_epoch, 1);
+  } finally {
+    value.cleanup();
+  }
+});
+
+test('an incompatible successor SDK is rejected before source freeze or bootstrap', async () => {
+  const value = await fixture('unsupported-successor-sdk');
+  try {
+    const sdkRoot = join(value.root, 'sdk');
+    mkdirSync(join(sdkRoot, 'dist'), { recursive: true });
+    const sdkModule = join(sdkRoot, 'dist', 'index.js');
+    writeJson(join(sdkRoot, 'package.json'), {
+      name: '@earendil-works/pi-coding-agent',
+      version: '999.0.0',
+    });
+    writeFileSync(sdkModule, 'export const VERSION = "999.0.0";\n');
+    const bootstrapRequest = JSON.parse(
+      readFileSync(value.bootstrapRequestFile, 'utf8'),
+    ) as Record<string, unknown>;
+    bootstrapRequest['selected_model'] = {
+      preserve_daily: true,
+      openrouter_model: 'openai/gpt-6-luna',
+    };
+    bootstrapRequest['managed_runtime'] = {
+      sdk_module_path: sdkModule,
+      journal_path: join(value.root, 'successor.jsonl'),
+    };
+    writeJson(value.bootstrapRequestFile, bootstrapRequest);
+    const request = {
+      ...value.request,
+      bootstrap_request: {
+        ref: value.bootstrapRequestFile,
+        digest: sha256File(value.bootstrapRequestFile),
+      },
+    };
+    const host = fakeHost({ cwd: value.cwd, supported: true });
+    const bootstrap = new FixtureBootstrap(value);
+    const before = value.load().state_revision;
+    const result = await applySessionTransition(
+      request,
+      transitionDeps(host.host, bootstrap),
+    );
+    assert.equal(result.code, 'successor_sdk_incompatible');
+    assert.equal(host.freezeCalls(), 0);
+    assert.equal(bootstrap.applyCalls, 0);
+    assert.equal(value.load().state_revision, before);
   } finally {
     value.cleanup();
   }
@@ -1381,7 +1453,7 @@ test('supported test-only adapter orders ACK, claim/route transfer, first work a
     const deps = transitionDeps(host.host, bootstrap);
 
     const nativeFile = join(value.root, 'retirement-source.jsonl');
-    const nativeBytes = `${JSON.stringify({ type: 'session', id: SOURCE.session_id, cwd: value.cwd })}\n`;
+    const nativeBytes = `${JSON.stringify({ type: 'session', id: SOURCE.session_id, cwd: value.cwd })}\n${JSON.stringify({ type: 'message', content: 'x'.repeat(9 * 1024 * 1024) })}\n`;
     writeFileSync(nativeFile, nativeBytes, { mode: 0o600 });
     type RetirementRuntime = Parameters<typeof retireManagedPiSource>[1];
     let disposed = false;

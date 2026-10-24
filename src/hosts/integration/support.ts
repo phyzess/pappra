@@ -49,8 +49,19 @@ export function isSupportedVersion(
   host: HostName,
   version: string | null,
 ): boolean {
-  return version === HOST_SUPPORT[host].version;
+  return (
+    version !== null &&
+    HOST_EVENT_VERSIONS[host].some((observed) => observed === version)
+  );
 }
+
+/** Only versions with bounded local event/loader evidence are admitted here.
+ * The owned SDK adapter has a separate exact version/private-source contract. */
+export const HOST_EVENT_VERSIONS = {
+  pi: ['1.3.0', '1.4.0'],
+  codex: ['0.163.0', '0.164.0'],
+  claude: ['2.1.292', '2.1.308'],
+} as const;
 
 export function surfaceFor(
   host: HostName,

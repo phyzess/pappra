@@ -1,6 +1,6 @@
 {
   "name": "@phyzess/pappra",
-  "version": "0.1.0-beta.15",
+  "version": "0.1.0-beta.16",
   "description": "Portable coding-agent workspaces with knowledge, continuity, code navigation and optional collaboration.",
   "publishConfig": {
     "access": "public"
@@ -19,89 +19,13 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
     },
-    "./collab": {
-      "types": "./dist/collab/index.d.ts",
-      "import": "./dist/collab/index.js"
+    "./workspace": {
+      "types": "./dist/workspace/index.d.ts",
+      "import": "./dist/workspace/index.js"
     },
-    "./collab/admission": {
-      "types": "./dist/collab/admission.d.ts",
-      "import": "./dist/collab/admission.js"
-    },
-    "./collab/work-plan": {
-      "types": "./dist/collab/work-plan.d.ts",
-      "import": "./dist/collab/work-plan.js"
-    },
-    "./collab/role-plan": {
-      "types": "./dist/app/collab-role-plan.d.ts",
-      "import": "./dist/app/collab-role-plan.js"
-    },
-    "./collab/role-orchestration": {
-      "types": "./dist/app/collab-role-orchestration.d.ts",
-      "import": "./dist/app/collab-role-orchestration.js"
-    },
-    "./collab/automatic-handoff": {
-      "types": "./dist/app/collab-auto-handoff.d.ts",
-      "import": "./dist/app/collab-auto-handoff.js"
-    },
-    "./collab/work-plan-inspection": {
-      "types": "./dist/app/collab-work-plan.d.ts",
-      "import": "./dist/app/collab-work-plan.js"
-    },
-    "./collab/work-execution": {
-      "types": "./dist/app/collab-work-execution.d.ts",
-      "import": "./dist/app/collab-work-execution.js"
-    },
-    "./collab/recovery": {
-      "types": "./dist/app/collab-recovery.d.ts",
-      "import": "./dist/app/collab-recovery.js"
-    },
-    "./collab/recovery-projection": {
-      "types": "./dist/app/collab-recovery-projection.d.ts",
-      "import": "./dist/app/collab-recovery-projection.js"
-    },
-    "./collab/recovery-executor": {
-      "types": "./dist/app/collab-recovery-executor.d.ts",
-      "import": "./dist/app/collab-recovery-executor.js"
-    },
-    "./collab/session-transition": {
-      "types": "./dist/app/collab-session-transition.d.ts",
-      "import": "./dist/app/collab-session-transition.js"
-    },
-    "./hosts/pi-recovery": {
-      "types": "./dist/hosts/integration/pi-recovery-extension.d.ts",
-      "import": "./dist/hosts/integration/pi-recovery-extension.js"
-    },
-    "./hosts/pi-managed": {
-      "types": "./dist/hosts/pi/managed-session.d.ts",
-      "import": "./dist/hosts/pi/managed-session.js"
-    },
-    "./hosts/pi-managed-sdk": {
-      "types": "./dist/hosts/pi/managed-sdk-session.d.ts",
-      "import": "./dist/hosts/pi/managed-sdk-session.js"
-    },
-    "./hosts/pi-session-transition": {
-      "types": "./dist/hosts/integration/pi-session-transition-extension.d.ts",
-      "import": "./dist/hosts/integration/pi-session-transition-extension.js"
-    },
-    "./hosts": {
-      "types": "./dist/hosts/index.d.ts",
-      "import": "./dist/hosts/index.js"
-    },
-    "./doctor": {
-      "types": "./dist/app/doctor.d.ts",
-      "import": "./dist/app/doctor.js"
-    },
-    "./init": {
-      "types": "./dist/app/init.d.ts",
-      "import": "./dist/app/init.js"
-    },
-    "./collaboration": {
-      "types": "./dist/app/collaboration.d.ts",
-      "import": "./dist/app/collaboration.js"
-    },
-    "./install": {
-      "types": "./dist/install/index.d.ts",
-      "import": "./dist/install/index.js"
+    "./knowledge": {
+      "types": "./dist/knowledge/index.d.ts",
+      "import": "./dist/knowledge/index.js"
     },
     "./continuity": {
       "types": "./dist/continuity/index.d.ts",
@@ -111,17 +35,37 @@
       "types": "./dist/code/index.d.ts",
       "import": "./dist/code/index.js"
     },
-    "./knowledge": {
-      "types": "./dist/knowledge/index.d.ts",
-      "import": "./dist/knowledge/index.js"
-    },
     "./schemas": {
       "types": "./dist/schemas/index.d.ts",
       "import": "./dist/schemas/index.js"
     },
-    "./workspace": {
-      "types": "./dist/workspace/index.d.ts",
-      "import": "./dist/workspace/index.js"
+    "./install": {
+      "types": "./dist/install/index.d.ts",
+      "import": "./dist/install/index.js"
+    },
+    "./hosts": {
+      "types": "./dist/hosts/index.d.ts",
+      "import": "./dist/hosts/index.js"
+    },
+    "./init": {
+      "types": "./dist/init.d.ts",
+      "import": "./dist/init.js"
+    },
+    "./doctor": {
+      "types": "./dist/doctor.d.ts",
+      "import": "./dist/doctor.js"
+    },
+    "./collab": {
+      "types": "./dist/collab/index.d.ts",
+      "import": "./dist/collab/index.js"
+    },
+    "./experimental": {
+      "types": "./dist/experimental/index.d.ts",
+      "import": "./dist/experimental/index.js"
+    },
+    "./experimental/pi": {
+      "types": "./dist/experimental/pi.d.ts",
+      "import": "./dist/experimental/pi.js"
     },
     "./package.json": "./package.json"
   },

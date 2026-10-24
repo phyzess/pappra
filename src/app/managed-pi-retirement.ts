@@ -17,6 +17,7 @@ type RetirementRuntime = Pick<
   ManagedPiSdkSessionController,
   'observe' | 'snapshot' | 'stopOwnedRuntime' | 'isDisposed'
 >;
+const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
 export interface ManagedPiRetirementReceipt {
   readonly schema: 'pappra/managed-pi-retirement/1';
   readonly transition_id: string;
@@ -38,7 +39,7 @@ export interface ManagedPiRetirementReceipt {
 
 function transcript(file: string, sessionId: string, cwd: string) {
   const before = fs.lstatSync(file);
-  const read = readBoundedFile(file, 8 * 1024 * 1024);
+  const read = readBoundedFile(file, MAX_TRANSCRIPT_BYTES);
   const after = fs.lstatSync(file);
   if (
     !read.ok ||
@@ -106,7 +107,7 @@ export async function retireManagedPiSource(
     const read = readBoundedFile(receiptFile, 16 * 1024);
     if (!read.ok) throw new Error('retirement_receipt_unreadable');
     const value = JSON.parse(read.text) as ManagedPiRetirementReceipt;
-    const archive = readBoundedFile(archiveFile, 8 * 1024 * 1024);
+    const archive = readBoundedFile(archiveFile, MAX_TRANSCRIPT_BYTES);
     if (
       !runtime.isDisposed ||
       value.schema !== 'pappra/managed-pi-retirement/1' ||
@@ -138,7 +139,7 @@ export async function retireManagedPiSource(
   const bytes = transcript(nativeFile, observed.native.sessionId, observed.cwd);
   const existing = fs.lstatSync(archiveFile, { throwIfNoEntry: false });
   if (existing) {
-    const saved = readBoundedFile(archiveFile, 8 * 1024 * 1024);
+    const saved = readBoundedFile(archiveFile, MAX_TRANSCRIPT_BYTES);
     if (!saved.ok || saved.digest !== bytes.digest)
       throw new Error('retirement_archive_conflict');
   } else {

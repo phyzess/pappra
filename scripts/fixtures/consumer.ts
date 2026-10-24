@@ -19,21 +19,28 @@ assert(typeof manifest === 'object' && manifest !== null);
 assert('schema' in manifest && manifest.schema === 'pappra/assets/1');
 for (const [subpath, required] of [
   ['collab', ['store', 'resources', 'messages', 'handoff']],
-  ['collab/admission', ['admitLaunch', 'reserveLaunch', 'settleLaunch']],
-  ['collab/role-plan', ['expandRolePlan', 'aggregateRolePlan']],
-  ['hosts/pi-managed', ['startManagedPiSession', 'requestManagedPiControl']],
-  ['hosts/pi-managed-sdk', ['startManagedPiSdkSession']],
   [
-    'collaboration',
+    'experimental',
     [
-      'prepareCollaboration',
-      'admitPrepared',
-      'startPrepared',
-      'driveRun',
-      'FixtureController',
-      'PiRpcController',
-      'inspectPreparedHistory',
+      'collaboration',
+      'collabAdmission',
+      'collabRolePlan',
+      'collabRecovery',
+      'collabRecoveryExecutor',
+      'collabRecoveryProjection',
+      'collabSessionTransition',
+      'collabWorkPlan',
+      'collabWorkPlanInspection',
+      'collabWorkExecution',
+      'piManaged',
+      'piManagedSdk',
+      'piRecovery',
+      'piSessionTransition',
     ],
+  ],
+  [
+    'experimental/pi',
+    ['piManaged', 'piManagedSdk', 'piRecovery', 'piSessionTransition'],
   ],
   [
     'hosts',
@@ -153,6 +160,7 @@ interface HostApiLike {
     readonly pathEnv: string;
     readonly hostVersion: string;
     readonly observedAt: string;
+    readonly versionProbe: () => string | null;
   }) => HostServiceLike;
 }
 const hostApi = (await import(
@@ -164,6 +172,9 @@ const hostPlan = await new hostApi.HostIntegrationService({
   pathEnv: '',
   hostVersion: '1.3.0',
   observedAt: '2026-10-19T00:00:00.000Z',
+  // This consumer checks packaged assets and API loading, independently of
+  // which native hosts happen to be installed on the packaging machine.
+  versionProbe: () => '1.3.0',
 }).plan('pi');
 assert(hostPlan.bundleDigest.startsWith('sha256:'));
 assert(hostPlan.files.some((file) => file.path === 'skills/pappra/SKILL.md'));

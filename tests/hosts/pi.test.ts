@@ -16,7 +16,7 @@ import type {
   Identity,
 } from '../../src/collab/types.js';
 
-function createCancelMessage(
+function buildCancelMessage(
   box: ReturnType<typeof launchFixture>,
   options: {
     readonly from?: Identity;
@@ -34,7 +34,7 @@ function createCancelMessage(
     session_id: box.assignment.assignee.session_id,
     harness: box.assignment.assignee.harness ?? null,
   };
-  const message = buildMessage({
+  return buildMessage({
     type: 'CANCEL',
     task_id: box.assignment.task_id,
     from: options.from ?? coordinator,
@@ -44,6 +44,13 @@ function createCancelMessage(
     owner_epoch: options.ownerEpoch ?? box.assignment.coordinator.owner_epoch,
     body: { reason: 'fixture cancellation intent' },
   });
+}
+
+function createCancelMessage(
+  box: ReturnType<typeof launchFixture>,
+  options: Parameters<typeof buildCancelMessage>[1] = {},
+) {
+  const message = buildCancelMessage(box, options);
   const submitted = submitMessage(box.taskRoot, message);
   if (!submitted.ok) {
     throw new Error(`Could not register fixture CANCEL: ${submitted.reason}`);
@@ -243,7 +250,7 @@ test('Pi cancel rejects bad intents before native side effects', async () => {
     }),
   );
   await assertRejected('foreign', 'cancel_intent_mismatch', async (box) => {
-    const message = createCancelMessage(box, {
+    const message = buildCancelMessage(box, {
       from: {
         agent_id: 'foreign-agent',
         session_id: 'foreign-session',
@@ -255,7 +262,23 @@ test('Pi cancel rejects bad intents before native side effects', async () => {
         harness: 'claude',
       },
     });
-    return (await cancellationIntentReference(box, message)).reference;
+    const before = cancellationMessages(box.taskRoot).length;
+    const submitted = submitMessage(box.taskRoot, message);
+    assert.equal(submitted.ok, false);
+    assert.equal(submitted.reason, 'unauthorized_sender');
+    assert.equal(cancellationMessages(box.taskRoot).length, before);
+    const registered = await readMessageFromTaskRoot(
+      box.taskRoot,
+      message.message_id,
+    );
+    assert(registered.ok);
+    assert.equal(registered.value.entry, null);
+    assert(message.content_digest);
+    return {
+      messageId: message.message_id,
+      contentDigest: message.content_digest,
+      fileDigest: registered.value.digest,
+    };
   });
   await assertRejected('tampered', 'cancel_intent_mismatch', async (box) => {
     const message = createCancelMessage(box);

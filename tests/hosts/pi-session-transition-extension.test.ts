@@ -4,7 +4,7 @@ import piSessionTransitionExtension, {
   createPiSessionTransitionHost,
   PI_SESSION_TRANSITION_EXTENSION_ID,
   PI_SESSION_TRANSITION_LIMITATIONS,
-} from '../../src/hosts/integration/pi-session-transition-extension.js';
+} from '../../src/adapters/pi/session-transition-extension.js';
 
 const SESSION_ID = '11111111-1111-4111-8111-111111111111';
 const CWD = '/workspace/session-transition-test';

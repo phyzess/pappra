@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -67,6 +68,13 @@ import { routeExclusionFor, validateSuccession } from './collab-route.js';
 import { isTaskRecord } from '../collab/validation.js';
 
 import { isTrustedManagedPiScopedProof } from './managed-pi-transition-host.js';
+import { verifyManagedPiSdkInstallation } from '../hosts/pi/managed-sdk-session.js';
+import {
+  MANAGED_PI_EXECUTION_SCOPE_SCHEMA,
+  type ManagedPiExecutionScope,
+} from '../schemas/managed-pi-execution.js';
+export { MANAGED_PI_EXECUTION_SCOPE_SCHEMA };
+export type { ManagedPiExecutionScope };
 export const COLLAB_SESSION_TRANSITION_REQUEST_SCHEMA =
   'pappra/collaboration-session-transition-request/1';
 export const COLLAB_SESSION_TRANSITION_REPORT_SCHEMA =
@@ -130,27 +138,10 @@ export type SessionTransitionStage =
   | 'task_retired'
   | 'unknown';
 
-export const MANAGED_PI_EXECUTION_SCOPE_SCHEMA =
-  'pappra/managed-pi-execution-scope/1';
 export const MANAGED_PI_SCOPED_PROOF_ADAPTER_ID =
   'pappra/managed-pi-session-transition-host/2';
 export const MANAGED_PI_SCOPED_RECEIPT_SCHEMA =
   'pappra/session-transition-quiescence-receipt/2';
-
-export interface ManagedPiExecutionScope {
-  readonly schema: typeof MANAGED_PI_EXECUTION_SCOPE_SCHEMA;
-  readonly task_id: string;
-  readonly task_root: string;
-  readonly session_id: string;
-  readonly cwd: string;
-  readonly subtask_id: string;
-  readonly attempt: number;
-  readonly owner_epoch: number;
-  readonly claim_epochs: readonly {
-    readonly claim_id: string;
-    readonly resource_epoch: number;
-  }[];
-}
 
 export interface SessionTransitionRequest {
   readonly schema: typeof COLLAB_SESSION_TRANSITION_REQUEST_SCHEMA;
@@ -370,10 +361,6 @@ function failure(
   nextAction: string | null,
 ): TransitionFailure {
   return { ok: false, kind, code, message, nextAction };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasOnlyKeys(
@@ -1933,6 +1920,20 @@ async function loadContext(
       'The pinned bootstrap request digest changed.',
       null,
     );
+  if (loadedBootstrap.value.request.managed_runtime) {
+    try {
+      verifyManagedPiSdkInstallation(
+        loadedBootstrap.value.request.managed_runtime.sdk_module_path,
+      );
+    } catch {
+      return failure(
+        'needs_input',
+        'successor_sdk_incompatible',
+        'The successor SDK is unavailable or incompatible; no source freeze was attempted.',
+        'Select a supported SDK installation and re-plan before freezing the source.',
+      );
+    }
+  }
   const messageTask = await openMessageTask(task.value.taskRoot);
   if (!messageTask.ok)
     return failure(
@@ -3612,6 +3613,29 @@ async function freezeAndPrepare(
       ),
     };
   let freezeReceipt = journal.effects['source-freeze'];
+  if (
+    freezeReceipt === undefined &&
+    context.bootstrap.request.managed_runtime
+  ) {
+    try {
+      verifyManagedPiSdkInstallation(
+        context.bootstrap.request.managed_runtime.sdk_module_path,
+      );
+    } catch {
+      return {
+        ok: false,
+        report: failureReport(
+          'apply',
+          request,
+          'needs_input',
+          'successor_sdk_incompatible',
+          'The successor SDK changed or is incompatible; no source freeze was attempted.',
+          'Select a supported SDK installation and re-plan.',
+          currentTask,
+        ),
+      };
+    }
+  }
   if (freezeReceipt?.state === 'failed')
     return {
       ok: false,

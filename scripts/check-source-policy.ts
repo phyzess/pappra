@@ -8,21 +8,6 @@ const sources = ['src', 'tests', 'scripts', 'integrations', 'templates']
   .flatMap(listFiles);
 const forbidden = sources.filter((file) => /\.(?:js|mjs|cjs|jsx)$/.test(file));
 const escapes: string[] = [];
-// Existing host/app couplings are migration debt, not permission to add more.
-// Remove entries as adapters acquire lower-layer interfaces.
-const legacyHostAppEdges = new Set([
-  'src/hosts/integration/bootstrap-config.ts -> src/app/bounded-file.ts',
-  'src/hosts/integration/bundle-export.ts -> src/app/bounded-file.ts',
-  'src/hosts/integration/hook.ts -> src/app/task-pin.ts',
-  'src/hosts/integration/pi-bootstrap-runtime.ts -> src/app/bounded-file.ts',
-  'src/hosts/integration/pi-recovery-extension.ts -> src/app/bounded-file.ts',
-  'src/hosts/integration/pi-recovery-extension.ts -> src/app/collab-recovery-executor.ts',
-  'src/hosts/integration/pi-recovery-extension.ts -> src/app/collab-recovery-projection.ts',
-  'src/hosts/integration/pi-session-transition-extension.ts -> src/app/collab-session-transition.ts',
-  'src/hosts/pi/managed-sdk-session.ts -> src/app/collab-session-transition.ts',
-  'src/hosts/pi/managed-sdk-session.ts -> src/app/managed-pi-resume-admission.ts',
-  'src/hosts/pi/rpc.ts -> src/app/collab-messages.ts',
-]);
 for (const file of sources.filter((file) => file.endsWith('.ts'))) {
   const contents = readFileSync(file, 'utf8');
   if (/^\s*\/\/\s*@ts-(?:ignore|nocheck)\b/m.test(contents))
@@ -39,11 +24,17 @@ for (const file of sources.filter((file) => file.endsWith('.ts'))) {
       .replace(/\.js$/, '.ts');
     const edge = `${source} -> ${target}`;
     if (
-      source.startsWith('src/hosts/') &&
-      target.startsWith('src/app/') &&
-      !legacyHostAppEdges.has(edge)
+      /^src\/(?:workspace|knowledge|continuity|code|schemas)\//.test(source) &&
+      /^src\/(?:app|hosts|collab|adapters)\//.test(target)
     )
-      escapes.push(`${edge}: new hosts-to-app dependency`);
+      escapes.push(
+        `${edge}: core/schema depends on an upper integration layer`,
+      );
+    if (
+      source.startsWith('src/hosts/') &&
+      (target.startsWith('src/app/') || target.startsWith('src/adapters/'))
+    )
+      escapes.push(`${edge}: native hosts depend on upper orchestration`);
     if (
       source.startsWith('src/infra/') &&
       target.startsWith('src/') &&

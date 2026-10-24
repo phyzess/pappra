@@ -7,7 +7,7 @@ import {
   type BootstrapBundleInput,
 } from '../../hosts/integration/bundle-export.js';
 import { readPiBootstrapConfig } from '../../hosts/integration/bootstrap-config.js';
-import { readPiRecoveryConfig } from '../../hosts/integration/pi-recovery-extension.js';
+import { readPiRecoveryConfig } from '../../hosts/integration/recovery-config.js';
 import {
   applyHostMcp,
   planHostMcp,
@@ -22,9 +22,13 @@ import { getPackageInfo, getPackageRoot } from '../../package-info.js';
 import type { CliOutput } from '../output.js';
 
 export const hostUsage =
-  'pappra host <detect|describe|plan|install|verify|bundle|mcp> --host <pi|codex|claude>\n' +
+  'pappra host <detect|describe|probe|plan|install|uninstall|verify|bundle|mcp> --host <pi|codex|claude>\n' +
   '  [--host-root <dir>] [--host-version <version>] [--out <dir>]\n' +
-  '  [--mode project-settings|plugin] [--apply] [--json]\n' +
+  '  [--mode project-settings|plugin] [--scope project|user] [--marketplace] [--apply] [--json]\n' +
+  '  probe --host <name> [--host-root <dir>] [--json]\n' +
+  '  uninstall --host <name> [--host-root <dir> | --scope user] [--apply] [--force]\n' +
+  '    --force asserts all host writers are stopped and archives unknown locks; edited assets remain preserved.\n' +
+  '  mcp <plan|install|verify> --host <name> [--host-root <dir>] [--apply] [--json]\n' +
   '  bundle --host pi --out <new-private-dir> [--bootstrap-config <abs-file> |\n' +
   '    --recovery-config <abs-file>] [--transition-extension]\n' +
   '\n' +
@@ -42,6 +46,7 @@ export interface HostCommandOptions {
     | 'describe'
     | 'plan'
     | 'install'
+    | 'uninstall'
     | 'verify'
     | 'bundle'
     | 'mcp'
@@ -134,10 +139,11 @@ export async function runHostCommand(
     if (
       options.action !== 'plan' &&
       options.action !== 'install' &&
+      options.action !== 'uninstall' &&
       options.action !== 'verify'
     ) {
       output.stderr(
-        'pappra host: --scope user is only valid for plan, install, or verify.\n',
+        'pappra host: --scope user is only valid for plan, install, uninstall, or verify.\n',
       );
       return 2;
     }
@@ -287,6 +293,30 @@ export async function runHostCommand(
       printDiagnostics(output, result.diagnostics);
     }
     return diagnosticStatus(result.status);
+  }
+
+  if (options.action === 'uninstall') {
+    const result = await service.uninstall(options.host, {
+      ...target,
+      apply: options.apply,
+      force: options.force,
+    });
+    if (options.json) output.stdout(`${JSON.stringify(result)}\n`);
+    else {
+      output.stdout(`Status: ${result.status}\n`);
+      for (const file of result.removedFiles)
+        output.stdout(`  removed ${file}\n`);
+      for (const file of result.retainedPaths)
+        output.stdout(`  preserved ${file}\n`);
+      for (const file of result.quarantinedLocks)
+        output.stdout(`  archived lock ${file}\n`);
+      if (!options.apply)
+        output.stdout(
+          '  plan only; rerun with --apply to remove managed wiring.\n',
+        );
+      printDiagnostics(output, result.diagnostics);
+    }
+    return result.ok ? 0 : 1;
   }
 
   if (options.action === 'bundle') {
