@@ -97,4 +97,4 @@ jobs:
       - name: Publish to npm
         env:
           DIST_TAG: ${{ needs.check.outputs.dist-tag }}
-        run: npm publish release/package.tgz --ignore-scripts --access public --tag "$DIST_TAG"
+        run: npm publish ./release/package.tgz --ignore-scripts --access public --tag "$DIST_TAG"
