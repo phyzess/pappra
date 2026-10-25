@@ -24,7 +24,7 @@ notification is reconciled rather than replayed.
 The lower-level surfaces documented below remain the escape hatch — a single
 manual pointer resend, a claim transfer, or a managed-Pi transition — and the
 facade never weakens or bypasses their checks. See
-`docs/collaboration-workflow.md`.
+[the shipped workflow reference](workflow.md).
 
 ## MCP collaboration preparation
 
@@ -165,7 +165,7 @@ focused pane or an unrelated session.
       "cwd": "/absolute/workspace",
       "herdr_agent": "pappra-implement",
       "pane_id": "w3:p3",
-      "native_session_id": "b4c18851-d297-4f99-9850-9be1a0f9a9a7"
+      "native_session_id": "<observed-native-session-id>"
     }
   ]
 }

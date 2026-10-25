@@ -10,6 +10,12 @@ host transcript. Use the installed `pappra` CLI for durable operations; hooks
 only record bounded lifecycle observations and never start a model, download,
 index, or new writer.
 
+In Pappra's own checkout, every `pappra` example below means
+`node dist/cli/main.js`, including collaboration. Use the project's current
+build, not an older global binary. In another workspace, use its explicitly
+selected installed CLI. During implementation, run affected checks; coordinate
+one full integration gate at the release boundary and avoid shared build races.
+
 ## Start here
 
 1. Read `references/lifecycle.md` before relying on a host lifecycle event.
@@ -49,7 +55,7 @@ notifying and never replays an unknown delivery; `ack`, `report` and `release`
 are self-call only, and `accept` is a separate coordinator decision that a writer
 can never make for itself. The facade is bookkeeping over the existing record,
 claims, message and work-plan engines — it grants no authority of its own. See
-`docs/collaboration-workflow.md`. The lower-level commands below remain the
+`references/workflow.md`. The lower-level commands below remain the
 escape hatch for anything the facade does not model.
 
 ## One-request collaboration
@@ -98,6 +104,17 @@ is the host agent's judgment from the user's objective and the actual change
 surface: complexity, dependency blast radius, disjoint write scopes, and risk.
 There is no backend role inferencer, no fixed participant count, and no repeated
 permission prompt once the user authorized the work.
+
+Make the choice explicit before implementation. A cohesive writer may stay in
+the primary session, but changes to authorization, resource ownership, durable
+state/recovery or release execution need independent review before completion.
+Use this workflow to assign that review to an observed native participant; a
+single write scope is not a reason to skip it. A review-only assignment can
+itself satisfy independent review and needs no recursive reviewer. Delegate
+disjoint implementation scopes when that reduces the critical path. If identity,
+the native channel or a required capability is unavailable, record the specific
+blocker and keep review outstanding; never silently substitute self-review or
+another harness. Ordinary local reversible edits remain direct work.
 
 Use the installed commands in this order; roles never grant authority:
 

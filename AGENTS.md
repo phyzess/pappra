@@ -10,6 +10,9 @@ complements the user's instructions; the user's instructions take precedence.
    workspace knowledge. `pnpm dev:setup` applies the owned setup described in
    [docs/development.md](docs/development.md); missing builds and engines remain
    explicit prerequisites.
+   In this checkout, use `node dist/cli/main.js` for every Pappra operation,
+   including collaboration; examples using bare `pappra` are shorthand, not an
+   instruction to use an older globally installed executable.
 2. Establish the project code entry before navigating source, with the repository
    CLI rather than an older global `pappra` binary:
 
@@ -37,6 +40,19 @@ security, persistence, cross-cutting behaviour) warrants an independent reviewer
 - Cohesive work without an independent slice can stay with the current agent.
   Use Pappra's role commands when independent implementation or review is
   justified by the assessment.
+
+A single write scope does not remove the need for independent review. Changes
+to authorization, resource ownership, persisted state/recovery or release
+execution require an independent review before completion. The primary agent
+may implement a cohesive change itself; then arrange a separate reviewer through
+Pappra's workflow using observed native participants. For disjoint implementation
+scopes, delegate them when doing so reduces the critical path. Record this choice
+before implementation. A review-only assignment can itself be that independent
+review; it does not need another reviewer recursively.
+
+If the native channel, identity or required capability is unavailable, report
+the exact blocker and retain the outstanding review requirement. Do not silently
+replace it with self-review, a different harness or an unrelated global tool.
 
 ## Independent implementation and review
 
@@ -76,6 +92,11 @@ node dist/cli/main.js collab role-plan aggregate --request <abs role-plan.json> 
   named.
 
 ## Authorization and safety
+
+- Use checks for the affected behavior during implementation. Coordinate one
+  full integration gate at the release boundary rather than running the entire
+  suite in each worker. Respect the user's requested test cadence. Shared
+  `dist/` and `.build/` rebuilds must not race other participants' builds or tests.
 
 - Authorization the user already gave for a task persists for that task. Do not
   re-request the same delegation on every step.
