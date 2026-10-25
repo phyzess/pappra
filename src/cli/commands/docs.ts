@@ -15,18 +15,21 @@ import {
   type DocumentCheckResult,
 } from '../../knowledge/index.js';
 import type { CliOutput } from '../output.js';
+import { runDocsReviewCli } from './docs-review.js';
 
 export const docsUsage =
-  'pappra docs <list|check|archive|scan|relocate|forget> [options]\n' +
+  'pappra docs <list|check|archive|scan|relocate|forget|review> [options]\n' +
   '  list   [--include-private] [--include-archived] [--json]\n' +
   '  check  [--include-private] [--json]\n' +
   '  archive <documentId> [--json]\n' +
   '  scan   [--apply] [--json]\n\n' +
   '  relocate <documentId> <workspace-relative-path> [--apply] [--json]\n' +
-  '  forget <documentId> [--scope private|shared] [--apply] [--json]\n\n' +
+  '  forget <documentId> [--scope private|shared] [--apply] [--json]\n' +
+  '  review <documentId> [--scope private|shared] [--expected-digest <digest>] [--apply] [--json]\n\n' +
   'scan registers existing documents discovered under knowledge.sources; newDocuments is\n' +
   'only the destination for future authored documents. Without --apply scan only reports\n' +
-  'candidates.';
+  'candidates. scan and dev:setup never accept changed bytes for an existing registration;\n' +
+  'accepting reviewed bytes is the explicit docs review operation.';
 
 export interface DocsCommandOptions {
   readonly cwd: string;
@@ -147,7 +150,15 @@ export async function runDocsCommand(
     if (options.json) {
       output.stdout(
         `${JSON.stringify({
-          commands: ['list', 'check', 'archive', 'scan', 'relocate', 'forget'],
+          commands: [
+            'list',
+            'check',
+            'archive',
+            'scan',
+            'relocate',
+            'forget',
+            'review',
+          ],
           usage: docsUsage,
         })}\n`,
       );
@@ -159,20 +170,26 @@ export async function runDocsCommand(
   if (
     options.scope !== undefined &&
     options.scope !== null &&
-    (options.action !== 'forget' ||
+    (!['forget', 'review'].includes(options.action) ||
       !['private', 'shared'].includes(options.scope))
   )
     return invalidArguments(
       output,
       options.json,
-      'Only docs forget accepts --scope private|shared.',
+      'Only docs forget and docs review accept --scope private|shared.',
     );
   const resolution = await resolveWorkspaceRoot({ startPath: options.cwd });
   const serviceRoot = resolution.root ?? options.cwd;
   if (
-    !['list', 'check', 'archive', 'scan', 'relocate', 'forget'].includes(
-      options.action,
-    )
+    ![
+      'list',
+      'check',
+      'archive',
+      'scan',
+      'relocate',
+      'forget',
+      'review',
+    ].includes(options.action)
   ) {
     return invalidArguments(
       output,
@@ -181,7 +198,7 @@ export async function runDocsCommand(
     );
   }
   if (
-    ['archive', 'relocate', 'forget'].includes(options.action) &&
+    ['archive', 'relocate', 'forget', 'review'].includes(options.action) &&
     options.argument === null
   ) {
     return invalidArguments(
@@ -191,13 +208,27 @@ export async function runDocsCommand(
     );
   }
   if (
-    !['archive', 'relocate', 'forget'].includes(options.action) &&
+    !['archive', 'relocate', 'forget', 'review'].includes(options.action) &&
     options.argument !== null
   ) {
     return invalidArguments(
       output,
       options.json,
       `docs ${options.action} does not accept an argument`,
+    );
+  }
+  if (options.action === 'review') {
+    return runDocsReviewCli(
+      [
+        ...(options.argument === null ? [] : [options.argument]),
+        ...(options.scope === 'private' || options.scope === 'shared'
+          ? ['--scope', options.scope]
+          : []),
+        ...(options.apply ? ['--apply'] : []),
+        ...(options.json ? ['--json'] : []),
+      ],
+      output,
+      { cwd: options.cwd },
     );
   }
   if (options.action === 'scan') {
@@ -258,7 +289,7 @@ export async function runDocsCommand(
     return invalidArguments(
       output,
       options.json,
-      'only docs scan, relocate and forget accept --apply',
+      'only docs scan, review, relocate and forget accept --apply',
     );
   }
   if (options.action === 'archive' && options.argument !== null) {

@@ -12,6 +12,8 @@ export const DOCUMENT_SCHEMA = 'pappra/document/1';
 export const DOCUMENT_CATALOG_SCHEMA = 'pappra/document-catalog/1';
 export const DOCUMENT_WRITE_PROPOSAL_SCHEMA =
   'pappra/document-write-proposal/1';
+export const DOCUMENT_REVIEW_PLAN_SCHEMA = 'pappra/document-review-plan/1';
+export const DOCS_REVIEW_REPORT_SCHEMA = 'pappra/docs-review/1';
 export const KNOWLEDGE_DELETE_PLAN_SCHEMA = 'pappra/knowledge-delete-plan/1';
 export const KNOWLEDGE_LOCK_SCHEMA = 'pappra/knowledge-lock/1';
 export const KNOWLEDGE_JOURNAL_SCHEMA = 'pappra/knowledge-journal/1';
@@ -155,6 +157,81 @@ const fileIdentitySchema = z.strictObject({
   ino: z.number().int().nonnegative(),
 });
 
+/**
+ * A pinned, read-only review plan. Applying it may change only `digest` and
+ * `lastReviewedAt`; every other field of the pinned record must still describe
+ * the registered record at apply time.
+ */
+export const documentReviewPlanSchema = z
+  .strictObject({
+    schema: z.literal(DOCUMENT_REVIEW_PLAN_SCHEMA),
+    planId: z.uuid(),
+    createdAt: z.iso.datetime({ offset: true }),
+    documentId: z.uuid(),
+    scope: z.enum(['shared', 'private']),
+    location: documentLocationSchema,
+    catalogDigest: digestSchema,
+    rootIdentity: fileIdentitySchema,
+    expectedFileDigest: digestSchema,
+    recordDigest: digestSchema,
+    reviewedAt: z.iso.datetime({ offset: true }),
+    record: documentRecordSchema,
+  })
+  .superRefine((plan, context) => {
+    if (
+      plan.record.documentId !== plan.documentId ||
+      JSON.stringify(plan.record.location) !== JSON.stringify(plan.location) ||
+      plan.record.digest !== plan.expectedFileDigest
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['record'],
+        message:
+          'Review plan identity, location and digest must match its pinned record.',
+      });
+    }
+    if (plan.record.lastReviewedAt !== plan.reviewedAt) {
+      context.addIssue({
+        code: 'custom',
+        path: ['reviewedAt'],
+        message: 'The pinned record must carry the plan review timestamp.',
+      });
+    }
+  });
+
+export type DocumentReviewPlan = z.infer<typeof documentReviewPlanSchema>;
+
+export const documentFreshnessReportSchema = z.strictObject({
+  freshness: z.enum(['current', 'needs-review', 'unknown']),
+  reasons: z
+    .array(
+      z.strictObject({
+        code: z.string().min(1).max(128),
+        message: z.string().min(1).max(4096),
+      }),
+    )
+    .max(128),
+  sourceChecks: z
+    .array(
+      z.strictObject({
+        kind: z.enum(['document', 'code']),
+        ref: z.string().min(1).max(4096),
+        status: z.enum(['current', 'needs-review', 'unknown']),
+        message: z.string().min(1).max(4096),
+      }),
+    )
+    .max(128),
+  coverage: z.strictObject({
+    sources: z.literal('checked'),
+    pathReferences: z.literal('unchecked'),
+    repositoryContent: z.literal('not-scanned'),
+  }),
+});
+
+export type DocumentFreshnessReport = z.infer<
+  typeof documentFreshnessReportSchema
+>;
+
 export const documentWriteProposalSchema = z
   .strictObject({
     schema: z.literal(DOCUMENT_WRITE_PROPOSAL_SCHEMA),
@@ -246,6 +323,7 @@ export type KnowledgeDeletePlan = z.infer<typeof knowledgeDeletePlanSchema>;
 
 export const knowledgeOperationSchema = z.enum([
   'write-document',
+  'review-document',
   'archive-document',
   'supersede-document',
   'delete-document',
@@ -358,6 +436,20 @@ export const docsCheckReportSchema = z.strictObject({
     taskExecution: z.literal('unknown'),
   }),
 });
+
+export const docsReviewReportSchema = z.strictObject({
+  schema: z.literal(DOCS_REVIEW_REPORT_SCHEMA),
+  ok: z.boolean(),
+  status: z.string().min(1).max(64),
+  applied: z.boolean(),
+  plan: documentReviewPlanSchema.nullable(),
+  document: documentRecordSchema.nullable(),
+  freshness: documentFreshnessReportSchema.nullable(),
+  diagnostics: z.array(knowledgeDiagnosticSchema).max(2048),
+  journalPath: z.string().min(1).max(4096).nullable(),
+});
+
+export type DocsReviewReport = z.infer<typeof docsReviewReportSchema>;
 
 export const docsArchiveReportSchema = z.strictObject({
   schema: z.literal('pappra/docs-archive/1'),

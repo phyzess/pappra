@@ -30,6 +30,7 @@ import { hostNameSchema } from '../schemas/host.js';
 import type { CliOutput } from './output.js';
 import { parseOptions, failure, hasContinuityOptions } from './options.js';
 import { routeCollaboration } from './collaboration-router.js';
+import { runDocsReviewCli } from './commands/docs-review.js';
 
 const globalUsage =
   'pappra [--help | --version] [--json]\n' +
@@ -41,7 +42,7 @@ const globalUsage =
   '              [--install-runtime (--runtime-tarball <file> | --runtime-version <version>)]\n' +
   'pappra doctor [--root <path>] [--json]\n' +
   'pappra repair [--root <path>] [--runtime-version <v>] [--install-id <uuid>] [--apply] [--json]\n' +
-  'pappra docs <list|check|archive|scan|relocate|forget> [options]\n' +
+  'pappra docs <list|check|review|archive|scan|relocate|forget> [options]\n' +
   'pappra checkpoint --task <id> [options] [--json]\n' +
   'pappra resume <taskId> [--session <id>] [--json]\n' +
   'pappra code <status|prepare|query> --repo <id> [options] [--json]\n' +
@@ -143,6 +144,10 @@ export async function runCli(
       failure(output, jsonRequested, 'invalid_arguments', error);
       return 2;
     }
+  }
+  // `docs review` parses its pinned digest outside the global flag surface.
+  if (args[0] === 'docs' && args[1] === 'review') {
+    return runDocsReviewCli(args.slice(1), output);
   }
   let parsed: ReturnType<typeof parseOptions>;
   try {

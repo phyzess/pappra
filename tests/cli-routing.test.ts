@@ -142,7 +142,7 @@ test('docs forget routes --scope private and shared into the docs command', asyn
   }
 });
 
-test('docs scope accepts only private or shared, and only for forget', async () => {
+test('docs scope accepts only private or shared, and only for forget or review', async () => {
   const root = mkdtempSync(join(tmpdir(), 'pappra-cli-scope-'));
   const previous = process.cwd();
   try {
@@ -163,7 +163,7 @@ test('docs scope accepts only private or shared, and only for forget', async () 
     assert.equal(wrongAction.status, 2);
     assert.match(
       wrongAction.stderr,
-      /Only docs forget accepts --scope private\|shared\./,
+      /Only docs forget and docs review accept --scope private\|shared\./,
     );
   } finally {
     process.chdir(previous);

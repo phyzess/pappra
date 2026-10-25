@@ -1,5 +1,12 @@
 export { KnowledgeService } from './service.js';
 export type {
+  ApplyReviewInput,
+  ApplyReviewResult,
+  PreviewReviewInput,
+  PreviewReviewResult,
+} from './service.js';
+export type { DocumentReviewPlan } from '../schemas/document.js';
+export type {
   ApplyWriteResult,
   ArchiveDocumentResult,
   DeleteExplicitInput,

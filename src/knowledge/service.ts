@@ -1,12 +1,20 @@
-import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
+import type { Diagnostic } from '../schemas/diagnostics.js';
 import { diagnosticCodes } from '../schemas/errors.js';
 import type { DocumentLocation, DocumentRecord } from '../schemas/document.js';
 import type { Failure } from '../schemas/outcome.js';
 import { loadKnowledgeContext, type KnowledgeContext } from './context.js';
 import { loadKnowledgeCatalogs } from './catalog.js';
-import { inspectFreshness, findRecord, type FreshnessReport } from './refs.js';
+import { findRecord, inspectFreshness, type FreshnessReport } from './refs.js';
 import { resolveKnowledgeLocation, readKnowledgeFile } from './paths.js';
+import {
+  applyReviewAt,
+  previewReview,
+  type ApplyReviewInput,
+  type ApplyReviewResult,
+  type PreviewReviewInput,
+  type PreviewReviewResult,
+} from './review.js';
 import { applyWrite, proposeWrite, registerDocument } from './write.js';
 import { relocateOrForgetDocument } from './relocate.js';
 import {
@@ -547,9 +555,51 @@ export class KnowledgeService {
     }
     return deleteExplicit(loaded.context, input.plan);
   }
+
+  /**
+   * Builds a read-only review plan that pins the current bytes, the registered
+   * record and the catalog state. It never writes.
+   */
+  async previewReview(input: PreviewReviewInput): Promise<PreviewReviewResult> {
+    const loaded = await getContext(this.root);
+    if (!loaded.ok) {
+      return {
+        ok: false,
+        status: 'failed',
+        plan: null,
+        record: null,
+        freshness: null,
+        diagnostics: [...loaded.diagnostics],
+      };
+    }
+    return previewReview(loaded.context, input);
+  }
+
+  /**
+   * Applies one pinned review plan: only the observed file digest and the plan
+   * review timestamp change, under the existing knowledge lock and journal.
+   */
+  async applyReview(input: ApplyReviewInput): Promise<ApplyReviewResult> {
+    const loaded = await getContext(this.root);
+    if (!loaded.ok) {
+      return {
+        ok: false,
+        status: 'failed',
+        record: null,
+        diagnostics: [...loaded.diagnostics],
+        residualPaths: [],
+        journalPath: null,
+      };
+    }
+    return applyReviewAt(loaded.context, input);
+  }
 }
 
 export type {
+  ApplyReviewInput,
+  ApplyReviewResult,
+  PreviewReviewInput,
+  PreviewReviewResult,
   ApplyWriteResult,
   ArchiveDocumentResult,
   DeleteExplicitResult,
