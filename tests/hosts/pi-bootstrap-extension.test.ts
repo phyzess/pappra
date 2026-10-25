@@ -674,6 +674,7 @@ test('ordinary Pi bundles keep their file set and source bytes without the flag'
     'skills/pappra/references/hosts.md',
     'skills/pappra/references/lifecycle.md',
     'skills/pappra/references/operations.md',
+    'skills/pappra/references/workflow.md',
     'skills/pappra/SKILL.md',
   ]);
   assert.equal(existsSync(join(outDir, 'extensions/pappra-bootstrap')), false);
