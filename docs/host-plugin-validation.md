@@ -45,6 +45,12 @@ published with this guide.
 The frozen build also passed `pnpm check`: 1,108 tests, 1,103 passed, five skipped,
 zero failed, followed by the 472-file installed-package smoke.
 
+The beta.16 tag subsequently failed Linux CI because two CLI tests relied on
+globally installed Pi/Codex executables; npm publication was skipped. Beta.17
+keeps the tested runtime behavior and makes those CLI fixtures hermetic. An
+independent review ran both affected cases with only Node and system binaries
+on PATH, and verified that missing or unsupported native versions still fail.
+
 ## Method
 
 1. Scratch workspace: `git init`, then `pappra init --yes --apply` with an isolated

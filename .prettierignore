@@ -1,6 +1,7 @@
 node_modules/
 dist/
 .build/
+.codegraph/
 /assets/
 .pappra/
 pnpm-lock.yaml
