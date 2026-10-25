@@ -41,7 +41,19 @@ security, persistence, cross-cutting behaviour) warrants an independent reviewer
 ## Independent implementation and review
 
 Roles and participants are chosen from the real work split, never from a fixed
-count. The installed commands are the whole surface; there is no role daemon:
+count. For a new cohort, prefer the typed workflow entry described in
+[docs/collaboration-workflow.md](docs/collaboration-workflow.md):
+
+```sh
+node dist/cli/main.js collab workflow prepare --request <abs prepare.json> [--apply] --json
+node dist/cli/main.js collab workflow dispatch --request <abs dispatch.json> [--apply] --json
+node dist/cli/main.js collab workflow inspect --task-root <abs task root> --json
+```
+
+Participants use its `ack`, `report` and `release` actions; the coordinator makes
+an explicit `accept` decision. Observed identities and current native capability
+evidence remain prerequisites. Use the existing lower-level commands for manual
+protocol operations and recovery; there is no role daemon:
 
 ```sh
 node dist/cli/main.js collab role-plan expand --request <abs role-plan.json> --json

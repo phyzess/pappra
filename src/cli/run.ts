@@ -30,6 +30,7 @@ import { hostNameSchema } from '../schemas/host.js';
 import type { CliOutput } from './output.js';
 import { parseOptions, failure, hasContinuityOptions } from './options.js';
 import { routeCollaboration } from './collaboration-router.js';
+import { runCollaborationWorkflowCli } from './commands/collaboration-workflow.js';
 import { runDocsReviewCli } from './commands/docs-review.js';
 
 const globalUsage =
@@ -49,6 +50,7 @@ const globalUsage =
   'pappra host <detect|describe|probe|plan|install|verify|uninstall|bundle|mcp> --host <name> [options] [--json]\n' +
   'pappra runtime <install|status|verify|remove|gc> [options] [--json]\n' +
   'pappra session <plan|start|status|fence|stop> --config <abs managed-pi.json> [--json]\n' +
+  'pappra collab workflow <prepare|dispatch|ack|report|accept|release|inspect> [options]\n' +
   `${collaborationCommandLine}`;
 
 export async function runCli(
@@ -145,9 +147,15 @@ export async function runCli(
       return 2;
     }
   }
-  // `docs review` parses its pinned digest outside the global flag surface.
+  // `docs review` carries a pinned expected digest, which is not a global flag. It is routed
+  // before the global parser so the review surface does not add a 96th global option.
   if (args[0] === 'docs' && args[1] === 'review') {
     return runDocsReviewCli(args.slice(1), output);
+  }
+  // The workflow family parses its own request documents, so it is routed before the global
+  // option parser: those flags belong to the request schema, not to 95 global options.
+  if (args[0] === 'collab' && args[1] === 'workflow') {
+    return runCollaborationWorkflowCli(args.slice(2), output);
   }
   let parsed: ReturnType<typeof parseOptions>;
   try {

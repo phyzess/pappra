@@ -72,11 +72,21 @@ const { PI_RECOVERY_CONFIG_SCHEMA } = pi.piRecovery;
 `collabAdmission`, `collabRolePlan`, `collabRoleOrchestration`,
 `collabAutomaticHandoff`, `collabWorkPlanInspection`, `collabWorkExecution`,
 `collabRecovery`, `collabRecoveryProjection`, `collabRecoveryExecutor`,
-`collabSessionTransition`, `collabWorkPlan`, `piManaged`, `piManagedSdk`,
+`collabSessionTransition`, `collabWorkPlan`, `collabWorkflow`, `piManaged`, `piManagedSdk`,
 `piRecovery` and `piSessionTransition`. The Pi namespaces are also importable on
 their own from `@phyzess/pappra/experimental/pi`. Work-plan validation stays
 reachable from `@phyzess/pappra/collab` as the `workPlan` namespace; this barrel
 re-exports the same module as `collabWorkPlan`.
+
+`collabWorkflow` provides typed preparation, dispatch, participant actions,
+explicit coordinator acceptance and inspection for a declared cohort. The CLI
+entry is `pappra collab workflow`; see [the workflow contract](collaboration-workflow.md).
+It composes existing protocol authority and never chooses identities or accepts
+worker output automatically.
+
+The knowledge service exposes `previewReview` and `applyReview` for explicitly
+reviewed bytes. These preserve the document ID and unrelated metadata; see
+[document review](document-review.md) for the pinned-digest CLI flow.
 
 ## Capability notes
 
@@ -104,8 +114,8 @@ re-exports the same module as `collabWorkPlan`.
   aggregation.
 - `experimental.collabRolePlan` expands optional planner/writer/reviewer roles into
   the existing work-plan model and conservatively aggregates their evaluated
-  results. The root namespace also exports them as `managedPi` and
-  `collabRolePlan`.
+  results. These automation namespaces are available from the experimental
+  barrel; the stable root exposes core package and host-integration APIs.
 
 The CLI exposes `session plan|start|status|fence|stop --config <absolute-file>` and
 `collab role-plan expand|aggregate`, plus `collab role-run --request <file>

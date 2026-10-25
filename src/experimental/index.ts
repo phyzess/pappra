@@ -20,6 +20,7 @@ export * as collabRecoveryProjection from '../app/collab-recovery-projection.js'
 export * as collabRecoveryExecutor from '../app/collab-recovery-executor.js';
 export * as collabSessionTransition from '../app/collab-session-transition.js';
 export * as collabWorkPlan from '../collab/work-plan.js';
+export * as collabWorkflow from '../app/collab-workflow.js';
 
 // Managed-Pi surfaces have their own entrypoint, and are composed here so one
 // import covers the whole experimental surface.

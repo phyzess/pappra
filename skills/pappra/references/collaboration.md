@@ -5,6 +5,27 @@ sessions. Persisting a message, notifying a recipient, the recipient's ACK, its
 REPORT, and the coordinator's acceptance are five different facts. This surface
 keeps them separate and never infers one from another.
 
+## Formal typed workflow
+
+For a new cohort, prefer `pappra collab workflow` over hand-built envelopes:
+`prepare`, `dispatch`, `ack`, `report`, `accept`, `release` and `inspect` take one
+strict request document each and derive every repeated protocol field, digest,
+path and correlated message. Without `--apply` an action is a plan and writes
+nothing.
+
+`ack`, `report` and `release` are self-call only: the request caller must equal
+the registered attempt assignee, and there is no on-behalf-of path, because
+submitting a peer identity would fabricate a participant. `accept` is a separate
+coordinator decision and refuses the assignee. A report's outputs must sit inside
+the attempt's own write claims, and a `needs_input` report must name a concrete
+blocker. Dispatch records one durable intent per attempt, so a possibly delivered
+notification is reconciled rather than replayed.
+
+The lower-level surfaces documented below remain the escape hatch — a single
+manual pointer resend, a claim transfer, or a managed-Pi transition — and the
+facade never weakens or bypasses their checks. See
+`docs/collaboration-workflow.md`.
+
 ## MCP collaboration preparation
 
 The default MCP server is read-only. A trusted host must enable

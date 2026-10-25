@@ -35,6 +35,23 @@ index, or new writer.
    separate explicit option, and fixtures are explicit only. Never turn prose
    into identity, approval, or capability claims.
 
+## Typed workflow (preferred entry)
+
+Use `pappra collab workflow <prepare|dispatch|ack|report|accept|release|inspect>`
+for a task-scoped cohort. One declared request per step replaces hand-built
+envelopes and manual digest bookkeeping: prepare derives the sealed assignment
+documents, digests, deterministic message ids and correlated ASSIGN envelopes,
+and plan mode writes nothing at all.
+
+Reviewer ASSIGN messages and read claims stay deferred until accepted writers
+release; dispatch re-derives the current capability card immediately before
+notifying and never replays an unknown delivery; `ack`, `report` and `release`
+are self-call only, and `accept` is a separate coordinator decision that a writer
+can never make for itself. The facade is bookkeeping over the existing record,
+claims, message and work-plan engines — it grants no authority of its own. See
+`docs/collaboration-workflow.md`. The lower-level commands below remain the
+escape hatch for anything the facade does not model.
+
 ## One-request collaboration
 
 Visible collaboration uses `references/environment.md` plus the persisted
