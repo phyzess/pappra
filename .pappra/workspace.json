@@ -2,7 +2,7 @@
   "schema": "pappra/workspace/1",
   "workspaceId": "5b583d1e-7e32-4e9b-82b3-6fbae9cb4aaf",
   "name": "pappra",
-  "runtimeVersion": "0.1.0-beta.19",
+  "runtimeVersion": "0.1.0-beta.20",
   "repositories": [
     {
       "id": "pappra",
