@@ -50,6 +50,10 @@ the recovery configuration contract is
 `src/hosts/integration/recovery-config.ts`, which bundle export inside `hosts` and
 the recovery adapter both read, and which imports no application module.
 
+`pnpm source:check` enforces this direction: core/schema modules may not import
+`app`, `hosts`, `collab` or `adapters`; host modules may not import `app` or
+`adapters`; and infrastructure may import only `infra` and `schemas`.
+
 ## Experimental surface
 
 Collaboration, automation and managed-Pi APIs are experimental: their wire schemas
@@ -72,11 +76,11 @@ const { PI_RECOVERY_CONFIG_SCHEMA } = pi.piRecovery;
 `collabAdmission`, `collabRolePlan`, `collabRoleOrchestration`,
 `collabAutomaticHandoff`, `collabWorkPlanInspection`, `collabWorkExecution`,
 `collabRecovery`, `collabRecoveryProjection`, `collabRecoveryExecutor`,
-`collabSessionTransition`, `collabWorkPlan`, `collabWorkflow`, `piManaged`, `piManagedSdk`,
-`piRecovery` and `piSessionTransition`. The Pi namespaces are also importable on
-their own from `@phyzess/pappra/experimental/pi`. Work-plan validation stays
-reachable from `@phyzess/pappra/collab` as the `workPlan` namespace; this barrel
-re-exports the same module as `collabWorkPlan`.
+`collabSessionTransition`, `collabWorkPlan`, `collabWorkflow`, `piManaged`,
+`piManagedSdk`, `piRecovery` and `piSessionTransition`. The Pi namespaces are also
+importable on their own from `@phyzess/pappra/experimental/pi`. Work-plan
+validation stays reachable from `@phyzess/pappra/collab` as the `workPlan`
+namespace; this barrel re-exports the same module as `collabWorkPlan`.
 
 `collabWorkflow` provides typed preparation, dispatch, participant actions,
 explicit coordinator acceptance and inspection for a declared cohort. The CLI
@@ -88,6 +92,28 @@ The knowledge service exposes `previewReview` and `applyReview` for explicitly
 reviewed bytes. These preserve the document ID and unrelated metadata; see
 [document review](document-review.md) for the pinned-digest CLI flow.
 
+## Observed host version matrix
+
+The reference defaults and admitted observed versions are distinct. Onboard and
+verify/probe use the admitted set; the default pin is not an equality gate:
+
+| host | `HOST_SUPPORT` reference default | `HOST_EVENT_VERSIONS` (onboard and verify/probe admission) |
+| --- | --- | --- |
+| Pi | 1.3.0 | 1.3.0, 1.4.0 |
+| Codex | 0.163.0 | 0.163.0, 0.164.0 |
+| Claude Code | 2.1.292 | 2.1.292, 2.1.308 |
+
+`pappra onboard` passes the freshly observed admitted version to installation or
+export, and probes again before writing. A missing, unreadable or unlisted
+version is skipped with guidance; sharing a semantic-version minor is not
+admission. Dry-run uses the same planning rules. These checks neither broaden
+plugin-hook support nor prove native loading, trust, reload or callability.
+
+Managed Pi is narrower still. The PTY controller pins Pi 1.3.0 behaviour, and the
+opt-in SDK controller requires exactly `@earendil-works/pi-coding-agent@1.4.0`
+with matching private-source hashes; a different build is refused rather than
+degraded.
+
 ## Capability notes
 
 - `code` selected repositories use bounded text/structure fallback when no code
@@ -95,7 +121,7 @@ reviewed bytes. These preserve the document ID and unrelated metadata; see
 - `hosts` detection, hook adapters and bundles are optional. Host integration is
   not required to import or use core Pappra.
 - `collab` primitives never launch a host by themselves. A caller supplies an
-  explicit controller (`fixture` or `pi-rpc`); the observed Pi 1.3.0 behaviour is
+  explicit controller (`fixture` or `pi-rpc`); the observed Pi RPC behaviour is
   documented in `docs/pi-rpc.md`.
 - `experimental.piManaged` performs an explicit fresh native Pi TUI launch with a
   write-ahead terminal ingress journal, a private endpoint and exact owned-child
@@ -164,3 +190,4 @@ already exist on disk. Pappra does not rewrite them, does not adopt a legacy
 user-global state directory, and does not migrate configuration automatically.
 `init --reconfigure` is the only supported way to rebuild a workspace file from
 current selections, and it keeps identity, extension and continuity bindings.
+Old local state keeps its archival exit (`repair --reset-local`), not a migration.

@@ -204,8 +204,9 @@ request schema is `pappra/managed-pi-session-request/1` with `cwd`, `model` and
 private endpoint. Fencing stops terminal ingress; stopping waits for the exact
 owned child. Neither proves complete queues, approvals or external-writer
 quiescence, and automatic handoff/resource transfer remains blocked. Existing
-interactive sessions cannot be adopted. Input journals can contain private
-keystrokes; preserve their private permissions and never replay raw bytes.
+interactive sessions cannot be adopted. Input journals retain digests and byte
+counts, not keystrokes or prompt arguments; native transcripts remain separate
+private history. Preserve private permissions and never infer replay authority.
 
 ## Role-based planning
 

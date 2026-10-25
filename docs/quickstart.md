@@ -1,16 +1,15 @@
 # Pappra quick start
 
-Pappra is a workspace-local manager. It does not require a private repository,
-a running host, a model provider, a code-graph service or a global `pappra`
-binary.
+Pappra is a workspace-local manager. It does not require a private repository, a running
+host, a model provider, a code-graph service or a global `pappra` binary.
 
 ## Published package
 
 The package is published as `@phyzess/pappra`. Install it once if you use it every day
-(`npm install -g @phyzess/pappra@beta`), then the command is plain `pappra`; with mise or another
-version manager, use `npm install -g --prefix "$HOME/.local"` so the command is not bound to one
-Node version's shim. The `npx` form
-below stays valid and pins a version without installing. From an empty target workspace:
+(`npm install -g @phyzess/pappra@beta`), then the command is plain `pappra`; with mise or
+another version manager, use `npm install -g --prefix "$HOME/.local"` so the command is not
+bound to one Node version's shim. The `npx` form stays valid and pins a version without
+installing. From an empty target workspace:
 
 ```sh
 npx @phyzess/pappra@beta init --config ./minimal-choices.json --json
@@ -41,24 +40,35 @@ npx @phyzess/pappra@beta runtime verify --json            # content and smoke ve
 npx @phyzess/pappra@beta runtime remove --apply --json    # refuses a bound runtime without --force
 ```
 
-An existing valid `.pappra/workspace.json` is never rewritten silently.
-`init --yes --reconfigure --apply` rebuilds it from discovery (runtime version, knowledge
-sources, code engine) and backs up the previous file under `.pappra/local/backups`.
+An existing valid `.pappra/workspace.json` is never rewritten silently. `--reconfigure` is
+the explicit opt-in that rewrites it from the current selections and preserves the workspace
+identity, `extensions`, `continuity`, custom validation entries with their checkout binding,
+and existing local machine settings; the previous file is backed up under
+`.pappra/local/backups`. The flag combinations behave differently on purpose:
 
-A successful apply also reports advisory `nextActions`:
-`pappra code prepare --repo <id> --apply` when a code engine is selected, and
-`pappra docs scan --apply` to register documents that discovery already reports under the
-configured knowledge sources.
+| invocation | effect |
+| --- | --- |
+| plain `init` | reuses the valid configuration and plans only missing local state |
+| `init --yes --reconfigure --apply` | keeps the currently represented selections instead of re-deriving them from discovery |
+| `init --config <file> --reconfigure --apply` | applies the explicitly supplied edits |
+| TTY `init --reconfigure` | opens the editor seeded with current choices |
+| `init --print-choices --reconfigure` | prints the current choices and writes nothing |
 
-Exit codes: `0` requested work completed (including configuration-only `--no-runtime`),
-`1` conflict or incomplete requested work, `2` invalid input, `3` unavailable environment.
+A successful apply also reports advisory `nextActions`: `pappra code prepare --repo <id>
+--apply` when a code engine is selected, and `pappra docs scan --apply` to register documents
+that discovery already reports under the configured knowledge sources.
+
+Exit codes: `0` requested work completed (including configuration-only `--no-runtime`, which
+reports `status:"external-actions-pending"`), `1` conflict or incomplete requested work, `2`
+invalid input, `3` unavailable environment.
 
 ## Agent-native tools
 
 `pappra mcp` starts a stdio MCP server for the current workspace. Read-only tools cover
-workspace status, resume, documents, code queries and runtime state; write tools require
-`apply`/`confirm`. `pappra host mcp install --host claude|pi --apply` registers it in
-`.mcp.json` / `.pi/mcp.json`; Codex uses `codex mcp add pappra -- pappra mcp`.
+workspace status, resume, documents, code queries and runtime state. Write-capable tools
+require trusted server startup policy; an `apply` argument alone never grants authorization.
+`pappra host mcp install --host claude|pi --apply` registers it in `.mcp.json` / `.pi/mcp.json`;
+Codex uses `codex mcp add pappra -- pappra mcp`.
 
 `pappra task pin <id> --auto-resume` makes the lifecycle hook inject a bounded resume packet
 for that task. See [agent-native usage](agent-native.md) for the full tool and consent model.
@@ -66,7 +76,7 @@ for that task. See [agent-native usage](agent-native.md) for the full tool and c
 ## New workspace or new machine
 
 `pappra onboard` plans or applies the whole setup: workspace config, durable runtime, and
-(with `--apply-host`) host wiring for hosts whose version matches the pinned matrix.
+(with `--apply-host`) host wiring for explicitly admitted observed host versions.
 
 ```sh
 pappra onboard --dry-run --json            # read-only: scope, files, host versions
@@ -74,8 +84,11 @@ pappra onboard --yes --json                # init + runtime, prints host steps
 pappra onboard --yes --apply-host --json   # also writes verified host integrations
 ```
 
-It never approves host trust. Copying a workspace to another machine is covered in
-[portability](portability.md); `.pappra/local/` is machine-local and must not be copied.
+It never approves host trust. Onboard uses and rechecks the detected version, including
+every explicitly admitted version in the [support matrix](support.md). Unlisted versions
+are skipped; install a supported version or use manual checkpoint/resume. Copying a workspace to
+another machine is covered in [portability](portability.md); `.pappra/local/` is machine-local
+and must not be copied.
 
 ## Adopting an existing multi-repository workspace
 
@@ -121,41 +134,21 @@ The checkout and the target workspace are different directories. Build once in
 the checkout, then invoke `dist/cli/main.js` by absolute path from the target
 workspace.
 
-## 1. Build the checkout
-
 ```sh
 cd /absolute/path/to/pappra-public
 pnpm install --frozen-lockfile
 pnpm build
 export CHECKOUT="$PWD"
 export PAPPRA_CLI="$CHECKOUT/dist/cli/main.js"
-```
 
-Node.js 24+ and pnpm 12.3.4 are the supported development baseline.
-
-## 2. Preview and apply a host-free workspace
-
-Use a new empty directory, not the checkout. The complete minimal choices file
-is [`examples/minimal-choices.json`](../examples/minimal-choices.json).
-
-```sh
-mkdir -p /tmp/pappra-demo
-cd /tmp/pappra-demo
+mkdir -p <empty-dir> && cd <empty-dir>
 cp "$CHECKOUT/examples/minimal-choices.json" ./minimal-choices.json
-
-# Read-only preview; no prompt in config/JSON mode.
 node "$PAPPRA_CLI" init --config ./minimal-choices.json --json
-
-# Apply the same config. Apply installs and binds a durable runtime copy and
-# converges with exit code 0; add --no-runtime to leave that action pending.
 node "$PAPPRA_CLI" init --config ./minimal-choices.json --apply --json
 node "$PAPPRA_CLI" doctor --json
 ```
 
-The example has no repositories, optional hosts, or code graph. `init --json`
-without selections never prompts and still exits nonzero, but it returns the
-discovery candidates and the suggested `pappra/init-choices/1` document. A TTY
-invocation without selections opens the wizard; `--config`/`--json` never prompt.
+Node.js 24+ and pnpm 12.3.4 are the supported development baseline.
 
 A converged apply exits `0`. With `--no-runtime` the result is `ok:true` with
 `status:"external-actions-pending"`, `initComplete:false` and exit `0`; inspect
@@ -163,7 +156,7 @@ A converged apply exits `0`. With `--no-runtime` the result is `ok:true` with
 `doctor` reports the resulting runtime conditions; `pappra runtime verify` runs
 the active check.
 
-## 3. Optional continuity after a successful core setup
+## Optional continuity after a successful core setup
 
 Once the target is a Git worktree and the required workspace identity is
 available, create and read an advisory checkpoint:
@@ -176,34 +169,34 @@ node "$PAPPRA_CLI" checkpoint --task demo --objective 'Try Pappra' \
 node "$PAPPRA_CLI" resume demo --session demo --json
 ```
 
-A resume packet is advisory. Check `executionAllowed`; a readable checkpoint
-does not grant permission to start work.
+A resume packet is advisory. Check `executionAllowed`; a readable checkpoint does not grant
+permission to start work. `executionAllowed:false` with non-empty `blockingReasons` is a
+successful advisory result (exit `0`), not a command failure; stale verification is what
+exits nonzero.
 
-## 4. Optional code, host and collaboration surfaces
+## Optional code, host and collaboration surfaces
 
 These are not prerequisites for the workflow above, and no example files for
 them are generated by init.
 
-- Code graph status/prepare/query requires a selected external graph engine;
-  without it, bounded text/structure fallback remains available.
-- Host detect/plan/install requires the selected host CLI/support. The installed hook
-  is a dependency-free bundle copied into the host root; Claude Code uses the
+- Code graph status/prepare/query requires a selected external graph engine; without it,
+  bounded text/structure fallback remains available.
+- Host detect/plan/install requires the selected host CLI/support. The installed hook is a
+  dependency-free bundle copied into the host root; Claude Code uses the
   `${CLAUDE_PROJECT_DIR}` placeholder, so a moved checkout or an evicted npx cache does not
   break it.
 
-  Codex 0.163.0 loads lifecycle hooks only from its user configuration directory, so wire it
-  with `pappra host install --host codex --scope user --host-version 0.163.0 --apply` and
-  approve the hook once in Codex; project `.codex/hooks.json` and plugin bundles are not
-  loaded by that version.
+  Codex loads lifecycle hooks only from its user configuration directory, so wire it with
+  `pappra host install --host codex --scope user --apply` and approve the hook once in Codex;
+  project `.codex/hooks.json` and plugin bundles are not loaded there.
 
   `pappra host bundle --host <name> --out <dir> --marketplace` exports a local marketplace
   that both Claude Code and Codex accept (`.claude-plugin/marketplace.json` plus a `pappra/`
   plugin directory); without `--marketplace` it exports the plugin directory itself. Pi
-  installs that directory directly. Pi 1.3.0 and Claude Code 2.1.292 plugin hooks are
-  verified for startup in a real session; Codex does not load plugin hooks. Because each
-  host still needs its own registration step, `host install --mode plugin` stays fail-closed
-  and prints the exact commands. See
-  [host plugin validation](host-plugin-validation.md).
+  installs that directory directly. Observed plugin-hook support is per host version; see
+  [host plugin validation](host-plugin-validation.md). Because each host still needs its own
+  registration step, `host install --mode plugin` stays fail-closed and prints the exact
+  commands.
 - Collaboration requires an explicit controller:
 
   ```sh
@@ -212,9 +205,8 @@ them are generated by init.
   ```
 
   `prepare` runs first; `run` needs the prepared task and a fresh capability card.
-  `fixture` is deterministic and no-model. `pi-rpc` launches a real owned Pi RPC session
-  and is verified end to end against Pi 1.3.0; see
-  [Pi RPC collaboration](pi-rpc.md).
+  `fixture` is deterministic and no-model. `pi-rpc` launches a real owned Pi RPC session;
+  see [Pi RPC collaboration](pi-rpc.md).
 
 Collaboration and managed-Pi package APIs are experimental and live behind two
 entrypoints only: `@phyzess/pappra/experimental` and
