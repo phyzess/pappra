@@ -1,8 +1,16 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { getPackageInfo } from '../src/index.js';
@@ -19,15 +27,25 @@ const root = dirname(
 );
 const cli = join(root, 'dist/cli/main.js');
 
-function invoke(args: string[], cwd = root) {
+function invoke(
+  args: string[],
+  cwd = root,
+  env: typeof process.env = process.env,
+) {
   const result = spawnSync(process.execPath, [cli, ...args], {
     cwd,
     encoding: 'utf8',
     shell: false,
     timeout: 30_000,
+    env,
   });
   if (result.error) throw result.error;
   return result;
+}
+
+/** The CLI prints failure diagnostics as JSON on stdout, so report both. */
+function failureText(result: { stdout: string; stderr: string }): string {
+  return `stdout: ${result.stdout}\nstderr: ${result.stderr}`;
 }
 
 test('the compiled CLI reads package version from an unrelated working directory', () => {
@@ -122,6 +140,19 @@ test('host describe and plan expose typed output without writing', () => {
         repositories: [{ id: 'app', path: '.', access: 'write' }],
       }),
     );
+
+    // Production observes the host version from PATH, so the fixture is a real
+    // executable at the pinned version instead of a supplied version string.
+    const bin = join(temporary, 'bin');
+    mkdirSync(bin);
+    const piShim = join(bin, 'pi');
+    writeFileSync(piShim, '#!/bin/sh\necho 1.3.0\n');
+    chmodSync(piShim, 0o755);
+    const piPath = {
+      ...process.env,
+      PATH: `${bin}${delimiter}${process.env.PATH ?? ''}`,
+    };
+
     const described = invoke(
       [
         'host',
@@ -134,7 +165,7 @@ test('host describe and plan expose typed output without writing', () => {
       ],
       temporary,
     );
-    assert.equal(described.status, 0, described.stderr);
+    assert.equal(described.status, 0, failureText(described));
     const capability: unknown = JSON.parse(described.stdout);
     assert(typeof capability === 'object' && capability !== null);
     assert(
@@ -145,6 +176,8 @@ test('host describe and plan expose typed output without writing', () => {
       'capabilities' in capability && Array.isArray(capability.capabilities),
     );
 
+    // Windows cannot spawn a shebang shim as a bare `pi`; plan stays POSIX.
+    if (process.platform === 'win32') return;
     const planned = invoke(
       [
         'host',
@@ -158,8 +191,9 @@ test('host describe and plan expose typed output without writing', () => {
         '--json',
       ],
       temporary,
+      piPath,
     );
-    assert.equal(planned.status, 0, planned.stderr);
+    assert.equal(planned.status, 0, failureText(planned));
     const plan: unknown = JSON.parse(planned.stdout);
     assert(typeof plan === 'object' && plan !== null);
     assert('schema' in plan && plan.schema === 'pappra/host-integration/1');

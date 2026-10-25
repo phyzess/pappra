@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -9,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -40,6 +41,23 @@ function parse(stdout: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
+const codexVersion = '0.163.0';
+
+/** Production resolves `codex` from PATH and runs `codex --version`, so the
+ * version probe needs a real executable instead of a global installation. */
+function codexFixturePath(bin: string): string {
+  mkdirSync(bin);
+  const executable = join(bin, 'codex');
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env node
+process.stdout.write('codex-cli ${codexVersion}\\n');
+`,
+  );
+  chmodSync(executable, 0o755);
+  return `${bin}${delimiter}${process.env.PATH ?? ''}`;
+}
+
 test('codex user scope installs into CODEX_HOME and preserves existing hooks', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'pappra-host-user-scope-'));
   const workspace = join(temporary, 'workspace');
@@ -68,7 +86,10 @@ test('codex user scope installs into CODEX_HOME and preserves existing hooks', (
       2,
     )}\n`,
   );
-  const environment = { CODEX_HOME: codexHome };
+  const environment = {
+    CODEX_HOME: codexHome,
+    PATH: codexFixturePath(join(temporary, 'bin')),
+  };
   try {
     const installed = invoke(
       [
@@ -79,7 +100,7 @@ test('codex user scope installs into CODEX_HOME and preserves existing hooks', (
         '--scope',
         'user',
         '--host-version',
-        '0.163.0',
+        codexVersion,
         '--apply',
         '--json',
       ],
@@ -108,7 +129,7 @@ test('codex user scope installs into CODEX_HOME and preserves existing hooks', (
         '--scope',
         'user',
         '--host-version',
-        '0.163.0',
+        codexVersion,
         '--json',
       ],
       workspace,
@@ -146,7 +167,7 @@ test('codex user scope installs into CODEX_HOME and preserves existing hooks', (
         '--host-root',
         '.codex',
         '--host-version',
-        '0.163.0',
+        codexVersion,
         '--json',
       ],
       workspace,
