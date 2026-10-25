@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { lstatSync } from 'node:fs';
 import {
   isAssignment,
   isCard,
@@ -17,7 +18,13 @@ import {
   type WorkExecutionAdapter,
 } from '../collab-work-execution.js';
 import { submitMessage } from '../../collab/messages.js';
-import { buildMessage, readRegisteredMessage } from '../../collab/envelope.js';
+import {
+  buildMessage,
+  contentDigest,
+  isSafeMessageId,
+  readRegisteredMessage,
+  validateEnvelope,
+} from '../../collab/envelope.js';
 import { activeClaims, claimResources } from '../../collab/resources.js';
 import { claimCovers } from '../../collab/admission.js';
 import { describeResource } from '../../collab/canonical.js';
@@ -34,6 +41,7 @@ import {
 } from '../../schemas/collab-workflow.js';
 import {
   digestFile,
+  assertRealChain,
   openWorkflowTask,
   readBoundedDocument,
   readBoundedJson,
@@ -399,11 +407,18 @@ function collectNodes(
       ? record.attempts.map((item) => item.subtask_id)
       : request.subtasks;
   const unique = [...new Set(wanted)];
+  const activating = request.activate_deferred
+    ? new Set(
+        readManifestDeferred(record.task_root, record, true).map(
+          (entry) => entry.subtask_id,
+        ),
+      )
+    : new Set<string>();
   for (const subtaskId of unique) {
     const attempt = record.attempts.find(
       (item) => item.subtask_id === subtaskId,
     );
-    if (attempt === undefined) {
+    if (attempt === undefined || activating.has(subtaskId)) {
       deferred.push({
         subtask_id: subtaskId,
         reason:
@@ -570,9 +585,138 @@ interface ManifestDeferredEntry {
   }[];
 }
 
+/** Re-enter claim acquisition only before any possible native delivery or consumption. */
+function canRetryReviewClaims(
+  taskRoot: string,
+  record: TaskRecord,
+  entry: ManifestDeferredEntry,
+): boolean {
+  const attempt = findAttempt(record, entry.subtask_id, entry.attempt);
+  if (
+    entry.role !== 'reviewer' ||
+    attempt === null ||
+    attempt.state !== 'assigned' ||
+    attempt.closed_at ||
+    attempt.cancel_requested_at ||
+    attempt.awaiting ||
+    record.attempts.some(
+      (other) =>
+        other.subtask_id === entry.subtask_id && other.attempt > entry.attempt,
+    ) ||
+    attempt.native.observation !== 'unknown' ||
+    Object.entries(attempt.native).some(
+      ([key, value]) => key !== 'observation' && value != null,
+    ) ||
+    record.results.some(
+      (result) =>
+        result.subtask_id === entry.subtask_id &&
+        result.attempt === entry.attempt,
+    ) ||
+    record.messages.some(
+      (message) =>
+        message.subtask_id === entry.subtask_id &&
+        message.attempt === entry.attempt &&
+        ['ACK', 'REPORT', 'BLOCK', 'CANCEL', 'CANCELLED', 'HANDOFF'].includes(
+          message.type,
+        ),
+    )
+  )
+    return false;
+  for (const file of [
+    path.join(
+      workflowIntentsDir(taskRoot),
+      `dispatch-${entry.subtask_id}-${entry.attempt}.json`,
+    ),
+    path.join(taskRoot, 'notifications', `assign-${entry.subtask_id}.json`),
+  ]) {
+    if (assertRealChain(taskRoot, file) !== null) return false;
+    try {
+      lstatSync(file);
+      return false;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+    }
+  }
+  const sealed = readBoundedDocument(
+    workflowAssignmentPath(taskRoot, entry.subtask_id),
+    'sealed review assignment',
+  );
+  if (
+    !sealed.ok ||
+    !isAssignment(sealed.value.value) ||
+    sealed.value.digest !== entry.assignment_digest ||
+    sealed.value.digest !== attempt.assignment_digest
+  )
+    return false;
+  const assignment = sealed.value.value;
+  if (!isSafeMessageId(attempt.assignment_message_id)) return false;
+  const assignDoc = readBoundedDocument(
+    path.join(taskRoot, 'messages', `${attempt.assignment_message_id}.json`),
+    'registered reviewer ASSIGN',
+  );
+  if (!assignDoc.ok) return false;
+  let registered: Message;
+  try {
+    registered = validateEnvelope(assignDoc.value.value);
+  } catch {
+    return false;
+  }
+  if (
+    record.coordinator === null ||
+    assignment.task_id !== record.task_id ||
+    assignment.assignment_id !== entry.subtask_id ||
+    assignment.attempt !== entry.attempt ||
+    !assignment.roles.includes('reviewer') ||
+    assignment.roles.includes('writer') ||
+    attempt.owner_epoch !== record.coordinator.owner_epoch ||
+    assignment.coordinator.owner_epoch !== attempt.owner_epoch ||
+    assignment.assignee.agent_id !== attempt.assignee.agent_id ||
+    assignment.assignee.session_id !== attempt.assignee.session_id ||
+    assignment.assignee.harness !== attempt.assignee.harness ||
+    assignment.coordinator.agent_id !== record.coordinator.agent_id ||
+    assignment.coordinator.session_id !== record.coordinator.session_id ||
+    attempt.input_revision !== record.input_revision ||
+    assignment.inputs[0]?.digest !== record.input_revision ||
+    registered.type !== 'ASSIGN' ||
+    registered.body.assignment_digest !== sealed.value.digest ||
+    registered.subtask_id !== entry.subtask_id ||
+    registered.attempt !== entry.attempt ||
+    registered.to?.agent_id !== attempt.assignee.agent_id ||
+    registered.to?.session_id !== attempt.assignee.session_id ||
+    registered.to?.harness !== attempt.assignee.harness ||
+    registered.owner_epoch !== attempt.owner_epoch ||
+    registered.from.agent_id !== record.coordinator.agent_id ||
+    registered.from.session_id !== record.coordinator.session_id ||
+    registered.body.input_revision !== record.input_revision ||
+    !record.messages.some(
+      (entry) =>
+        entry.message_id === registered.message_id &&
+        entry.content_digest === contentDigest(registered),
+    ) ||
+    assignment.resources.some((resource) => resource.access !== 'read')
+  )
+    return false;
+  return (
+    claimCoverageBlockers(
+      record,
+      entry.subtask_id,
+      entry.attempt,
+      attempt.assignee,
+      assignment.resources.map((resource) => ({
+        path: String(resource.path),
+        access: 'read',
+        ...(resource.scope === 'file' || resource.scope === 'tree'
+          ? { scope: resource.scope }
+          : {}),
+      })),
+    ).length > 0
+  );
+}
+
 function readManifestDeferred(
   taskRoot: string,
   record: TaskRecord,
+  includeClaimRetries = false,
 ): ManifestDeferredEntry[] {
   const read = readBoundedJson(
     workflowManifestPath(taskRoot),
@@ -592,16 +736,6 @@ function readManifestDeferred(
   return (
     (value.assignments ?? [])
       .filter((item) => item.deferred === true)
-      // The manifest is immutable, so "deferred" is reconciled against reality: once an
-      // attempt is registered the reviewer has been activated and is no longer pending.
-      .filter(
-        (item) =>
-          findAttempt(
-            record,
-            String(item.subtask_id ?? ''),
-            Number(item.attempt ?? 1),
-          ) === null,
-      )
       .map((item) => ({
         subtask_id: String(item.subtask_id ?? ''),
         role: String(item.role ?? 'reviewer'),
@@ -615,6 +749,14 @@ function readManifestDeferred(
             : {}),
         })),
       }))
+      // Registration alone does not complete activation: a read-claim conflict can
+      // leave an assigned reviewer with neither dispatch intent nor delivery evidence.
+      .filter(
+        (entry) =>
+          findAttempt(record, entry.subtask_id, entry.attempt) === null ||
+          (includeClaimRetries &&
+            canRetryReviewClaims(taskRoot, record, entry)),
+      )
   );
 }
 
@@ -904,7 +1046,11 @@ export async function applyDispatch(
   // Only deferred entries inside this request's scope may affect its outcome; an unrelated
   // reviewer that stays deferred is normal and never turns a successful phase into failure.
   const requested = new Set(request.subtasks);
-  const deferred = readManifestDeferred(task.taskRoot, task.record);
+  const deferred = readManifestDeferred(
+    task.taskRoot,
+    task.record,
+    request.activate_deferred,
+  );
   const inScope = deferred.filter(
     (entry) => requested.size === 0 || requested.has(entry.subtask_id),
   );
@@ -915,7 +1061,40 @@ export async function applyDispatch(
   void activationOnly;
   if (request.activate_deferred) {
     for (const entry of inScope) {
-      const cohort = evaluateCohortPlan(task.taskRoot, task.record);
+      const changed = await revalidateWorkflowTask(task);
+      const activationRecord = readRecord(task.taskRoot);
+      if (
+        !changed.ok ||
+        activationRecord === null ||
+        !sameCoordinator(activationRecord.coordinator, request.caller)
+      ) {
+        blockers.push({
+          code: 'review_activation_authority_changed',
+          detail:
+            'Reviewer activation lost its current coordinator or task namespace.',
+          next_action:
+            'Reconcile authority before retrying; no reviewer claims were acquired.',
+        });
+        continue;
+      }
+      const existingAttempt = findAttempt(
+        activationRecord,
+        entry.subtask_id,
+        entry.attempt,
+      );
+      if (
+        existingAttempt !== null &&
+        !canRetryReviewClaims(task.taskRoot, activationRecord, entry)
+      ) {
+        blockers.push({
+          code: 'review_activation_not_retryable',
+          detail: `Reviewer ${entry.subtask_id} no longer has a known-no-delivery claim acquisition to retry.`,
+          next_action:
+            'Inspect the existing attempt and delivery evidence; it is not reopened.',
+        });
+        continue;
+      }
+      const cohort = evaluateCohortPlan(task.taskRoot, activationRecord);
       if (cohort.evaluation === null) {
         blockers.push(...cohort.blockers);
         continue;
@@ -932,6 +1111,25 @@ export async function applyDispatch(
             .join(', ')}.`,
           next_action:
             'Accept every writer node with workflow accept first; a completed report or a released claim is not acceptance.',
+        });
+        continue;
+      }
+      const writerIds = new Set(
+        cohort.evaluation.nodes
+          .filter((node) => node.role === 'writer')
+          .map((node) => node.node_id),
+      );
+      if (
+        activeClaims(activationRecord).some(
+          (claim) =>
+            claim.subtask_id !== null && writerIds.has(claim.subtask_id),
+        )
+      ) {
+        blockers.push({
+          code: 'writers_not_released',
+          detail: `Reviewer ${entry.subtask_id} cannot activate while an accepted writer still holds claims.`,
+          next_action:
+            'Have each writer release its own claims after acceptance before activating the reviewer.',
         });
         continue;
       }
@@ -1009,6 +1207,34 @@ export async function applyDispatch(
         });
         continue;
       }
+      if (
+        !sameCoordinator(record.coordinator, request.caller) ||
+        sealed.value.assignee.agent_id !== assignee.agent_id ||
+        sealed.value.assignee.session_id !== assignee.session_id ||
+        sealed.value.assignee.harness !== assignee.harness ||
+        sealed.value.coordinator.owner_epoch !== record.coordinator.owner_epoch
+      ) {
+        blockers.push({
+          code: 'review_activation_identity_mismatch',
+          detail:
+            'The sealed reviewer identity or coordinator epoch no longer matches activation.',
+          next_action:
+            'Inspect the sealed assignment and manifest; neither is rewritten.',
+        });
+        continue;
+      }
+      if (
+        findAttempt(record, entry.subtask_id, entry.attempt) !== null &&
+        !canRetryReviewClaims(task.taskRoot, record, entry)
+      ) {
+        blockers.push({
+          code: 'review_activation_not_retryable',
+          detail: `Reviewer ${entry.subtask_id} changed before claim acquisition.`,
+          next_action:
+            'Inspect the current attempt and delivery evidence; no claim repair was attempted.',
+        });
+        continue;
+      }
       const message = buildMessage({
         type: 'ASSIGN',
         task_id: record.task_id,
@@ -1054,11 +1280,43 @@ export async function applyDispatch(
         });
         continue;
       }
-      const batches = new Map<'read' | 'write', { path: string }[]>();
-      for (const resource of entry.resources) {
+      const batches = new Map<
+        'read' | 'write',
+        { path: string; scope?: 'file' | 'tree' }[]
+      >();
+      for (const resource of sealed.value.resources) {
+        if (
+          claimCoverageBlockers(
+            record,
+            entry.subtask_id,
+            entry.attempt,
+            {
+              agent_id: String(assignee.agent_id),
+              session_id: String(assignee.session_id),
+            },
+            [
+              {
+                path: String(resource.path),
+                access: resource.access,
+                ...(resource.scope === 'file' || resource.scope === 'tree'
+                  ? { scope: resource.scope }
+                  : {}),
+                ...(resource.resource_epoch === undefined
+                  ? {}
+                  : { resource_epoch: resource.resource_epoch }),
+              },
+            ],
+          ).length === 0
+        )
+          continue;
         const access = resource.access === 'write' ? 'write' : 'read';
         const bucket = batches.get(access) ?? [];
-        bucket.push({ path: resource.path });
+        bucket.push({
+          path: String(resource.path),
+          ...(resource.scope === 'file' || resource.scope === 'tree'
+            ? { scope: resource.scope }
+            : {}),
+        });
         batches.set(access, bucket);
       }
       for (const [access, resources] of batches) {
