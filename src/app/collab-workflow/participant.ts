@@ -2,9 +2,11 @@ import path from 'node:path';
 import {
   buildMessage,
   contentDigest,
-  readRegisteredMessage,
+  isSafeMessageId,
+  validateEnvelope,
 } from '../../collab/envelope.js';
 import { transitionAttempt } from '../../collab/lifecycle.js';
+import { isAssignment } from '../../collab/contracts.js';
 import { releaseClaim } from '../../collab/resources.js';
 import { submitMessage } from '../../collab/messages.js';
 import { notifyRegisteredMessage } from '../collab-notify.js';
@@ -15,12 +17,13 @@ import fs from 'node:fs';
 import {
   workflowIntentsDir,
   workflowAssignmentPath,
+  parseWorkflowParticipantRequest,
   type WorkflowParticipantRequest,
 } from '../../schemas/collab-workflow.js';
 import {
   digestFile,
   openWorkflowTask,
-  readBoundedJson,
+  readBoundedDocument,
   revalidateWorkflowTask,
   resolveAttempt,
   sameIdentity,
@@ -31,7 +34,7 @@ import {
   type WorkflowBlocker,
   type WorkflowResult,
 } from './types.js';
-import type { Attempt, Claim, Identity } from '../../collab/types.js';
+import type { Attempt, Claim, Identity, Message } from '../../collab/types.js';
 
 /**
  * Participant actions: ack, report and release.
@@ -52,6 +55,20 @@ function identityOf(caller: {
     session_id: caller.session_id,
     harness: caller.harness,
   };
+}
+
+function readReleaseMessage(taskRoot: string, id: string): Message | null {
+  if (!isSafeMessageId(id)) return null;
+  const read = readBoundedDocument(
+    path.join(taskRoot, 'messages', `${id}.json`),
+    'release correlation',
+  );
+  if (!read.ok) return null;
+  try {
+    return validateEnvelope(read.value.value);
+  } catch {
+    return null;
+  }
 }
 
 function activeClaims(
@@ -624,12 +641,27 @@ export async function applyParticipant(
       ],
       detail: empty,
     };
+  // Primitive callers may pass a richer observed participant object as `caller`.
+  // Validate the wire identity fields without rejecting that structural subtype.
+  const parsedRelease = parseWorkflowParticipantRequest({
+    ...request,
+    caller: { ...identityOf(request.caller), cwd: request.caller.cwd },
+  });
+  if (!parsedRelease.ok)
+    blockers.push({
+      code: 'release_declaration_invalid',
+      detail: parsedRelease.message,
+      next_action:
+        'Correct the release declaration before retrying; no intent or claim effect was recorded.',
+    });
   // A release after a blocked or rejected review must answer a real coordinator decision.
   // The correlation is verified against the registered record before any claim is released.
   let correlated: { id: string; digest: string } | null = null;
-  const correlatesTo = declaration.correlates_to;
+  const correlatesTo = declaration.correlates_to ?? null;
   if (correlatesTo !== null) {
-    const registered = readRegisteredMessage(task.taskRoot, correlatesTo);
+    const registered = isSafeMessageId(correlatesTo)
+      ? readReleaseMessage(task.taskRoot, correlatesTo)
+      : null;
     if (registered === null)
       blockers.push({
         code: 'release_correlation_unknown',
@@ -647,12 +679,34 @@ export async function applyParticipant(
     else if (
       record.coordinator === null ||
       registered.from.agent_id !== record.coordinator.agent_id ||
-      registered.from.session_id !== record.coordinator.session_id
+      registered.from.session_id !== record.coordinator.session_id ||
+      registered.from.harness !== record.coordinator.harness
     )
       blockers.push({
         code: 'release_correlation_sender',
         detail: `${correlatesTo} was not sent by the current coordinator.`,
         next_action: 'A release answers the coordinator, not a peer.',
+      });
+    else if (
+      registered.task_id !== record.task_id ||
+      registered.to === null ||
+      registered.to === undefined ||
+      !sameIdentity(registered.to, request.caller) ||
+      registered.owner_epoch !== record.coordinator.owner_epoch ||
+      (registered.subtask_id !== null &&
+        registered.subtask_id !== request.subtask_id) ||
+      (registered.attempt !== null && registered.attempt !== request.attempt) ||
+      !record.messages.some(
+        (entry) =>
+          entry.message_id === registered.message_id &&
+          entry.content_digest === contentDigest(registered),
+      )
+    )
+      blockers.push({
+        code: 'release_correlation_mismatch',
+        detail: `${correlatesTo} does not address this participant, task, attempt and coordinator epoch.`,
+        next_action:
+          'Use the registered decision for this participant and current task.',
       });
     else
       correlated = {
@@ -660,6 +714,163 @@ export async function applyParticipant(
         digest: contentDigest(registered),
       };
   }
+
+  // A missing decision correlation answers the real ASSIGN, never an invented id.
+  // Keep correlates_to null in the declaration/intent so an existing partial release
+  // remains byte-identical when its missing STATUS is completed.
+  const assignmentMessageId = attempt.assignment_message_id;
+  const assignmentMessage = isSafeMessageId(assignmentMessageId)
+    ? readReleaseMessage(task.taskRoot, assignmentMessageId)
+    : null;
+  if (
+    correlatesTo === null &&
+    (assignmentMessage === null ||
+      assignmentMessage.type !== 'ASSIGN' ||
+      assignmentMessage.task_id !== record.task_id ||
+      assignmentMessage.subtask_id !== request.subtask_id ||
+      assignmentMessage.attempt !== request.attempt ||
+      assignmentMessage.to === null ||
+      assignmentMessage.to === undefined ||
+      !sameIdentity(assignmentMessage.to, request.caller) ||
+      assignmentMessage.owner_epoch !== attempt.owner_epoch ||
+      !record.messages.some(
+        (entry) =>
+          entry.message_id === assignmentMessage.message_id &&
+          entry.content_digest === contentDigest(assignmentMessage),
+      ))
+  )
+    blockers.push({
+      code: 'release_assignment_correlation_invalid',
+      detail: 'The attempt has no matching registered ASSIGN to answer.',
+      next_action:
+        'Inspect the registered assignment; no fallback correlation is fabricated.',
+    });
+
+  const sealed = readBoundedDocument(
+    workflowAssignmentPath(task.taskRoot, request.subtask_id),
+    'sealed assignment',
+  );
+  if (!sealed.ok)
+    blockers.push({
+      code: 'sealed_assignment_unreadable',
+      detail: sealed.message,
+      next_action:
+        'Restore the exact sealed assignment before releasing claims.',
+    });
+  else if (
+    !isAssignment(sealed.value.value) ||
+    sealed.value.digest !== attempt.assignment_digest
+  )
+    blockers.push({
+      code: 'sealed_assignment_mismatch',
+      detail: 'The sealed assignment no longer matches the registered attempt.',
+      next_action:
+        'Inspect the sealed assignment; it is not rewritten by release.',
+    });
+
+  // Validate cancellation on a copy before intent/claim effects. An already cancelled
+  // attempt is the idempotent completion of this same release, not another transition.
+  if (declaration.cancel_attempt && attempt.state !== 'cancelled') {
+    const cancellation = transitionAttempt(structuredClone(record), {
+      subtaskId: attempt.subtask_id,
+      attempt: attempt.attempt,
+      to: 'cancelled',
+      actor: request.caller.agent_id,
+      reason: declaration.reason,
+      evidence: { source: 'workflow participant release' },
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+    });
+    if (!cancellation.ok)
+      blockers.push({
+        code: 'cancel_refused',
+        detail: `Attempt cancellation was refused: ${cancellation.reason}.`,
+        next_action:
+          'Use a valid cancellation declaration; no claims or intent were changed.',
+      });
+  }
+
+  let releaseMessage: Message | null = null;
+  if (blockers.length === 0) {
+    try {
+      releaseMessage = buildMessage({
+        type: 'STATUS',
+        task_id: record.task_id,
+        from: sender,
+        to: recipient,
+        message_id: `released-${request.subtask_id}-${request.attempt}`,
+        subtask_id: request.subtask_id,
+        attempt: request.attempt,
+        owner_epoch:
+          attempt.owner_epoch ?? record.coordinator?.owner_epoch ?? 1,
+        reply_to: correlated?.id ?? assignmentMessageId,
+        // Only declaration-fixed content: replay cannot change with released claim ids.
+        body: {
+          status: 'cancelled',
+          reason: declaration.reason,
+          correlates_to: correlated?.id ?? null,
+          acceptance: null,
+        },
+        ...(options.clock === undefined ? {} : { clock: options.clock }),
+      });
+      const existing = readReleaseMessage(
+        task.taskRoot,
+        releaseMessage.message_id,
+      );
+      const statusFile = path.join(
+        task.taskRoot,
+        'messages',
+        `${releaseMessage.message_id}.json`,
+      );
+      let statusExists = false;
+      try {
+        fs.lstatSync(statusFile);
+        statusExists = true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      if (statusExists) {
+        const stored = readBoundedDocument(statusFile, 'release STATUS');
+        if (!stored.ok || existing === null)
+          blockers.push({
+            code: 'release_status_invalid',
+            detail: 'The existing release STATUS is unreadable or invalid.',
+            next_action:
+              'Inspect the existing STATUS; no intent or claims were changed.',
+          });
+      }
+      if (
+        existing !== null &&
+        contentDigest(existing) !== contentDigest(releaseMessage)
+      )
+        blockers.push({
+          code: 'release_status_conflict',
+          detail: 'A different STATUS is already registered for this release.',
+          next_action:
+            'Inspect the existing STATUS; no release effects were performed.',
+        });
+    } catch (error) {
+      blockers.push({
+        code: 'release_status_invalid',
+        detail: `Cannot construct the release STATUS: ${String(error)}`,
+        next_action: 'Correct the release envelope before retrying.',
+      });
+    }
+  }
+
+  if (blockers.length > 0)
+    return {
+      ...base,
+      status: 'refused',
+      ok: false,
+      task_id: record.task_id,
+      task_root: task.taskRoot,
+      domain_root: record.domain_root,
+      state_revision: record.state_revision,
+      principal: { ...request.caller, role: 'participant' },
+      blockers,
+      next_action: blockers[0]?.next_action ?? null,
+      detail: empty,
+    };
 
   const intentFile = path.join(
     workflowIntentsDir(task.taskRoot),
@@ -675,9 +886,7 @@ export async function applyParticipant(
     reason: declaration.reason,
     cancel_attempt: declaration.cancel_attempt,
     correlates_to: correlated,
-    sealed_assignment_digest: digestFile(
-      workflowAssignmentPath(task.taskRoot, request.subtask_id),
-    ),
+    sealed_assignment_digest: sealed.ok ? sealed.value.digest : null,
   };
   const written = writing
     ? writeJsonExclusive(task.taskRoot, intentFile, intent)
@@ -717,7 +926,7 @@ export async function applyParticipant(
             'Only the claim holder can release it; use the handoff or rollover engine for a transfer.',
         });
     }
-    if (declaration.cancel_attempt) {
+    if (declaration.cancel_attempt && attempt.state !== 'cancelled') {
       const cancelled = await cancelForRelease(
         task.taskRoot,
         attempt,
@@ -741,28 +950,7 @@ export async function applyParticipant(
   let releaseDuplicate = false;
   let releaseRegistration: string | null = null;
   const releaseWarnings: string[] = [];
-  if (blockers.length === 0) {
-    const releaseMessage = buildMessage({
-      type: 'STATUS',
-      task_id: record.task_id,
-      from: sender,
-      to: recipient,
-      message_id: `released-${request.subtask_id}-${request.attempt}`,
-      subtask_id: request.subtask_id,
-      attempt: request.attempt,
-      owner_epoch: attempt.owner_epoch ?? record.coordinator?.owner_epoch ?? 1,
-      // The body carries only what the declaration fixes. Embedding the ids that this run
-      // released would change the envelope on an idempotent replay and turn it into a
-      // content conflict, so the released ids live in the result and the intent, not here.
-      body: {
-        status: 'cancelled',
-        reason: declaration.reason,
-        correlates_to: correlated?.id ?? null,
-        acceptance: null,
-      },
-      ...(options.clock === undefined ? {} : { clock: options.clock }),
-      ...(correlated === null ? {} : { reply_to: correlated.id }),
-    });
+  if (blockers.length === 0 && releaseMessage !== null) {
     const releaseSubmitted = writing
       ? submitMessage(task.taskRoot, releaseMessage, {
           ...(options.clock === undefined ? {} : { clock: options.clock }),
@@ -778,6 +966,13 @@ export async function applyParticipant(
     releaseRegistration = releaseSubmitted.ok
       ? String(releaseSubmitted.registration?.status ?? '')
       : null;
+    if (!releaseSubmitted.ok)
+      blockers.push({
+        code: String(releaseSubmitted.reason),
+        detail: `The protocol refused the release STATUS: ${String(releaseSubmitted.reason)}.`,
+        next_action:
+          'Inspect the recorded intent and STATUS before retrying; release is not complete.',
+      });
     const releaseDelivered = await deliverAdmitted(
       task.taskRoot,
       releaseMessage.message_id,
@@ -793,17 +988,6 @@ export async function applyParticipant(
       );
   }
 
-  const sealed = readBoundedJson(
-    workflowAssignmentPath(task.taskRoot, request.subtask_id),
-    'sealed assignment',
-  );
-  if (!sealed.ok)
-    blockers.push({
-      code: 'sealed_assignment_unreadable',
-      detail: sealed.message,
-      next_action:
-        'Inspect the sealed assignment; release does not need it to rewrite anything.',
-    });
   const current = readRecord(task.taskRoot);
   return {
     ...base,
