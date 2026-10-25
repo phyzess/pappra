@@ -40,6 +40,7 @@ import {
 } from '../install/ownership.js';
 import { detectPassiveHosts, detectPassiveTool } from '../hosts/detect.js';
 import { inspectWorkspaceLocks } from '../install/repair.js';
+import { inspectRuntimeArchiveState } from '../install/runtime-archive-state.js';
 import { inspectLocalResetState } from '../install/reset-local.js';
 import { inspectPrivateLock } from '../infra/private-lock.js';
 
@@ -660,6 +661,303 @@ function runtimeCheck(
   });
 }
 
+function runtimeArchiveResumeCommand(
+  version: string,
+  stoppedWriters: boolean,
+): string {
+  return (
+    `pappra runtime archive --runtime-version ${version} --apply --force` +
+    `${stoppedWriters ? ' --all-writers-stopped' : ''}` +
+    ' --reason "Resume interrupted runtime archive after doctor review"'
+  );
+}
+
+async function runtimeArchiveCheck(
+  version: string | null,
+  dataDir: string,
+  observedAt: string,
+): Promise<DoctorCheck> {
+  const id = 'runtime.archive';
+  const title = 'Runtime archive state';
+  if (version === null) {
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_unknown,
+      status: 'unknown',
+      severity: 'info',
+      title,
+      summary:
+        'No current runtime version is declared; interrupted archive state was not inferred.',
+      source: dataDir,
+      observedAt,
+      coverage: 'not checked without a runtime target',
+      nextActions: ['Run pappra init to declare the workspace runtime target.'],
+    });
+  }
+  let inspection: Awaited<ReturnType<typeof inspectRuntimeArchiveState>>;
+  try {
+    inspection = await inspectRuntimeArchiveState(dataDir, version);
+  } catch (error) {
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_unreadable,
+      status: 'error',
+      severity: 'error',
+      title,
+      summary: `Cannot inspect runtime archive state: ${error instanceof Error ? error.message : String(error)}`,
+      source: dataDir,
+      observedAt,
+      coverage: 'archive inspection failed; nothing was changed',
+      nextActions: [
+        'Inspect the reported runtime archive path; doctor did not move, reclaim, rewrite or delete evidence.',
+      ],
+    });
+  }
+
+  const coverage =
+    'archive receipt, coordinator/runtime lock ownership, item presence; content digests not recomputed';
+  const progress =
+    inspection.itemCount === 0
+      ? ''
+      : ` ${inspection.itemCount} receipt item(s): ${inspection.movedItems} archived, ${inspection.remainingItems} remaining.`;
+  const lockStates = ` Coordinator lock: ${inspection.coordinatorLock.state}; runtime lock: ${inspection.runtimeLock.state}.`;
+  const receiptName = inspection.receipt?.id.slice(0, 8) ?? '(unreadable)';
+  const evidence: EvidenceRef[] = [
+    fileEvidence(inspection.directory, observedAt, null),
+  ];
+  if (inspection.receiptDigest !== null)
+    evidence.push(
+      fileEvidence(
+        inspection.pendingPath,
+        observedAt,
+        inspection.receiptDigest,
+      ),
+    );
+  if (inspection.coordinatorLock.digest !== null)
+    evidence.push(
+      fileEvidence(
+        inspection.lockPath,
+        observedAt,
+        inspection.coordinatorLock.digest,
+      ),
+    );
+  if (inspection.runtimeLock.digest !== null)
+    evidence.push(
+      fileEvidence(
+        inspection.runtimeLockPath,
+        observedAt,
+        inspection.runtimeLock.digest,
+      ),
+    );
+
+  if (inspection.status === 'none')
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_ok,
+      status: 'ok',
+      severity: 'info',
+      title,
+      summary: `No runtime archive transaction exists for ${version}; ${inspection.directory} was not created.`,
+      source: inspection.directory,
+      observedAt,
+      coverage: 'archive control directory absence only',
+      evidence,
+      nextActions: [],
+    });
+
+  if (inspection.status === 'complete') {
+    if (inspection.coordinatorLock.state === 'alive')
+      return makeCheck({
+        id,
+        code: diagnosticCodes.doctor_runtime_archive_in_progress,
+        status: 'partial',
+        severity: 'warning',
+        title,
+        summary: `Archive ${receiptName} for ${version} is marked complete, but a verified live coordinator still holds ${inspection.lockPath}.${progress}${lockStates}`,
+        source: inspection.lockPath,
+        observedAt,
+        coverage,
+        evidence,
+        nextActions: [
+          'Wait for the verified live archive coordinator to finish; do not start a second archive.',
+          'Doctor did not stop, signal or adopt the live owner.',
+        ],
+      });
+    if (inspection.coordinatorLock.state === 'unknown')
+      return makeCheck({
+        id,
+        code: diagnosticCodes.doctor_runtime_archive_unknown,
+        status: 'warning',
+        severity: 'warning',
+        title,
+        summary: `Archive ${receiptName} for ${version} is marked complete, but coordinator ownership is unverified (${inspection.lockPath}).${progress}${lockStates} An unverified coordinator blocks another archive.`,
+        source: inspection.lockPath,
+        observedAt,
+        coverage,
+        evidence,
+        nextActions: [
+          'Inspect the archive coordinator lock and receipts; unverified ownership is preserved and blocks another archive.',
+          'Doctor did not reclaim, delete or signal the lock owner.',
+        ],
+      });
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_ok,
+      status: 'ok',
+      severity: 'info',
+      title,
+      summary:
+        `Runtime ${version} archive ${receiptName} is complete` +
+        `${inspection.receipt?.completedAt ? ` (${inspection.receipt.completedAt})` : ''}.${progress}` +
+        (inspection.runtimePresent
+          ? ' A later runtime at the same version exists; the completed bundle is retained.'
+          : ' The archived runtime path is absent.'),
+      source: inspection.pendingPath,
+      observedAt,
+      coverage,
+      evidence,
+      nextActions: [],
+    });
+  }
+
+  if (inspection.status === 'interrupted') {
+    if (inspection.runtimeLock.state === 'alive')
+      return makeCheck({
+        id,
+        code: diagnosticCodes.doctor_runtime_archive_interrupted,
+        status: 'partial',
+        severity: 'warning',
+        title,
+        summary: `Runtime ${version} archive ${receiptName} is interrupted.${progress}${lockStates} A verified live runtime lock owner prevents resumption.`,
+        source: inspection.pendingPath,
+        observedAt,
+        coverage,
+        evidence,
+        nextActions: [
+          'Wait for the verified live runtime lock owner to finish, then rerun pappra doctor.',
+          'Doctor did not stop, signal or adopt that owner.',
+        ],
+      });
+    const stoppedWriters = inspection.runtimeLock.state === 'unknown';
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_interrupted,
+      status: 'warning',
+      severity: 'warning',
+      title,
+      summary:
+        `Runtime ${version} archive ${receiptName} is interrupted.${progress}${lockStates}` +
+        (inspection.permanentReceipt
+          ? ' The permanent receipt exists but the pending fence is not complete; rerunning finalizes it.'
+          : '') +
+        (stoppedWriters
+          ? ' Runtime lock ownership is unverified, so resumption also requires an explicit stopped-writers assertion.'
+          : ''),
+      source: inspection.pendingPath,
+      observedAt,
+      coverage,
+      evidence,
+      nextActions: [
+        runtimeArchiveResumeCommand(version, stoppedWriters),
+        'Run the resume from a working CLI outside the target runtime; doctor did not move evidence, reclaim a lock or stop a process.',
+        ...(stoppedWriters
+          ? [
+              'Stop every affected writer yourself before adding --all-writers-stopped.',
+            ]
+          : []),
+      ],
+    });
+  }
+
+  if (inspection.status === 'in-progress')
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_in_progress,
+      status: 'partial',
+      severity: 'warning',
+      title,
+      summary: `Runtime ${version} archive is in progress: a verified live coordinator holds ${inspection.lockPath}.${progress}${lockStates}`,
+      source: inspection.lockPath,
+      observedAt,
+      coverage,
+      evidence,
+      nextActions: [
+        'Wait for the verified live archive coordinator to finish, then rerun pappra doctor.',
+        'Do not start a second archive or resume concurrently; doctor did not stop the owner.',
+      ],
+    });
+
+  if (inspection.status === 'unknown-lock')
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_unknown,
+      status: 'warning',
+      severity: 'warning',
+      title,
+      summary: `Runtime ${version} archive coordinator ownership is unverified (${inspection.lockPath}).${progress}${lockStates} An unverified coordinator blocks another archive.`,
+      source: inspection.lockPath,
+      observedAt,
+      coverage,
+      evidence,
+      nextActions: [
+        'Inspect the coordinator lock and the pending receipt; unverified ownership is preserved and blocks another archive.',
+        'Doctor did not reclaim, delete or signal the lock owner.',
+      ],
+    });
+
+  if (inspection.status === 'unverified')
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_unverified,
+      status: 'warning',
+      severity: 'warning',
+      title,
+      summary: `Runtime ${version} archive state is unverified: ${inspection.problem ?? 'evidence is inconsistent'}.${progress}${lockStates}`,
+      source: inspection.pendingPath,
+      observedAt,
+      coverage,
+      evidence,
+      nextActions: [
+        `pappra runtime archive --runtime-version ${version} --json`,
+        'Preview is read-only; inspect the listed paths and do not delete archive evidence. Doctor does not rewrite or remove it.',
+      ],
+    });
+
+  if (inspection.status === 'corrupt')
+    return makeCheck({
+      id,
+      code: diagnosticCodes.doctor_runtime_archive_corrupt,
+      status: 'error',
+      severity: 'error',
+      title,
+      summary: `Runtime ${version} archive state is corrupt: ${inspection.problem ?? 'unknown condition'}.${progress}`,
+      source: inspection.pendingPath,
+      observedAt,
+      coverage,
+      evidence,
+      nextActions: [
+        `Inspect ${inspection.pendingPath} and ${inspection.directory}; doctor did not rewrite, move or delete archive evidence.`,
+        'Resume refuses ambiguous or conflicting evidence; do not delete the receipt to bypass it.',
+      ],
+    });
+
+  return makeCheck({
+    id,
+    code: diagnosticCodes.doctor_runtime_archive_unreadable,
+    status: 'error',
+    severity: 'error',
+    title,
+    summary: `Runtime ${version} archive state is unreadable: ${inspection.problem ?? 'the archive path could not be observed'}.`,
+    source: inspection.directory,
+    observedAt,
+    coverage,
+    evidence,
+    nextActions: [
+      `Inspect ${inspection.directory} and its permissions; doctor did not follow an unsafe path or change anything.`,
+    ],
+  });
+}
+
 function hostChecks(
   selectedHosts: readonly string[],
   homeDir: string,
@@ -1189,6 +1487,7 @@ export async function runDoctor(
       dataDir,
     ),
   );
+  checks.push(await runtimeArchiveCheck(passiveVersion, dataDir, observedAt));
   checks.push(
     makeCheck({
       id: 'runtime.references',
@@ -1417,6 +1716,7 @@ export async function runDoctor(
         'validation',
         'workspace-install-state',
         'runtime-passive-state',
+        'current-runtime-archive-state',
         'current-workspace-runtime-reference',
         'passive-host-discovery',
         'configured-tool-discovery',
@@ -1424,6 +1724,8 @@ export async function runDoctor(
       notChecked: [
         'other-workspace-runtime-references',
         'global-runtime-removal-safety',
+        'other-version-runtime-archives',
+        'archive-evidence-content-digests',
         'host-callability',
         'host-trust',
         'model-session-history',
