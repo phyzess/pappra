@@ -200,6 +200,19 @@ evidence through the work-plan inspector. Rejected, unknown, missing and pending
 outcomes remain visible. A delivery acknowledgement never becomes acceptance.
 Neither command launches a model, claims resources or creates an assignment.
 
+`pappra collab role-run --request <abs role-orchestration.json> [--apply]
+[--watch] --json` advances the plan's recorded role/dependency events. Plan mode
+reads authoritative state with no effects; `--apply` handles one bounded event
+tick, reserves before dispatch and never infers acceptance; `--watch` requires
+`--apply`. Repeated or ambiguous effects are reconciled, and rejected work needs an
+authorized repair attempt. It notifies registered participants only and creates no
+session, assignment or claim of its own.
+
+Which roles exist, and how many writers or reviewers run, is the host agent's
+judgment of the actual objective and change surface, not a product default.
+Nothing here infers semantic roles: hooks record bounded lifecycle observations,
+the backend resolves protocol state, and no command launches a model from prose.
+
 ## Native capability evidence
 
 `pappra collab capabilities derive --harness <pi|codex|claude> --assignment <abs assignment.json> --template <abs card.declared.json> --execution <abs execution.json> [--session <abs pi-session.jsonl> | --events <abs events.jsonl>] [--json]`

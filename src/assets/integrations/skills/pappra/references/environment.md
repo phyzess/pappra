@@ -51,6 +51,13 @@ stays `process_affiliation: "not-established"`.
 Pick participants, roles, harness, and configuration from the task rather than a
 fixed agent count. Everyone can implement, review, or verify; assign by need.
 
+Which roles and how many participants are needed follows the real work split, and
+that choice belongs to the host agent reading the objective and change surface;
+neither the backend nor the hooks infer responsibilities or launch anyone.
+Authorization the user already gave for the task persists, so do not re-request the
+same delegation at every step, and never fabricate a participant identity,
+capability or claim to fill a role.
+
 Reuse an existing peer only when all of the following match what the task will
 bind: current agent name, pane, harness, cwd, native session (where the host
 reports one), and the capabilities the assignment will require. Otherwise, when

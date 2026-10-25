@@ -1,6 +1,6 @@
 ---
 name: pappra
-description: Use Pappra workspace knowledge, checkpoint/resume, selected-repository code intelligence, and task-scoped cross-harness collaboration from any supported coding agent. Use when a task needs durable handoff context, workspace documents, bounded code navigation, or a visible/direct multi-agent collaboration workflow.
+description: Use Pappra workspace knowledge, checkpoint/resume, selected-repository code intelligence, and task-scoped cross-harness collaboration from any supported coding agent. Use before nontrivial repository work to reach the project's own skill and CodeGraph entry, when a task needs durable handoff context, workspace documents, or bounded code navigation, and when independent parallel implementation or independent review would reduce risk even if the user never names collaboration.
 ---
 
 # Pappra
@@ -73,6 +73,34 @@ content instead of overwriting it. A clean transport exit is not task success.
 No approval is auto-answered, no cancel is inferred from an acknowledgement, and no new thread or
 arbitrary PID is adopted. Do not launch a model or real user session without
 the task's explicit authorization.
+
+## Role plans and host-agent role selection
+
+Choosing whether work needs independent implementation or an independent reviewer
+is the host agent's judgment from the user's objective and the actual change
+surface: complexity, dependency blast radius, disjoint write scopes, and risk.
+There is no backend role inferencer, no fixed participant count, and no repeated
+permission prompt once the user authorized the work.
+
+Use the installed commands in this order; roles never grant authority:
+
+- `pappra collab role-plan expand --request <abs role-plan.json> --json` expands
+  explicit participants, assignments and disjoint writer scopes into the existing
+  work-plan format. Save the returned `plan`.
+- `pappra collab plan --task-root <abs> --config <abs expanded-plan.json>` and
+  `pappra collab work-run --request <abs work-execution.json> [--apply]` keep
+  their existing admission, capability and dispatch requirements.
+- `pappra collab role-run --request <abs role-orchestration.json> [--apply]`
+  reads authoritative role/dependency state; `--apply` handles one bounded event
+  tick and reserves before dispatch. Neither infers acceptance.
+- `pappra collab role-plan aggregate --request <abs role-plan.json>` with
+  `--task-root <abs> --config <abs expanded-plan.json>` aggregates authoritative
+  results.
+
+Roles describe responsibility and scope only: they approve nothing and never
+synthesize a participant identity or capability card. Hooks record lifecycle
+observations only and never select roles or launch a model. Keep the manual path:
+a simple, reversible, local change needs no role plan.
 
 ## Recovery and parallel work
 

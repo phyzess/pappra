@@ -1,6 +1,6 @@
 {
   "name": "@phyzess/pappra",
-  "version": "0.1.0-beta.18",
+  "version": "0.1.0-beta.19",
   "description": "Portable coding-agent workspaces with knowledge, continuity, code navigation and optional collaboration.",
   "publishConfig": {
     "access": "public"
@@ -79,6 +79,8 @@
   "scripts": {
     "build:scripts": "tsc -p tsconfig.scripts.json",
     "build": "tsc -p tsconfig.scripts.json && node .build/scripts/scripts/clean-build.js && tsc -p tsconfig.build.json && node .build/scripts/scripts/build-assets.js",
+    "dev:check": "node scripts/self-host.ts --check",
+    "dev:setup": "node scripts/self-host.ts --apply",
     "typecheck": "tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.test.json --noEmit && tsc -p tsconfig.scripts.json --noEmit",
     "pretest": "pnpm build && tsc -p tsconfig.test.json",
     "test": "node .build/test/scripts/run-tests.js",
