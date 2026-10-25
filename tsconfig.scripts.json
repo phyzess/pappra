@@ -3,7 +3,8 @@
   "compilerOptions": {
     "rootDir": ".",
     "outDir": ".build/scripts",
-    "declaration": false
+    "declaration": false,
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["scripts/**/*.ts"]
 }

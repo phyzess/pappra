@@ -17,6 +17,29 @@ itself needs no build step (Node >= 24 executes the TypeScript directly).
 read-only. `dev:check` exits non-zero while any check is not `ok`, which makes it
 usable as a local gate.
 
+## Module layout
+
+`scripts/self-host.ts` is the entry and facade; the implementation lives in
+cohesive modules under `scripts/self-host/`:
+
+| Module | Responsibility |
+| --- | --- |
+| `types.ts` | public types and constants, plus the narrow JSON/payload helpers every layer needs |
+| `paths.ts` | `lstat`/`realpath` primitives where only `ENOENT` means "missing" |
+| `admission.ts` | repository and workspace admission; the gate before any write |
+| `aliases.ts` | alias inspection and creation for the three host directories |
+| `cli.ts` | the repository CLI runner, its default dependency seam, and entry flag parsing |
+| `documents.ts` | the `pappra/docs-check/1` contract and the docs review state |
+| `checks.ts` | the ten read-only checks and the report formatter |
+| `apply.ts` | the owned repairs: aliases, `code prepare`, `docs scan --apply` |
+
+The entry imports these with explicit `.ts` specifiers so Node loads them
+directly; `tsconfig.scripts.json` and `tsconfig.test.json` enable
+`rewriteRelativeImportExtensions` so the same graph also emits working `.js`
+imports. `tests/scripts/self-host-boundaries.test.ts` enforces the closed module
+set, the acyclic layering, the nineteen runtime exports, the ten-check order and
+a cold clone that runs the entry with no `dist/`, `.build/` or `node_modules/`.
+
 ## Admission comes first
 
 `dev:setup` writes nothing and starts no mutating child until the root is

@@ -3,7 +3,8 @@
   "compilerOptions": {
     "rootDir": ".",
     "outDir": ".build/test",
-    "declaration": false
+    "declaration": false,
+    "rewriteRelativeImportExtensions": true
   },
   "include": ["src/**/*.ts", "tests/**/*.ts", "scripts/**/*.ts"]
 }
