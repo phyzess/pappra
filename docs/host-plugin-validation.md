@@ -7,6 +7,44 @@ loads or trusts a hook.
 
 Pinned versions on the recording machine: Claude Code `2.1.292`, Codex `0.163.0`, Pi `1.3.0`.
 
+## Beta.16 real-host acceptance (2026-10-25)
+
+The current build was exercised with Pi `1.4.0`, Claude Code `2.1.308` and
+Codex `0.164.0`, in disposable workspaces with spaces and Unicode in their paths.
+These observations supplement the older version-specific records below:
+
+- Installing the Claude integration with Node `24.15.0`, then verifying and
+  reinstalling with Node `24.20.0`, preserved the exact hook configuration bytes.
+  Commands resolved `node` through PATH and did not duplicate managed entries.
+- The real Pi loader loaded the installed `index.ts` and adjacent `runtime.mjs`,
+  registered `pappra-checkpoint` and recorded `session_start`. This loader check
+  was offline and sent no model prompt.
+- A separate admitted `collab run --controller pi-rpc`, using normal native Pi
+  configuration and capabilities derived from a real read-only handshake,
+  completed in 135.836 seconds. Its real Bash call waited 130 seconds. The owned
+  process exited successfully and the completed report was classified `applied`.
+- Claude's real interactive session, with only project settings loaded to isolate
+  the Pappra integration, accepted `/compact` and `/clear`. `PostCompact`
+  completed successfully; native records include `PostCompact`, SessionStart
+  with source `compact`, and a fresh SessionStart with source `clear`.
+- Codex loaded user-scope hooks from an isolated `CODEX_HOME`. After explicit
+  approval of that temporary directory and review/trust of its single Pappra
+  hook through native `/hooks`, fresh native sessions recorded SessionStart.
+  Real Claude and Codex model calls also returned the requested smoke markers.
+  No hook-trust bypass flag was used.
+- Real managed Pi TUI processes received SIGTERM and SIGHUP in separate PTYs.
+  Both runs restored canonical input and echo, and both the owned Pi process and
+  bridge exited. This signal check sent no model prompt and makes no claim about
+  arbitrary descendants or external writers.
+
+Temporary interactive trust was explicitly authorized. Daily host configuration
+files were not edited; copied Codex credentials are removed during cleanup.
+Native transcripts and detailed receipts remain private rather than being
+published with this guide.
+
+The frozen build also passed `pnpm check`: 1,108 tests, 1,103 passed, five skipped,
+zero failed, followed by the 472-file installed-package smoke.
+
 ## Method
 
 1. Scratch workspace: `git init`, then `pappra init --yes --apply` with an isolated
