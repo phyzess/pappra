@@ -18,7 +18,7 @@
     "taskVisibility": "private"
   },
   "code": {
-    "graph": "none",
+    "graph": "codegraph",
     "symbols": "auto",
     "prepare": "on-demand"
   },
@@ -47,7 +47,10 @@
     "dist",
     "coverage",
     "tmp",
-    "test-results"
+    "test-results",
+    ".agents/skills",
+    ".pi/skills",
+    ".claude/skills"
   ],
   "extensions": {}
 }
