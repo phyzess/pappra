@@ -1,5 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, unlink } from 'node:fs/promises';
+import { unlink } from 'node:fs/promises';
+import {
+  CheckpointTaskDirectory,
+  checkpointResidualPaths,
+} from './task-directory.js';
 import { ensurePrivateState } from '../infra/private-state.js';
 import { publishPrivateLock } from '../infra/private-lock.js';
 import { captureProcessIdentity } from '../infra/process-identity.js';
@@ -102,6 +106,12 @@ export interface ResumeCheckpointResult {
 }
 
 export interface ContinuityServiceOptions {
+  /** Test seam: schedule namespace mutation at the directory-creation boundary. */
+  readonly beforeTaskDirectoryCreate?: () => void;
+  /** Test seam: directory identity is pinned, before lock publication. */
+  readonly beforeTaskLockPublish?: () => Promise<void> | void;
+  /** Test seam: after failure and lock release, before guarded empty cleanup. */
+  readonly beforeFailedTaskCleanup?: () => Promise<void> | void;
   /** Test seam: runs after checkpoint bytes are durable, before latest pointer. */
   readonly beforeLatestPointerPersist?: () => Promise<void> | void;
 }
@@ -299,6 +309,9 @@ async function readCheckpoint(
 async function acquireTaskLock(
   root: string,
   taskId: string,
+  directory: CheckpointTaskDirectory,
+  beforePublish?: () => Promise<void> | void,
+  beforeDirectoryCreate?: () => void,
 ): Promise<
   | { ok: true; path: string; token: string }
   | { ok: false; path: string; message: string }
@@ -316,7 +329,7 @@ async function acquireTaskLock(
   if (!privateState.ok)
     return { ok: false, path: paths.lockPath, message: privateState.message };
   try {
-    await mkdir(paths.taskDir, { recursive: true, mode: 0o700 });
+    directory.prepare(beforeDirectoryCreate);
   } catch (error) {
     return {
       ok: false,
@@ -326,12 +339,15 @@ async function acquireTaskLock(
   }
   const token = randomUUID();
   try {
+    await beforePublish?.();
+    directory.assertCurrent();
     await publishPrivateLock(
       paths.lockPath,
       Buffer.from(
         `${JSON.stringify({ token, pid: process.pid, process_identity: captureProcessIdentity() ?? undefined, createdAt: new Date().toISOString() })}\n`,
       ),
       async () => {
+        directory.assertCurrent();
         const current = await ensurePrivateTaskBoundary(
           root,
           taskId,
@@ -353,7 +369,19 @@ async function acquireTaskLock(
 async function releaseTaskLock(
   path: string,
   token: string,
+  directory: CheckpointTaskDirectory,
 ): Promise<Outcome<null>> {
+  try {
+    directory.assertCurrent();
+  } catch (error) {
+    return {
+      ok: false,
+      code: diagnosticCodes.document_locked,
+      message: `Cannot verify checkpoint lock namespace: ${errorMessage(error)}`,
+      retryable: false,
+      nextAction: 'Inspect the private task namespace; no lock was removed.',
+    };
+  }
   const read = await readTextFileBounded(path);
   if (!read.ok) {
     return {
@@ -391,6 +419,7 @@ async function releaseTaskLock(
     };
   }
   try {
+    directory.assertCurrent();
     await unlink(path);
     return { ok: true, value: null };
   } catch (error) {
@@ -770,9 +799,81 @@ export class CheckpointService {
       };
     }
     const workspace = loaded.workspace;
+    let directory: CheckpointTaskDirectory;
+    try {
+      directory = new CheckpointTaskDirectory(
+        workspace.root,
+        continuityTaskPaths(workspace.root, input.taskId).taskDir,
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        status: 'failed',
+        checkpoint: null,
+        checkpointPath: null,
+        latestPath: null,
+        residualPaths: [],
+        diagnostics: [
+          diag(
+            diagnosticCodes.document_record_invalid,
+            `Invalid task id: ${errorMessage(error)}`,
+            workspace.root,
+            'Use a stable task id with letters, digits, dot, underscore, or dash.',
+          ),
+        ],
+      };
+    }
+    try {
+      const result = await this.#save(workspace, input, directory);
+      if (result.ok) return result;
+      const diagnostics = [...result.diagnostics];
+      try {
+        await this.#options.beforeFailedTaskCleanup?.();
+        directory.removeIfOwnedAndEmpty();
+      } catch (error) {
+        // ENOTEMPTY is expected when a context, checkpoint, or concurrent write remains.
+        if (
+          !['ENOENT', 'ENOTEMPTY', 'EEXIST'].includes(
+            (error as NodeJS.ErrnoException).code ?? '',
+          )
+        ) {
+          diagnostics.push(
+            diag(
+              diagnosticCodes.document_write_partial,
+              `Task directory cleanup refused: ${errorMessage(error)}`,
+              directory.path,
+              'Inspect the residual private task state; uncertain ownership is preserved.',
+            ),
+          );
+        }
+      }
+      return {
+        ...result,
+        diagnostics,
+        residualPaths: await checkpointResidualPaths([
+          ...result.residualPaths,
+          directory.path,
+        ]),
+      };
+    } finally {
+      directory.close();
+    }
+  }
+
+  async #save(
+    workspace: ContinuityWorkspace,
+    input: SaveCheckpointInput,
+    directory: CheckpointTaskDirectory,
+  ): Promise<SaveCheckpointResult> {
     let lock: Awaited<ReturnType<typeof acquireTaskLock>>;
     try {
-      lock = await acquireTaskLock(workspace.root, input.taskId);
+      lock = await acquireTaskLock(
+        workspace.root,
+        input.taskId,
+        directory,
+        this.#options.beforeTaskLockPublish,
+        this.#options.beforeTaskDirectoryCreate,
+      );
     } catch (error) {
       return {
         ok: false,
@@ -811,7 +912,7 @@ export class CheckpointService {
     }
     const paths = continuityTaskPaths(workspace.root, input.taskId);
     if (workspace.repositories.length > 64) {
-      const released = await releaseTaskLock(lock.path, lock.token);
+      const released = await releaseTaskLock(lock.path, lock.token, directory);
       return {
         ok: false,
         status: 'failed',
@@ -1266,7 +1367,7 @@ export class CheckpointService {
         residualPaths: checkpointPath === null ? [] : [checkpointPath],
       };
     }
-    const release = await releaseTaskLock(lock.path, lock.token);
+    const release = await releaseTaskLock(lock.path, lock.token, directory);
     if (result === undefined) {
       result = {
         ok: false,

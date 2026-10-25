@@ -5,6 +5,8 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -44,6 +46,73 @@ function parse(stdout: string): Record<string, unknown> {
   assert(typeof value === 'object' && value !== null);
   return value as Record<string, unknown>;
 }
+
+test('actual checkpoint CLI cleans failed new task directories and reports preserved state', () => {
+  const root = realpathSync(makeTempDir('checkpoint-cli-cleanup'));
+  const home = mkdtempSync(join(tmpdir(), 'checkpoint-cli-home-'));
+  try {
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    writeMachineConfig(root, baseMachineConfig(root));
+    const tasks = join(root, '.pappra/local/tasks');
+    for (const args of [
+      ['--task', 'missing-input'],
+      ['--task', 'invalid-context', '--objective', '', '--acceptance', 'Save'],
+    ]) {
+      const result = invoke(['checkpoint', ...args, '--json'], root, home);
+      assert.equal(result.status, 1, result.stderr);
+      const value = parse(result.stdout);
+      assert.equal(value.ok, false);
+      assert.deepEqual(value.residualPaths, []);
+      assert.equal(existsSync(join(tasks, args[1]!)), false);
+    }
+    const existing = join(tasks, 'existing');
+    mkdirSync(existing);
+    const failed = invoke(
+      ['checkpoint', '--task', 'existing', '--json'],
+      root,
+      home,
+    );
+    assert.equal(failed.status, 1, failed.stderr);
+    assert.deepEqual(parse(failed.stdout).residualPaths, [existing]);
+    assert.deepEqual(readdirSync(existing), []);
+
+    const locked = join(tasks, 'locked');
+    mkdirSync(locked);
+    writeFileSync(join(locked, 'checkpoint.lock'), 'foreign lock\n');
+    const conflict = invoke(
+      ['checkpoint', '--task', 'locked', '--json'],
+      root,
+      home,
+    );
+    assert.equal(conflict.status, 1, conflict.stderr);
+    assert.deepEqual(parse(conflict.stdout).residualPaths, [locked]);
+    assert.equal(
+      readFileSync(join(locked, 'checkpoint.lock'), 'utf8'),
+      'foreign lock\n',
+    );
+
+    const retry = invoke(
+      [
+        'checkpoint',
+        '--task',
+        'missing-input',
+        '--objective',
+        'Retry',
+        '--acceptance',
+        'Save',
+        '--json',
+      ],
+      root,
+      home,
+    );
+    assert.equal(retry.status, 0, retry.stderr);
+    assert.equal(parse(retry.stdout).status, 'saved');
+    assert.deepEqual(parse(retry.stdout).residualPaths, []);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
 
 test('checkpoint and resume CLI share a single JSON contract without private patches', async () => {
   const root = makeTempDir('continuity-cli');
