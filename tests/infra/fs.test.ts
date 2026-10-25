@@ -9,12 +9,29 @@ test('bounded reads allocate for small files rather than the maximum size', asyn
   const root = await mkdtemp(join(tmpdir(), 'pappra-bounded-file-'));
   try {
     const file = join(root, 'small.txt');
-    await writeFile(file, 'small runtime dependency');
+    const content = 'small runtime dependency';
+    await writeFile(file, content);
     const result = await readFileBounded(file, 64 * 1024 * 1024);
     assert(result.ok);
-    assert.equal(result.value.bytes.toString(), 'small runtime dependency');
-    assert.equal(result.value.digest, sha256Digest('small runtime dependency'));
-    assert(result.value.bytes.buffer.byteLength <= 64 * 1024);
+    assert.equal(result.value.bytes.toString(), content);
+    assert.equal(result.value.digest, sha256Digest(content));
+    // Small reads allocate one byte more than the file and come from one shared
+    // slab, so the backing ArrayBuffer is the runtime's own small-buffer
+    // contract: Buffer.poolSize plus any alignment padding (Node 26 backs the
+    // slab with poolSize + 63 bytes). Assert against that measured contract
+    // instead of assuming it equals 64 KiB; a read that allocated the requested
+    // ceiling would still fail well above it.
+    const allocation = Buffer.byteLength(content) + 1;
+    const slabBytes = Math.max(
+      Buffer.poolSize,
+      Buffer.allocUnsafe(1).buffer.byteLength,
+      allocation,
+    );
+    const backing = result.value.bytes.buffer.byteLength;
+    assert(
+      backing <= slabBytes,
+      `small read is backed by ${backing} bytes, above the runtime slab of ${slabBytes}`,
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }
