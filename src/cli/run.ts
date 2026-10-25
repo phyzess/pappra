@@ -32,6 +32,7 @@ import { parseOptions, failure, hasContinuityOptions } from './options.js';
 import { routeCollaboration } from './collaboration-router.js';
 import { runCollaborationWorkflowCli } from './commands/collaboration-workflow.js';
 import { runDocsReviewCli } from './commands/docs-review.js';
+import { runRuntimeArchiveCli } from './commands/runtime-archive.js';
 
 const globalUsage =
   'pappra [--help | --version] [--json]\n' +
@@ -48,7 +49,7 @@ const globalUsage =
   'pappra resume <taskId> [--session <id>] [--json]\n' +
   'pappra code <status|prepare|query> --repo <id> [options] [--json]\n' +
   'pappra host <detect|describe|probe|plan|install|verify|uninstall|bundle|mcp> --host <name> [options] [--json]\n' +
-  'pappra runtime <install|status|verify|remove|gc> [options] [--json]\n' +
+  'pappra runtime <install|status|verify|remove|gc|archive> [options] [--json]\n' +
   'pappra session <plan|start|status|fence|stop> --config <abs managed-pi.json> [--json]\n' +
   'pappra collab workflow <prepare|dispatch|ack|report|accept|release|inspect> [options]\n' +
   `${collaborationCommandLine}`;
@@ -58,6 +59,9 @@ export async function runCli(
   output: CliOutput,
 ): Promise<number> {
   const jsonRequested = args.includes('--json');
+  if (args[0] === 'runtime' && args[1] === 'archive') {
+    return runRuntimeArchiveCli(args.slice(2), output);
+  }
   if (args[0] === 'repair') {
     try {
       const parsedRepair = parseArgs({

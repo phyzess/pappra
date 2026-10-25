@@ -19,9 +19,10 @@ import { updateMachineRuntime } from '../../install/apply.js';
 import { inspectMachineConfig } from '../../workspace/config.js';
 import { resolveWorkspaceRoot } from '../../workspace/resolve.js';
 import type { CliOutput } from '../output.js';
+import { runtimeArchiveUsage } from './runtime-archive.js';
 
 export const runtimeUsage =
-  'pappra runtime <install|status|verify|remove|gc> [options] [--json]\n' +
+  'pappra runtime <install|status|verify|remove|gc|archive> [options] [--json]\n' +
   '  install [--from self|tarball|registry] [--tarball <file>] [--runtime-version <v>]\n' +
   '          [--apply] [--bind]\n' +
   '  status\n' +
@@ -32,7 +33,8 @@ export const runtimeUsage =
   'package that is currently executing, which is what makes an npx/dlx bootstrap survive\n' +
   'cache eviction. Writes require --apply; --bind records the copy in machine.json.\n' +
   'Only explicitly registered workspace roots are inspected; no home scan is performed.\n' +
-  '--force accepts unknown/unregistered coverage, but never bypasses a verified workspace binding.\n';
+  '--force accepts unknown/unregistered coverage, but never bypasses a verified workspace binding.\n' +
+  runtimeArchiveUsage;
 
 export interface RuntimeCommandOptions {
   readonly cwd: string;

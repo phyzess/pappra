@@ -47,6 +47,7 @@ import {
 import { resolveWorkspaceRoot } from '../workspace/resolve.js';
 import { isValidTaskId } from '../schemas/continuity.js';
 import { resetLocalState, type LocalResetResult } from './reset-local.js';
+import { assertRuntimeNotArchiving } from './runtime-archive-state.js';
 
 export interface RepairOptions {
   readonly root: string;
@@ -826,6 +827,7 @@ async function repairRuntime(
   journal: InstallJournal,
 ): Promise<void> {
   const paths = runtimePaths(version, dataDir);
+  await assertRuntimeNotArchiving(dataDir, version);
   if (
     journal.operation !== 'install-runtime' ||
     journal.runtimeVersion !== version ||
@@ -923,6 +925,7 @@ export async function repairInstall(
       ? resolve(options.dataDir ?? resolveUserDataDir())
       : (resolution?.root ?? (await resolveRealpath(options.root)));
     if (root === null) throw new Error('Workspace root does not exist.');
+    if (runtime) await assertRuntimeNotArchiving(root, options.runtimeVersion!);
     if (options.resetLocal === true) {
       if (runtime || options.installId !== undefined)
         throw new Error(
@@ -1012,6 +1015,8 @@ export async function repairInstall(
       throw new Error('No incomplete journal matches this install ID.');
     }
     if (options.apply === true) {
+      if (runtime)
+        await assertRuntimeNotArchiving(root, options.runtimeVersion!);
       if (options.quarantineUnownedLocks === true) {
         for (const state of lockStates.filter(
           (item) => item.state === 'unknown',

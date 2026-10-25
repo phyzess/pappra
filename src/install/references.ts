@@ -1,4 +1,4 @@
-import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { readdir } from 'node:fs/promises';
 import { z } from 'zod';
 import { observePath, resolveRealpath, sha256Digest } from '../infra/fs.js';
@@ -10,6 +10,7 @@ import { isPathInside } from '../schemas/paths.js';
 import type { RuntimeManifest } from '../schemas/install.js';
 import { failed, succeeded, type Outcome } from '../schemas/outcome.js';
 import { diagnosticCodes } from '../schemas/errors.js';
+import { assertRuntimeNotArchiving } from './runtime-archive-state.js';
 import {
   acquireInstallLock,
   ensureStatePathBoundary,
@@ -51,6 +52,25 @@ export function runtimeReferencesDirectory(dataDir: string): string {
   return join(resolve(dataDir), 'runtime-references');
 }
 
+/** Keep a binding protective when corruption removed its executable or parent.
+ * Resolve only existing ancestors; never follow a broken/unknown symlink. */
+async function resolveBindingPath(path: string): Promise<string | null> {
+  let current = resolve(path);
+  const missing: string[] = [];
+  for (let depth = 0; depth < 256; depth += 1) {
+    const observation = await observePath(current).catch(() => null);
+    if (observation?.kind !== 'missing') {
+      const real = await resolveRealpath(current);
+      return real === null ? null : resolve(real, ...missing);
+    }
+    const parent = dirname(current);
+    if (parent === current) return null;
+    missing.unshift(basename(current));
+    current = parent;
+  }
+  return null;
+}
+
 /** Lexical and real-path aliases of the same global data directory are one runtime. */
 export async function runtimeBindingMatches(
   dataDir: string,
@@ -64,8 +84,8 @@ export async function runtimeBindingMatches(
   const target = join(resolve(dataDir), 'runtimes', version);
   const executable = resolve(binding.executable);
   if (isPathInside(target, executable)) return true;
-  const realTarget = await resolveRealpath(target);
-  const realExecutable = await resolveRealpath(executable);
+  const realTarget = await resolveBindingPath(target);
+  const realExecutable = await resolveBindingPath(executable);
   return (
     realTarget !== null &&
     realExecutable !== null &&
@@ -201,6 +221,11 @@ export async function beginRuntimeReference(
       'Runtime reference is not inside its exact version directory.',
     );
   const dataDir = (await resolveRealpath(selectedDataDir)) ?? selectedDataDir;
+  try {
+    await assertRuntimeNotArchiving(dataDir, runtime.runtimeVersion);
+  } catch (error) {
+    return failed(diagnosticCodes.initApplyResidual, (error as Error).message);
+  }
   const lockPath = join(
     dataDir,
     'runtimes',
@@ -266,6 +291,12 @@ export async function beginRuntimeReference(
       lock.message ?? 'Runtime reference registration is locked.',
     );
   const release = () => releaseInstallLock(lockPath, lock.lock!.token);
+  try {
+    await assertRuntimeNotArchiving(dataDir, runtime.runtimeVersion);
+  } catch (error) {
+    await release();
+    return failed(diagnosticCodes.initApplyResidual, (error as Error).message);
+  }
   existing = await readJsonDocument(path, referenceSchema);
   if (
     existing.exists &&

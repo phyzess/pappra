@@ -32,6 +32,7 @@ export const installLockSchema = z.strictObject({
     'rollback-workspace-files',
     'uninstall-workspace-files',
     'remove-runtime',
+    'archive-runtime',
     'update-machine-runtime',
     // Private hook preference toggle guarded by the workspace lock; shared
     // configuration is never rewritten by this operation.

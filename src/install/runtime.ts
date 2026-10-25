@@ -38,6 +38,10 @@ import { errorMessage } from '../schemas/outcome.js';
 import { fingerprintSelfSource } from './source-fingerprint.js';
 import { inspectRuntimeReferences } from './references.js';
 import {
+  assertRuntimeNotArchiving,
+  RuntimeArchiveBlockedError,
+} from './runtime-archive-state.js';
+import {
   observePath,
   readFileBounded,
   readTextFileBounded,
@@ -845,6 +849,18 @@ export async function installRuntime(
   const timeoutMs = options.timeoutMs ?? 120_000;
   const dataDir = resolve(options.dataDir ?? resolveUserDataDir());
   const paths = runtimePaths(version, dataDir);
+  try {
+    await assertRuntimeNotArchiving(dataDir, version);
+  } catch (error) {
+    return failureResult(
+      error instanceof RuntimeArchiveBlockedError ? 'partial' : 'failed',
+      errorMessage(error),
+      {
+        version,
+        runtimeRoot: paths.runtimeRoot,
+      },
+    );
+  }
   const journalScan = await scanRuntimeJournals(version, paths);
   if (journalScan.unreadable.length > 0) {
     return failureResult(
@@ -964,6 +980,19 @@ export async function installRuntime(
     );
   }
 
+  try {
+    await assertRuntimeNotArchiving(dataDir, version);
+  } catch (error) {
+    await releaseInstallLock(paths.lockPath, lock.lock!.token);
+    return failureResult(
+      error instanceof RuntimeArchiveBlockedError ? 'partial' : 'failed',
+      errorMessage(error),
+      {
+        version,
+        runtimeRoot: paths.runtimeRoot,
+      },
+    );
+  }
   const afterLock = await completeExistingRuntime(
     version,
     paths,
@@ -1487,6 +1516,24 @@ export async function removeRuntime(
   if (!validVersion(options.version)) return removeRuntimeAt(options);
   const dataDir = resolve(options.dataDir ?? resolveUserDataDir());
   const paths = runtimePaths(options.version, dataDir);
+  try {
+    await assertRuntimeNotArchiving(dataDir, options.version);
+  } catch (error) {
+    return {
+      ok: false,
+      status: 'locked',
+      runtimeRoot: paths.runtimeRoot,
+      residualPaths: [],
+      diagnostics: [
+        createDiagnostic({
+          code: diagnosticCodes.initApplyResidual,
+          severity: 'error',
+          message: errorMessage(error),
+          source: paths.runtimeRoot,
+        }),
+      ],
+    };
+  }
   const lock = await acquireInstallLock(
     paths.lockPath,
     'remove-runtime',
