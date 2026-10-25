@@ -4,7 +4,11 @@ import { join, resolve } from 'node:path';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import type { HostName } from '../schemas/host.js';
 import type { InitChoices } from '../schemas/init.js';
-import { HOST_SUPPORT } from '../hosts/integration/support.js';
+import {
+  HOST_SUPPORT,
+  isSupportedVersion,
+} from '../hosts/integration/support.js';
+import { executableOnPath } from '../hosts/detect.js';
 import { exportHostPluginBundle } from '../hosts/integration/bundle-export.js';
 import { HostIntegrationService } from '../hosts/integration/service.js';
 import { getPackageInfo } from '../package-info.js';
@@ -80,16 +84,14 @@ const HOST_COMMAND: Record<HostName, string> = {
   pi: 'pi',
 };
 
-function sameMinor(left: string, right: string): boolean {
-  const [leftMajor, leftMinor] = left.split('.');
-  const [rightMajor, rightMinor] = right.split('.');
-  return leftMajor === rightMajor && leftMinor === rightMinor;
-}
-
-function hostState(detected: string | null, pinned: string): OnboardHostState {
-  if (detected === null) return 'missing';
-  if (detected === pinned) return 'verified';
-  return sameMinor(detected, pinned) ? 'unverified' : 'unsupported';
+function hostState(
+  host: HostName,
+  detected: string | null,
+  installed: boolean,
+): OnboardHostState {
+  if (!installed) return 'missing';
+  if (detected === null) return 'unverified';
+  return isSupportedVersion(host, detected) ? 'verified' : 'unsupported';
 }
 
 function detectHosts(
@@ -106,7 +108,11 @@ function detectHosts(
       command: HOST_COMMAND[host],
       detectedVersion,
       pinnedVersion,
-      state: hostState(detectedVersion, pinnedVersion),
+      state: hostState(
+        host,
+        detectedVersion,
+        executableOnPath(HOST_COMMAND[host], pathEnv) !== null,
+      ),
     };
   });
 }
@@ -194,32 +200,67 @@ function hostTarget(host: HostName, root: string): string | null {
   return null;
 }
 
+export function planOnboardHost(plan: OnboardHostPlan): OnboardHostResult {
+  if (
+    plan.state !== 'verified' ||
+    !isSupportedVersion(plan.host, plan.detectedVersion)
+  ) {
+    const detail =
+      plan.state === 'missing'
+        ? `Host ${plan.command} is not installed.`
+        : plan.detectedVersion === null
+          ? `The installed ${plan.command} version could not be verified.`
+          : `Host ${plan.command} ${plan.detectedVersion} is outside the observed support matrix (reference ${plan.pinnedVersion}).`;
+    return {
+      ...plan,
+      action: 'skipped',
+      appliedFiles: [],
+      diagnostics: [],
+      nextActions: [
+        `${detail} Install an explicitly supported version and rerun onboard, or use manual checkpoint/resume.`,
+      ],
+    };
+  }
+  return {
+    ...plan,
+    action: 'planned',
+    appliedFiles: [],
+    diagnostics: [],
+    nextActions: [
+      'Rerun with --apply-host to write this host integration; native trust and reload remain separate steps.',
+    ],
+  };
+}
+
 async function wireHost(
   plan: OnboardHostPlan,
   root: string,
   packageVersion: string,
 ): Promise<OnboardHostResult> {
-  if (plan.state !== 'verified') {
-    const detail =
-      plan.state === 'missing'
-        ? `Host ${plan.command} is not installed.`
-        : `Host ${plan.command} ${plan.detectedVersion ?? '(unknown)'} does not match the pinned ${plan.pinnedVersion}.`;
-    return {
-      ...plan,
-      action: 'skipped',
-      appliedFiles: [],
-      nextActions: [
-        `${detail} Install the pinned version, or use pappra host install --mode project-settings explicitly.`,
-      ],
-      diagnostics: [],
-    };
-  }
+  const planned = planOnboardHost(plan);
+  if (planned.action === 'skipped' || plan.detectedVersion === null)
+    return planned;
+  // Re-observe before any host write/export. The integration service also keeps
+  // its own installed-version probe; a supplied planning version never replaces it.
+  const pathEnv = process.env['PATH'] ?? '';
+  const hostVersion = detectedHostVersion(plan.command, pathEnv);
+  plan = {
+    ...plan,
+    detectedVersion: hostVersion,
+    state: hostState(
+      plan.host,
+      hostVersion,
+      executableOnPath(plan.command, pathEnv) !== null,
+    ),
+  };
+  if (!isSupportedVersion(plan.host, hostVersion) || hostVersion === null)
+    return planOnboardHost(plan);
   if (plan.host === 'pi') {
     const outDir = join(root, '.pappra', 'host-bundles', 'pi');
     try {
       const exported = await exportHostPluginBundle({
         host: 'pi',
-        hostVersion: plan.pinnedVersion,
+        hostVersion,
         outDir,
         packageVersion,
       });
@@ -258,17 +299,18 @@ async function wireHost(
     root,
     homeDir: homedir(),
     pathEnv: process.env['PATH'] ?? '',
-    hostVersion: plan.pinnedVersion,
+    hostVersion,
     observedAt: new Date().toISOString(),
   });
   const installed = await service.install(plan.host, {
     hostRoot: target,
-    hostVersion: plan.pinnedVersion,
+    hostVersion,
     apply: true,
   });
+  const diagnostics = installed.diagnostics as readonly Diagnostic[];
   const trust =
     plan.host === 'codex'
-      ? 'Approve the Pappra hook once in Codex; project `.codex/hooks.json` is not loaded by 0.163.0.'
+      ? `Approve the Pappra hook once in Codex ${hostVersion}; use the CODEX_HOME integration and reload the session.`
       : 'Reload the session and trust the Pappra hook if Claude Code prompts.';
   return {
     ...plan,
@@ -279,8 +321,11 @@ async function wireHost(
           ? 'unchanged'
           : 'failed',
     appliedFiles: installed.appliedFiles,
-    nextActions: [trust],
-    diagnostics: installed.diagnostics as readonly Diagnostic[],
+    nextActions:
+      installed.status === 'applied' || installed.status === 'unchanged'
+        ? [trust]
+        : diagnostics.map((entry) => entry.hint ?? entry.message),
+    diagnostics,
   };
 }
 
@@ -314,15 +359,7 @@ export async function applyOnboard(
   for (const host of plan.hosts) {
     const result = options.applyHosts
       ? await wireHost(host, plan.bundle.scope.workspaceRoot, packageVersion)
-      : {
-          ...host,
-          action: 'planned' as const,
-          appliedFiles: [],
-          nextActions: [
-            'Rerun with --apply-host to write this host integration.',
-          ],
-          diagnostics: [],
-        };
+      : planOnboardHost(host);
     hosts.push(result);
     manualSteps.push(...result.nextActions);
   }

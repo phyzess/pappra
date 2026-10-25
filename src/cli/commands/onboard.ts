@@ -5,8 +5,10 @@ import { getPackageInfo } from '../../package-info.js';
 import {
   applyOnboard,
   parseHostList,
+  planOnboardHost,
   planOnboard,
   type OnboardFailure,
+  type OnboardHostPlan,
   type OnboardHostResult,
   type OnboardPlan,
   type OnboardResult,
@@ -122,13 +124,14 @@ async function loadChoices(
 }
 
 function plannedHosts(plan: OnboardPlan): OnboardHostResult[] {
-  return plan.hosts.map((host) => ({
-    ...host,
-    action: 'planned',
-    appliedFiles: [],
-    nextActions: ['Rerun with --apply-host to write this host integration.'],
-    diagnostics: [],
-  }));
+  return plan.hosts.map(planOnboardHost);
+}
+
+function observedVersionLabel(host: OnboardHostPlan): string {
+  return (
+    host.detectedVersion ??
+    (host.state === 'missing' ? '(missing)' : '(unknown)')
+  );
 }
 
 function planReport(plan: OnboardPlan): OnboardResult {
@@ -159,7 +162,7 @@ function planReport(plan: OnboardPlan): OnboardResult {
     hosts: plannedHosts(plan),
     manualSteps: plan.hosts.map(
       (host) =>
-        `${host.command}: detected ${host.detectedVersion ?? '(missing)'}, pinned ${host.pinnedVersion} (${host.state})`,
+        `${host.command}: detected ${observedVersionLabel(host)}, pinned ${host.pinnedVersion} (${host.state})`,
     ),
     nextActions,
     diagnostics: plan.bundle.diagnostics.filter(
@@ -181,7 +184,7 @@ function printResult(output: CliOutput, result: OnboardResult): void {
   }
   for (const host of result.hosts) {
     output.stdout(
-      `Host ${host.host}: detected ${host.detectedVersion ?? '(missing)'} / pinned ${host.pinnedVersion} (${host.state}) -> ${host.action}\n`,
+      `Host ${host.host}: detected ${observedVersionLabel(host)} / pinned ${host.pinnedVersion} (${host.state}) -> ${host.action}\n`,
     );
   }
   for (const step of result.manualSteps) {
