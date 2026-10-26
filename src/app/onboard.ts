@@ -94,7 +94,7 @@ function hostState(
   return isSupportedVersion(host, detected) ? 'verified' : 'unsupported';
 }
 
-function detectHosts(
+export function detectHosts(
   pathEnv: string,
   requested: readonly HostName[] | null,
 ): OnboardHostPlan[] {
@@ -232,7 +232,7 @@ export function planOnboardHost(plan: OnboardHostPlan): OnboardHostResult {
   };
 }
 
-async function wireHost(
+export async function wireHost(
   plan: OnboardHostPlan,
   root: string,
   packageVersion: string,
@@ -372,7 +372,7 @@ export async function applyOnboard(
     plan.choices.repositories.length > 0
   ) {
     nextActions.push(
-      `pappra code prepare --repo ${plan.choices.repositories[0]?.path ?? '<repo>'} --apply`,
+      `pappra code prepare --repo ${plan.bundle.scope.repositories[0]?.id ?? '<repository-id>'} --apply`,
     );
   }
   return {

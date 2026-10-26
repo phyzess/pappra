@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import type { HostName } from '../../schemas/host.js';
+import { hostNameSchema, type HostName } from '../../schemas/host.js';
 import { HostIntegrationService } from '../../hosts/integration/service.js';
 import {
   exportHostPluginBundle,
@@ -12,6 +12,7 @@ import {
   applyHostMcp,
   planHostMcp,
   verifyHostMcp,
+  type HostMcpResult,
 } from '../../app/host-mcp.js';
 import { probeHost } from '../../app/host-probe.js';
 import {
@@ -20,6 +21,15 @@ import {
 } from '../../hosts/integration/support.js';
 import { getPackageInfo, getPackageRoot } from '../../package-info.js';
 import type { CliOutput } from '../output.js';
+import {
+  clackProgress,
+  clackWizardUi,
+  confirmApply,
+  pickOne,
+  type ProgressUi,
+  type WizardUi,
+} from '../interactive.js';
+import { hostOptions } from '../pickers.js';
 
 export const hostUsage =
   'pappra host <detect|describe|probe|plan|install|uninstall|verify|bundle|mcp> --host <pi|codex|claude>\n' +
@@ -68,6 +78,14 @@ export interface HostCommandOptions {
   readonly transitionExtension: boolean;
   readonly marketplace: boolean;
   readonly scope: 'project' | 'user' | null;
+  /** A person at a terminal: plan output may be followed by a prompt. */
+  readonly interactive?: boolean;
+}
+
+/** Injected terminal surfaces; the defaults are the clack implementations. */
+export interface HostCommandDeps {
+  readonly ui?: WizardUi;
+  readonly progress?: ProgressUi;
 }
 
 /** Codex only loads lifecycle hooks from its user configuration directory. */
@@ -111,8 +129,9 @@ function diagnosticStatus(status: string): number {
 export async function runHostCommand(
   options: HostCommandOptions,
   output: CliOutput,
+  deps: HostCommandDeps = {},
 ): Promise<number> {
-  if (options.action === null || options.host === null) {
+  if (options.action === null) {
     output.stderr('pappra: host requires an action and --host.\n');
     return 2;
   }
@@ -123,10 +142,29 @@ export async function runHostCommand(
     hostVersion: options.hostVersion,
     observedAt: new Date().toISOString(),
   });
+  let host = options.host;
+  if (host === null && options.interactive === true && options.json !== true) {
+    const picked = await pickOne(
+      deps.ui ?? clackWizardUi,
+      'Pick a host to configure',
+      hostOptions(service.detect()),
+    );
+    if (picked === null) {
+      output.stdout('Nothing selected; nothing was done.\n');
+      return 0;
+    }
+    const parsed = hostNameSchema.safeParse(picked);
+    if (!parsed.success) return 1;
+    host = parsed.data;
+  }
+  if (host === null) {
+    output.stderr('pappra: host requires an action and --host.\n');
+    return 2;
+  }
   if (options.scope === 'user') {
-    if (HOST_SUPPORT[options.host].hookScope !== 'user') {
+    if (HOST_SUPPORT[host].hookScope !== 'user') {
       output.stderr(
-        `pappra host: ${options.host} loads hooks from ${HOST_SUPPORT[options.host].hookScope} scope; --scope user is only valid for a user-scoped host (codex).\n`,
+        `pappra host: ${host} loads hooks from ${HOST_SUPPORT[host].hookScope} scope; --scope user is only valid for a user-scoped host (codex).\n`,
       );
       return 2;
     }
@@ -170,8 +208,8 @@ export async function runHostCommand(
       output.stderr('pappra host mcp requires plan, install, or verify.\n');
       return 2;
     }
-    const mcpPlan = await planHostMcp(options.host, options.cwd);
-    const result =
+    const mcpPlan = await planHostMcp(host, options.cwd);
+    let result: HostMcpResult =
       options.subAction === 'verify'
         ? await verifyHostMcp(mcpPlan)
         : options.subAction === 'install' && options.apply
@@ -182,19 +220,52 @@ export async function runHostCommand(
               verified: false,
               detail: null,
             };
+    const printMcpResult = (value: HostMcpResult): void => {
+      output.stdout(`Host ${value.host} MCP: ${value.state}\n`);
+      if (value.target !== null) output.stdout(`  target: ${value.target}\n`);
+      if (value.command !== null) {
+        output.stdout(`  command: ${value.command.join(' ')}\n`);
+      }
+      output.stdout(`  ${value.message}\n`);
+      if (value.detail !== null) output.stdout(`  detail: ${value.detail}\n`);
+    };
     if (options.json) {
       output.stdout(
         `${JSON.stringify({ schema: 'pappra/host-mcp/1', ...result })}\n`,
       );
     } else {
-      output.stdout(`Host ${result.host} MCP: ${result.state}\n`);
-      if (result.target !== null) output.stdout(`  target: ${result.target}\n`);
-      if (result.command !== null) {
-        output.stdout(`  command: ${result.command.join(' ')}\n`);
-      }
-      output.stdout(`  ${result.message}\n`);
-      if (result.detail !== null) output.stdout(`  detail: ${result.detail}\n`);
+      printMcpResult(result);
       if (options.subAction === 'install' && !options.apply) {
+        if (options.interactive === true) {
+          if (result.state === 'conflict') {
+            output.stdout(
+              'Pass --force explicitly to replace the existing entry.\n',
+            );
+            return 1;
+          }
+          const writable =
+            mcpPlan.state === 'create' ||
+            (mcpPlan.state === 'manual' && mcpPlan.command !== null);
+          if (!writable) return 0;
+          const apply = await confirmApply(
+            deps.ui ?? clackWizardUi,
+            `Write the ${result.host} MCP configuration now?`,
+          );
+          if (!apply) {
+            output.stdout('Nothing was applied.\n');
+            return 0;
+          }
+          const progress = deps.progress ?? clackProgress();
+          progress.start(`Writing ${result.host} MCP configuration...`);
+          result = await applyHostMcp(mcpPlan, { force: options.force });
+          progress.stop(
+            result.applied
+              ? `MCP configuration written for ${result.host}.`
+              : `MCP configuration not written for ${result.host}.`,
+          );
+          printMcpResult(result);
+          return result.verified ? 0 : 1;
+        }
         output.stdout('  plan only; rerun with --apply to write it.\n');
       }
     }
@@ -204,7 +275,7 @@ export async function runHostCommand(
   }
 
   if (options.action === 'probe') {
-    const result = probeHost(options.host);
+    const result = probeHost(host);
     if (options.json) {
       output.stdout(
         `${JSON.stringify({ schema: 'pappra/host-probe/1', ...result })}\n`,
@@ -223,7 +294,7 @@ export async function runHostCommand(
   }
 
   if (options.action === 'detect' || options.action === 'describe') {
-    const capabilities = service.describe(options.host);
+    const capabilities = service.describe(host);
     if (options.json) {
       output.stdout(`${JSON.stringify(capabilities)}\n`);
     } else {
@@ -251,7 +322,7 @@ export async function runHostCommand(
 
   if (options.action === 'plan') {
     try {
-      const plan = await service.plan(options.host, target);
+      const plan = await service.plan(host, target);
       if (options.json) {
         output.stdout(`${JSON.stringify(plan)}\n`);
       } else {
@@ -277,46 +348,96 @@ export async function runHostCommand(
   }
 
   if (options.action === 'install') {
-    const result = await service.install(options.host, {
-      ...target,
-      apply: options.apply,
-      ...(options.mode === null ? {} : { mode: options.mode }),
-    });
-    if (options.json) {
-      output.stdout(`${JSON.stringify(result)}\n`);
-    } else {
-      output.stdout(`Status: ${result.status}\n`);
-      for (const file of result.appliedFiles)
-        output.stdout(`  applied ${file}\n`);
-      for (const path of result.residualPaths)
-        output.stdout(`  residual ${path}\n`);
-      printDiagnostics(output, result.diagnostics);
+    const install = async (apply: boolean, progress?: ProgressUi) => {
+      progress?.start(`Wiring ${host}...`);
+      const result = await service.install(host, {
+        ...target,
+        apply,
+        ...(options.mode === null ? {} : { mode: options.mode }),
+      });
+      progress?.stop(`Host wiring ${result.status}.`);
+      if (options.json) {
+        output.stdout(`${JSON.stringify(result)}\n`);
+      } else {
+        output.stdout(`Status: ${result.status}\n`);
+        for (const file of result.appliedFiles)
+          output.stdout(`  applied ${file}\n`);
+        for (const path of result.residualPaths)
+          output.stdout(`  residual ${path}\n`);
+        printDiagnostics(output, result.diagnostics);
+      }
+      return result;
+    };
+    const planned = await install(options.apply);
+    if (
+      options.interactive === true &&
+      options.json !== true &&
+      !options.apply &&
+      planned.ok &&
+      planned.status === 'planned'
+    ) {
+      const apply = await confirmApply(
+        deps.ui ?? clackWizardUi,
+        `Install Pappra wiring for ${host} now?`,
+      );
+      if (!apply) {
+        output.stdout('Nothing was applied.\n');
+        return 0;
+      }
+      const applied = await install(true, deps.progress ?? clackProgress());
+      return diagnosticStatus(applied.status);
     }
-    return diagnosticStatus(result.status);
+    return diagnosticStatus(planned.status);
   }
 
   if (options.action === 'uninstall') {
-    const result = await service.uninstall(options.host, {
-      ...target,
-      apply: options.apply,
-      force: options.force,
-    });
-    if (options.json) output.stdout(`${JSON.stringify(result)}\n`);
-    else {
-      output.stdout(`Status: ${result.status}\n`);
-      for (const file of result.removedFiles)
-        output.stdout(`  removed ${file}\n`);
-      for (const file of result.retainedPaths)
-        output.stdout(`  preserved ${file}\n`);
-      for (const file of result.quarantinedLocks)
-        output.stdout(`  archived lock ${file}\n`);
-      if (!options.apply)
-        output.stdout(
-          '  plan only; rerun with --apply to remove managed wiring.\n',
-        );
-      printDiagnostics(output, result.diagnostics);
+    const uninstall = async (apply: boolean, progress?: ProgressUi) => {
+      progress?.start(`Removing ${host} wiring...`);
+      const result = await service.uninstall(host, {
+        ...target,
+        apply,
+        force: options.force,
+      });
+      progress?.stop(`Host uninstall ${result.status}.`);
+      if (options.json) output.stdout(`${JSON.stringify(result)}\n`);
+      else {
+        output.stdout(`Status: ${result.status}\n`);
+        for (const file of result.removedFiles)
+          output.stdout(`  removed ${file}\n`);
+        for (const file of result.retainedPaths)
+          output.stdout(`  preserved ${file}\n`);
+        for (const file of result.quarantinedLocks)
+          output.stdout(`  archived lock ${file}\n`);
+        printDiagnostics(output, result.diagnostics);
+      }
+      return result;
+    };
+    const planned = await uninstall(options.apply);
+    if (
+      options.interactive === true &&
+      options.json !== true &&
+      !options.apply
+    ) {
+      if (!planned.ok || planned.status !== 'planned') {
+        return planned.ok ? 0 : 1;
+      }
+      const apply = await confirmApply(
+        deps.ui ?? clackWizardUi,
+        `Remove Pappra wiring from ${host} now?`,
+        false,
+      );
+      if (!apply) {
+        output.stdout('Nothing was applied.\n');
+        return 0;
+      }
+      const applied = await uninstall(true, deps.progress ?? clackProgress());
+      return applied.ok ? 0 : 1;
     }
-    return result.ok ? 0 : 1;
+    if (!options.apply && !options.json)
+      output.stdout(
+        '  plan only; rerun with --apply to remove managed wiring.\n',
+      );
+    return planned.ok ? 0 : 1;
   }
 
   if (options.action === 'bundle') {
@@ -325,7 +446,7 @@ export async function runHostCommand(
       return 2;
     }
     if (options.bootstrapConfig !== null) {
-      if (options.host !== 'pi') {
+      if (host !== 'pi') {
         output.stderr(
           'pappra host bundle: --bootstrap-config requires --host pi.\n',
         );
@@ -344,9 +465,9 @@ export async function runHostCommand(
         return 2;
       }
     }
-    if (!isSupportedVersion(options.host, options.hostVersion)) {
+    if (!isSupportedVersion(host, options.hostVersion)) {
       output.stderr(
-        `Host ${options.host} version ${options.hostVersion ?? '(unknown)'} is outside the pinned ${HOST_SUPPORT[options.host].version} support matrix.\n`,
+        `Host ${host} version ${options.hostVersion ?? '(unknown)'} is outside the pinned ${HOST_SUPPORT[host].version} support matrix.\n`,
       );
       return 1;
     }
@@ -383,7 +504,7 @@ export async function runHostCommand(
       | { readonly configFile: string; readonly artifactPath: string }
       | undefined;
     if (options.recoveryConfig !== null) {
-      if (options.host !== 'pi') {
+      if (host !== 'pi') {
         output.stderr(
           'pappra host bundle: --recovery-config requires --host pi.\n',
         );
@@ -418,7 +539,7 @@ export async function runHostCommand(
     }
     if (
       options.transitionExtension &&
-      (options.host !== 'pi' ||
+      (host !== 'pi' ||
         options.bootstrapConfig !== null ||
         options.marketplace ||
         options.mode !== null ||
@@ -431,8 +552,8 @@ export async function runHostCommand(
     }
     try {
       const exported = await exportHostPluginBundle({
-        host: options.host,
-        hostVersion: options.hostVersion ?? HOST_SUPPORT[options.host].version,
+        host,
+        hostVersion: options.hostVersion ?? HOST_SUPPORT[host].version,
         outDir: options.out,
         packageVersion: getPackageInfo().version,
         marketplace: options.marketplace,
@@ -476,7 +597,7 @@ export async function runHostCommand(
     }
   }
 
-  const result = await service.verify(options.host, target);
+  const result = await service.verify(host, target);
   if (options.json) {
     output.stdout(`${JSON.stringify(result)}\n`);
   } else {

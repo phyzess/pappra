@@ -1,5 +1,4 @@
 import { join, resolve } from 'node:path';
-import * as prompts from '@clack/prompts';
 import type { Diagnostic } from '../../schemas/diagnostics.js';
 import { diagnosticCodes } from '../../schemas/errors.js';
 import {
@@ -34,6 +33,15 @@ import {
   type RuntimeFlowResult,
 } from '../../app/init.js';
 import type { CliOutput } from '../output.js';
+import {
+  clackProgress,
+  clackWizardUi,
+  confirmApply,
+  type ProgressUi,
+  type SelectOption,
+  type WizardUi,
+} from '../interactive.js';
+import { runSetupFollowUps } from './setup-flow.js';
 
 const addExistingRepositoryAction =
   '../__pappra_add_existing_repository_action__';
@@ -80,72 +88,8 @@ function knowledgeCandidateFromPathObservation(
   };
 }
 
-export interface SelectOption {
-  readonly value: string;
-  readonly label: string;
-  readonly hint?: string;
-}
-
-export interface WizardUi {
-  intro(message: string): void;
-  outro(message: string): void;
-  note(message: string, title: string): void;
-  text(
-    message: string,
-    initialValue?: string,
-    validate?: (value: string) => string | undefined,
-  ): Promise<string | symbol>;
-  select(
-    message: string,
-    options: readonly SelectOption[],
-    initialValue?: string,
-  ): Promise<string | symbol>;
-  multiselect(
-    message: string,
-    options: readonly SelectOption[],
-    initialValues?: readonly string[],
-  ): Promise<readonly string[] | symbol>;
-  confirm(message: string, initialValue?: boolean): Promise<boolean | symbol>;
-  cancel(message: string): void;
-}
-
-export const clackWizardUi: WizardUi = {
-  intro: (message) => prompts.intro(message),
-  outro: (message) => prompts.outro(message),
-  note: (message, title) => prompts.note(message, title),
-  text: async (message, initialValue, validate) =>
-    prompts.text({
-      message,
-      ...(initialValue === undefined ? {} : { initialValue }),
-      ...(validate === undefined
-        ? {}
-        : {
-            validate: (value: string | undefined) =>
-              value === undefined ? undefined : validate(value),
-          }),
-    }),
-  select: async (message, options, initialValue) =>
-    prompts.select<string>({
-      message,
-      options: options.map((option) => ({ ...option })),
-      ...(initialValue === undefined ? {} : { initialValue }),
-    }),
-  multiselect: async (message, options, initialValues) =>
-    prompts.multiselect<string>({
-      message,
-      options: options.map((option) => ({ ...option })),
-      required: false,
-      ...(initialValues === undefined
-        ? {}
-        : { initialValues: [...initialValues] }),
-    }),
-  confirm: async (message, initialValue) =>
-    prompts.confirm({
-      message,
-      ...(initialValue === undefined ? {} : { initialValue }),
-    }),
-  cancel: (message) => prompts.cancel(message),
-};
+export type { SelectOption, WizardUi } from '../interactive.js';
+export { clackWizardUi } from '../interactive.js';
 
 async function promptValue<T>(
   promise: Promise<T | symbol>,
@@ -201,9 +145,10 @@ export async function collectInitChoices(
     readonly draft?: InitChoices;
     readonly reviewOnly?: boolean;
     readonly pathObservations?: readonly InitPathObservation[];
+    readonly introShown?: boolean;
   } = {},
 ): Promise<InitChoices | null> {
-  ui.intro('Pappra workspace init');
+  if (options.introShown !== true) ui.intro('Pappra workspace init');
   const existingConfig = context.workspaceInspection.value;
   const existingMachine = context.machineInspection.value;
   if (
@@ -1129,7 +1074,10 @@ async function installAndRecordRuntime(
 
 export interface InitCommandDeps {
   readonly ui?: WizardUi;
+  readonly progress?: ProgressUi;
   readonly interactive?: boolean;
+  /** The caller already printed its own intro for this guided run. */
+  readonly introShown?: boolean;
 }
 
 function formatFailure(failure: InitFailure): number {
@@ -1268,6 +1216,7 @@ function printPlan(
   output: CliOutput,
   bundle: InitPlanBundle,
   runtimeOperation: InitRuntimeOperationDescription,
+  followUps: boolean,
 ): void {
   output.stdout(`Pappra init plan ${bundle.plan.planId}\n`);
   output.stdout(`Workspace: ${bundle.plan.workspaceRoot}\n`);
@@ -1320,9 +1269,15 @@ function printPlan(
   for (const line of runtimeOperation.previewLines) {
     output.stdout(`  ${line}\n`);
   }
-  output.stdout('Deferred init work:\n');
-  for (const line of deferredInitWork(bundle)) {
-    output.stdout(`  ${line}\n`);
+  if (followUps) {
+    output.stdout(
+      'After applying, Pappra offers the optional setup steps (code index, documents, coding agents, health check).\n',
+    );
+  } else {
+    output.stdout('Deferred init work:\n');
+    for (const line of deferredInitWork(bundle)) {
+      output.stdout(`  ${line}\n`);
+    }
   }
   if (bundle.diagnostics.length > 0) {
     output.stderr(`${diagnosticLines(bundle.diagnostics)}\n`);
@@ -1437,6 +1392,8 @@ export async function runInitCommand(
   output: CliOutput,
   deps: InitCommandDeps = {},
 ): Promise<number> {
+  const ui = deps.ui ?? clackWizardUi;
+  const progress = deps.progress ?? clackProgress();
   const yes = options.yes === true;
   const printChoices = options.printChoices === true;
   const interactive =
@@ -1689,6 +1646,7 @@ export async function runInitCommand(
     if (needsChoices && interactive) {
       choices = await collectInitChoices(context, deps.ui ?? clackWizardUi, {
         ...(options.reconfigure === true ? { reconfigure: true } : {}),
+        introShown: deps.introShown === true,
       });
       if (choices === null) {
         output.stderr('Init cancelled; no files were written.\n');
@@ -1733,6 +1691,7 @@ export async function runInitCommand(
           retained === null
             ? []
             : (collectedPathObservations.get(retained) ?? []),
+        introShown: deps.introShown === true,
       },
     );
     if (correction === null) {
@@ -1812,7 +1771,7 @@ export async function runInitCommand(
     return 0;
   }
 
-  printPlan(output, bundle, runtimeOperation);
+  printPlan(output, bundle, runtimeOperation, interactive && !options.apply);
   if (!options.apply) {
     if (!interactive || bundle.plan.files.length === 0) {
       output.stdout(
@@ -1822,16 +1781,9 @@ export async function runInitCommand(
       );
       return 0;
     }
-    const confirmed = await promptValue(
-      (deps.ui ?? clackWizardUi).confirm(
-        runtimeOperation.confirmationMessage,
-        false,
-      ),
-      deps.ui ?? clackWizardUi,
-    );
-    if (confirmed !== true) {
-      output.stderr('Init cancelled; no files were written.\n');
-      return 130;
+    if (!(await confirmApply(ui, 'Apply these workspace changes?', true))) {
+      output.stdout('Nothing was applied.\n');
+      return 0;
     }
   }
   const applied = await applyInitPlan(bundle);
@@ -1847,6 +1799,14 @@ export async function runInitCommand(
   }
   output.stdout(`${workspaceApplySummary(bundle, applied)}\n`);
   if (!runtimeOperation.runtimeRequested) {
+    if (interactive && !options.apply) {
+      return await runSetupFollowUps(
+        bundle.scope.workspaceRoot,
+        ui,
+        progress,
+        output,
+      );
+    }
     for (const line of deferredInitWork(bundle)) output.stdout(`  ${line}\n`);
     for (const action of initNextActions(bundle, runtimeOperation)) {
       output.stdout(`  next: ${action}\n`);
@@ -1892,6 +1852,14 @@ export async function runInitCommand(
       ? 'Existing runtime was verified, reused and bound. Initialization complete.\n'
       : 'Runtime was installed, verified and bound. Initialization complete.\n',
   );
+  if (interactive && !options.apply) {
+    return await runSetupFollowUps(
+      bundle.scope.workspaceRoot,
+      ui,
+      progress,
+      output,
+    );
+  }
   for (const line of deferredInitWork(bundle)) output.stdout(`  ${line}\n`);
   for (const action of initNextActions(bundle, runtimeOperation)) {
     output.stdout(`  next: ${action}\n`);

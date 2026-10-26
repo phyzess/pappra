@@ -32,6 +32,8 @@ import { parseOptions, failure, hasContinuityOptions } from './options.js';
 import { routeCollaboration } from './collaboration-router.js';
 import { runCollaborationWorkflowCli } from './commands/collaboration-workflow.js';
 import { runDocsReviewCli } from './commands/docs-review.js';
+import { runHomeCommand } from './commands/home.js';
+import { isInteractiveTerminal } from './interactive.js';
 import { runRuntimeArchiveCli } from './commands/runtime-archive.js';
 
 const globalUsage =
@@ -74,6 +76,7 @@ export async function runCli(
           'quarantine-unowned-locks': { type: 'boolean' },
           'reset-local': { type: 'boolean' },
           'all-writers-stopped': { type: 'boolean' },
+          'no-interactive': { type: 'boolean' },
           json: { type: 'boolean' },
           help: { type: 'boolean', short: 'h' },
         },
@@ -108,6 +111,10 @@ export async function runCli(
           allWritersStopped:
             parsedRepair.values['all-writers-stopped'] === true,
           json: parsedRepair.values.json === true,
+          interactive: isInteractiveTerminal({
+            json: parsedRepair.values.json === true,
+            noInteractive: parsedRepair.values['no-interactive'] === true,
+          }),
         },
         output,
       );
@@ -183,6 +190,10 @@ export async function runCli(
     taskArgument,
   } = parsed;
   const json = values.json === true;
+  const interactive = isInteractiveTerminal({
+    json,
+    noInteractive: values['no-interactive'] === true,
+  });
   if (values['allow-workspace-writes'] === true && command !== 'mcp') {
     failure(
       output,
@@ -276,8 +287,7 @@ export async function runCli(
 
   if (
     command !== 'init' &&
-    (values['no-interactive'] === true ||
-      values['print-choices'] === true ||
+    (values['print-choices'] === true ||
       values['no-runtime'] === true ||
       values.reconfigure === true)
   ) {
@@ -285,7 +295,7 @@ export async function runCli(
       output,
       json,
       'invalid_arguments',
-      '--no-interactive, --print-choices, --no-runtime and --reconfigure are only valid for init.',
+      '--print-choices, --no-runtime and --reconfigure are only valid for init.',
     );
     return 2;
   }
@@ -569,6 +579,7 @@ export async function runCli(
         includePrivate: values['include-private'] === true,
         includeArchived: values['include-archived'] === true,
         apply: applyRequested,
+        interactive,
       },
       output,
     );
@@ -795,6 +806,7 @@ export async function runCli(
         dryRun: values['dry-run'] === true,
         printHandoff: values['print-handoff'] === true,
         json,
+        interactive,
       },
       output,
     );
@@ -849,6 +861,7 @@ export async function runCli(
         reconfigure: values.reconfigure === true,
       },
       output,
+      { interactive },
     );
   }
 
@@ -1024,7 +1037,7 @@ export async function runCli(
       values['include-private'] === true ||
       values['include-archived'] === true ||
       hasContinuityOptions(values, false) ||
-      resumeTaskId === null
+      (resumeTaskId === null && !interactive)
     ) {
       failure(
         output,
@@ -1040,6 +1053,7 @@ export async function runCli(
         json,
         taskId: resumeTaskId,
         currentSession: values.session ?? process.env.PI_SESSION_ID ?? null,
+        interactive,
       },
       output,
     );
@@ -1077,7 +1091,7 @@ export async function runCli(
       hasContinuityOptions(values);
     if (
       action === null ||
-      values.repo === undefined ||
+      (values.repo === undefined && (!interactive || action === 'query')) ||
       operationsInvalid ||
       (values.apply === true && action !== 'prepare') ||
       (values.rebuild === true && action !== 'prepare') ||
@@ -1133,13 +1147,14 @@ export async function runCli(
         cwd: process.cwd(),
         json,
         action,
-        repositoryId: values.repo,
+        repositoryId: values.repo ?? null,
         kind: action === 'query' ? kind : null,
         query: action === 'query' ? (values.query ?? null) : null,
         maxResults,
         maxBytes,
         apply: values.apply === true,
         rebuild: values.rebuild === true,
+        interactive,
       },
       output,
     );
@@ -1238,7 +1253,12 @@ export async function runCli(
       }
       return 0;
     }
-    if (action === null || host === null || invalid) {
+    if (
+      action === null ||
+      (host === null &&
+        (!interactive || values.host !== undefined || action === 'bundle')) ||
+      invalid
+    ) {
       failure(
         output,
         json,
@@ -1271,6 +1291,7 @@ export async function runCli(
           values.scope === 'project' || values.scope === 'user'
             ? values.scope
             : null,
+        interactive,
       },
       output,
     );
@@ -1299,6 +1320,9 @@ export async function runCli(
     );
     return 2;
   }
+  if (!values.help && interactive) {
+    return runHomeCommand({ cwd: process.cwd() }, output);
+  }
   if (values.help) {
     if (json) {
       output.stdout(
@@ -1306,7 +1330,7 @@ export async function runCli(
       );
     } else {
       output.stdout(
-        `${info.name} ${info.version}\n${info.description}\n\nUsage:\n  ${globalUsage.replaceAll('\n', '\n  ')}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n      --json     Output JSON\n\nCommands:\n  init           Plan workspace initialization\n  onboard        Discover and connect supported hosts\n  doctor         Read-only workspace and installation diagnostics\n  repair         Inspect and repair interrupted state\n  docs           Scan, relocate, forget and inspect knowledge\n  runtime        Install, verify and remove durable runtimes\n  task           Select a private task and auto-resume preference\n  mcp            Serve workspace tools over stdio\n`,
+        `${info.name} ${info.version}\n${info.description}\n\nUsage:\n  ${globalUsage.replaceAll('\n', '\n  ')}\n\nOptions:\n  -h, --help     Show help\n  -v, --version  Show version\n      --json     Output JSON\n      --no-interactive  Never prompt (also off with --json, CI or no TTY)\n\nRun pappra with no arguments on a terminal for guided setup or the workspace menu.\n\nCommands:\n  init           Plan workspace initialization\n  onboard        Discover and connect supported hosts\n  doctor         Read-only workspace and installation diagnostics\n  repair         Inspect and repair interrupted state\n  docs           Scan, relocate, forget and inspect knowledge\n  runtime        Install, verify and remove durable runtimes\n  task           Select a private task and auto-resume preference\n  mcp            Serve workspace tools over stdio\n`,
       );
       output.stdout(
         '  checkpoint     Save a private task checkpoint\n  resume         Read a bounded recovery packet without starting an agent\n  code           Inspect or prepare selected code intelligence\n  host           Detect, plan, install, or verify a selected host integration\n  collab         Prepare, run, query, message, preflight, state, recovery and bindings\n  session        Launch and control an owned visible native Pi session\n',

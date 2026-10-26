@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -21,6 +22,7 @@ import {
   writeText,
   writeWorkspaceConfig,
 } from '../workspace/fixtures.js';
+import { executableOnPath } from '../../src/hosts/detect.js';
 
 const repositoryRoot = dirname(
   fileURLToPath(import.meta.resolve('@phyzess/pappra/package.json')),
@@ -183,6 +185,7 @@ function runRealTty(
   dataHome: string,
   args: readonly string[],
   steps: readonly { readonly pattern: string; readonly send: string }[],
+  extraEnv: NodeJS.ProcessEnv = {},
 ) {
   const result = spawnSync(
     'python3',
@@ -201,6 +204,7 @@ function runRealTty(
           TERM: 'xterm-256color',
           COLUMNS: '140',
           LINES: '48',
+          ...extraEnv,
         },
         steps,
       }),
@@ -418,9 +422,8 @@ test(
         },
         { pattern: 'Pappra init plan', send: '' },
         {
-          pattern:
-            'Apply the planned workspace/machine configuration files only',
-          send: '\r',
+          pattern: 'Apply these workspace changes?',
+          send: 'n\r',
         },
       ];
       const run = runRealTty(
@@ -440,7 +443,7 @@ test(
       );
 
       const transcript = readableTranscript(run.stdout);
-      assert.equal(run.status, 130, run.stderr || transcript.slice(-4000));
+      assert.equal(run.status, 0, run.stderr || transcript.slice(-4000));
       assert(transcript.includes('Existing TTY workspace'));
       assert(transcript.includes('README.md'));
       assert(transcript.includes('Edited before Back'));
@@ -448,11 +451,8 @@ test(
       assert(transcript.includes('Review edited'));
       assert(transcript.includes('Keep current advanced settings'));
       assert(transcript.includes('Pappra init plan'));
-      assert(
-        transcript.includes(
-          'Apply the planned workspace/machine configuration files only',
-        ),
-      );
+      assert(transcript.includes('Apply these workspace changes?'));
+      assert(transcript.includes('Nothing was applied.'));
       assert.deepEqual(after, before);
       assert.equal(existsSync(dataHome), false);
     } finally {
@@ -496,13 +496,20 @@ test(
         },
         { pattern: 'Pappra init plan', send: '' },
         {
-          pattern:
-            'Apply the planned workspace/machine configuration files only',
-          send: 'y',
+          pattern: 'Apply these workspace changes?',
+          send: '\r',
         },
         { pattern: 'Applied files:', send: '' },
+        { pattern: 'Setup complete.', send: '' },
       ];
-      const run = runRealTty(workspace, dataHome, ['--no-runtime'], steps);
+      const bin = join(temporary, 'bin');
+      mkdirSync(bin, { recursive: true });
+      const git = executableOnPath('git', process.env['PATH'] ?? '');
+      assert(git !== null);
+      symlinkSync(git, join(bin, 'git'));
+      const run = runRealTty(workspace, dataHome, ['--no-runtime'], steps, {
+        PATH: bin,
+      });
       const after = snapshotTree(workspace);
       recordTtyEvidence(
         'apply-no-runtime-confirmed',
@@ -522,6 +529,16 @@ test(
           'Runtime operation: intentionally deferred by --no-runtime; none was run.',
         ),
       );
+      assert(
+        transcript.includes(
+          'After applying, Pappra offers the optional setup steps',
+        ),
+      );
+      assert(
+        transcript.includes('No supported coding agent was detected on PATH'),
+      );
+      assert(transcript.includes('Health: '));
+      assert(transcript.includes('Setup complete.'));
       assert.equal(
         existsSync(join(workspace, '.pappra', 'workspace.json')),
         true,

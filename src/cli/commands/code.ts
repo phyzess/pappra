@@ -4,6 +4,15 @@ import type { CodeQueryKind } from '../../schemas/code.js';
 import { CodeIntelligenceService } from '../../code/service.js';
 import { resolveWorkspaceRoot } from '../../workspace/resolve.js';
 import type { CliOutput } from '../output.js';
+import {
+  clackProgress,
+  clackWizardUi,
+  confirmApply,
+  pickOne,
+  type ProgressUi,
+  type WizardUi,
+} from '../interactive.js';
+import { workspaceRepositoryOptions } from '../pickers.js';
 
 export const codeUsage =
   'pappra code status --repo <id> [--json]\n' +
@@ -22,6 +31,14 @@ export interface CodeCommandOptions {
   readonly maxBytes: number | null;
   readonly apply: boolean;
   readonly rebuild: boolean;
+  /** A person at a terminal: plan output may be followed by a prompt. */
+  readonly interactive?: boolean;
+}
+
+/** Injected terminal surfaces; the defaults are the clack implementations. */
+export interface CodeCommandDeps {
+  readonly ui?: WizardUi;
+  readonly progress?: ProgressUi;
 }
 
 function printDiagnostics(
@@ -55,24 +72,51 @@ function statusJson(
 export async function runCodeCommand(
   options: CodeCommandOptions,
   output: CliOutput,
+  deps: CodeCommandDeps = {},
 ): Promise<number> {
   if (options.action === null) {
     output.stderr('pappra: code requires status, prepare, or query.\n');
     return 2;
   }
-  if (options.repositoryId === null) {
-    output.stderr('pappra: code requires --repo <id>.\n');
-    return 2;
+  let repositoryId = options.repositoryId;
+  if (repositoryId === null) {
+    if (
+      options.interactive !== true ||
+      options.json === true ||
+      options.action === 'query'
+    ) {
+      output.stderr('pappra: code requires --repo <id>.\n');
+      return 2;
+    }
+    const candidates = await workspaceRepositoryOptions(
+      await serviceRoot(options.cwd),
+    );
+    if (candidates.length === 0) {
+      output.stderr(
+        'pappra: no repositories are declared in this workspace; declare one in workspace.json.\n',
+      );
+      return 1;
+    }
+    const picked = await pickOne(
+      deps.ui ?? clackWizardUi,
+      'Pick a repository',
+      candidates,
+    );
+    if (picked === null) {
+      output.stdout('Nothing selected; nothing was done.\n');
+      return 0;
+    }
+    repositoryId = picked;
   }
   const root = await serviceRoot(options.cwd);
   const service = new CodeIntelligenceService(root);
 
   if (options.action === 'status') {
-    const result = await service.status({ repositoryId: options.repositoryId });
+    const result = await service.status({ repositoryId });
     if (options.json) {
       output.stdout(`${JSON.stringify(statusJson(result))}\n`);
     } else {
-      output.stdout(`Repository: ${options.repositoryId}\n`);
+      output.stdout(`Repository: ${repositoryId}\n`);
       output.stdout(
         `Identity: ${result.identity?.checkoutId ?? 'unavailable'}\n`,
       );
@@ -90,7 +134,7 @@ export async function runCodeCommand(
   if (options.action === 'prepare') {
     const result = await service.prepare({
       root,
-      repositoryId: options.repositoryId,
+      repositoryId,
       apply: options.apply,
       rebuild: options.rebuild,
     });
@@ -107,6 +151,44 @@ export async function runCodeCommand(
         output.stdout(`Reason: ${reason}\n`);
       printDiagnostics(output, result.diagnostics as readonly Diagnostic[]);
     }
+    if (
+      options.interactive === true &&
+      options.json !== true &&
+      !options.apply &&
+      result.ok &&
+      result.status === 'planned'
+    ) {
+      if (!result.plan.mutates) {
+        output.stdout('Nothing to prepare; the index is ready.\n');
+        return 0;
+      }
+      const apply = await confirmApply(
+        deps.ui ?? clackWizardUi,
+        `Prepare the ${repositoryId} code index now?`,
+      );
+      if (!apply) {
+        output.stdout('Nothing was applied.\n');
+        return 0;
+      }
+      const progress = deps.progress ?? clackProgress();
+      progress.start(`Indexing ${repositoryId}...`);
+      const applied = await service.prepare({
+        root,
+        repositoryId,
+        apply: true,
+        rebuild: options.rebuild,
+      });
+      progress.stop(`Index ${applied.health.state}.`);
+      output.stdout(`Index: ${applied.health.state}\n`);
+      if (applied.registrationPath !== null) {
+        output.stdout(`Registration: ${applied.registrationPath}\n`);
+      }
+      for (const reason of applied.plan.reasons) {
+        output.stdout(`Reason: ${reason}\n`);
+      }
+      printDiagnostics(output, applied.diagnostics as readonly Diagnostic[]);
+      return applied.ok || applied.status === 'planned' ? 0 : 1;
+    }
     return result.ok || result.status === 'planned' ? 0 : 1;
   }
 
@@ -116,7 +198,7 @@ export async function runCodeCommand(
   }
   const result = await service.query({
     root,
-    repositoryId: options.repositoryId,
+    repositoryId,
     kind: options.kind,
     query: options.query,
     ...(options.maxResults === null && options.maxBytes === null

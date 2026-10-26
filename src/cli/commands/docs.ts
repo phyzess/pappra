@@ -16,6 +16,12 @@ import {
 } from '../../knowledge/index.js';
 import type { CliOutput } from '../output.js';
 import { runDocsReviewCli } from './docs-review.js';
+import {
+  clackWizardUi,
+  confirmApply,
+  type ProgressUi,
+  type WizardUi,
+} from '../interactive.js';
 
 export const docsUsage =
   'pappra docs <list|check|archive|scan|relocate|forget|review> [options]\n' +
@@ -41,12 +47,21 @@ export interface DocsCommandOptions {
   readonly includePrivate: boolean;
   readonly includeArchived: boolean;
   readonly apply: boolean;
+  /** A person at a terminal: plan output may be followed by a prompt. */
+  readonly interactive?: boolean;
+}
+
+/** Injected terminal surfaces; the defaults are the clack implementations. */
+export interface DocsCommandDeps {
+  readonly ui?: WizardUi;
+  readonly progress?: ProgressUi;
 }
 
 async function runDocsScan(
   options: DocsCommandOptions,
   output: CliOutput,
   root: string,
+  deps: DocsCommandDeps,
 ): Promise<number> {
   const result = await scanDiscoveredDocuments(root, { apply: options.apply });
   if ('message' in result) {
@@ -66,7 +81,32 @@ async function runDocsScan(
       }
       printDiagnostics(output, result.diagnostics);
       for (const action of result.nextActions) {
+        // A person at a terminal is asked instead of told to apply.
+        if (
+          options.interactive === true &&
+          (/--apply/.test(action) || /after applying/i.test(action))
+        )
+          continue;
         output.stdout(`${action}\n`);
+      }
+      if (options.interactive === true) {
+        if (!result.ok) {
+          output.stdout(
+            'Scan coverage is incomplete; no complete result is claimed.\n',
+          );
+        }
+        if (result.candidates.length > 0) {
+          const apply = await confirmApply(
+            deps.ui ?? clackWizardUi,
+            'Register these documents now?',
+          );
+          if (!apply) {
+            output.stdout('Nothing was applied.\n');
+            return 0;
+          }
+          return runDocsScan({ ...options, apply: true }, output, root, deps);
+        }
+        return result.ok ? 0 : 1;
       }
       output.stdout(
         result.ok
@@ -145,6 +185,7 @@ function invalidArguments(
 export async function runDocsCommand(
   options: DocsCommandOptions,
   output: CliOutput,
+  deps: DocsCommandDeps = {},
 ): Promise<number> {
   if (options.action === null || options.action === 'help') {
     if (options.json) {
@@ -232,14 +273,16 @@ export async function runDocsCommand(
     );
   }
   if (options.action === 'scan') {
-    return runDocsScan(options, output, serviceRoot);
+    return runDocsScan(options, output, serviceRoot, deps);
   }
   if (
     (options.action === 'relocate' || options.action === 'forget') &&
     options.argument !== null
   ) {
+    const action = options.action;
+    const documentId = options.argument;
     const location =
-      options.action === 'relocate'
+      action === 'relocate'
         ? documentLocationSchema.safeParse({
             kind: 'workspace',
             path: options.targetPath,
@@ -251,39 +294,58 @@ export async function runDocsCommand(
         options.json,
         'docs relocate requires a normalized workspace-relative target path.',
       );
+    const applyMetadata = async (): Promise<number> => {
+      const service = new KnowledgeService(serviceRoot);
+      const result = location?.success
+        ? await service.relocate(documentId, location.data)
+        : await service.forget(
+            documentId,
+            options.scope === 'private' || options.scope === 'shared'
+              ? options.scope
+              : undefined,
+          );
+      output.stdout(
+        options.json
+          ? `${JSON.stringify({ schema: 'pappra/docs-metadata-result/1', action, ...result })}\n`
+          : `${action}: ${result.ok ? 'applied' : result.status}\n`,
+      );
+      if (!options.json) printDiagnostics(output, result.diagnostics);
+      return result.ok ? 0 : 1;
+    };
     if (!options.apply) {
       const plan = {
         schema: 'pappra/docs-metadata-plan/1',
         ok: true,
-        action: options.action,
-        documentId: options.argument,
+        action,
+        documentId,
         scope: options.scope ?? null,
         location: location?.success ? location.data : null,
         applied: false,
       };
-      output.stdout(
-        options.json
-          ? `${JSON.stringify(plan)}\n`
-          : `Plan only: ${options.action} ${options.argument}; document content is preserved. Rerun with --apply.\n`,
+      if (options.json) {
+        output.stdout(`${JSON.stringify(plan)}\n`);
+        return 0;
+      }
+      const summary = `Plan only: ${action} ${documentId}; document content is preserved.`;
+      if (options.interactive !== true) {
+        output.stdout(`${summary} Rerun with --apply.\n`);
+        return 0;
+      }
+      output.stdout(`${summary}\n`);
+      const apply = await confirmApply(
+        deps.ui ?? clackWizardUi,
+        action === 'forget'
+          ? 'Forget this document now?'
+          : 'Relocate this document now?',
+        action !== 'forget',
       );
-      return 0;
+      if (!apply) {
+        output.stdout('Nothing was applied.\n');
+        return 0;
+      }
+      return applyMetadata();
     }
-    const service = new KnowledgeService(serviceRoot);
-    const result = location?.success
-      ? await service.relocate(options.argument, location.data)
-      : await service.forget(
-          options.argument,
-          options.scope === 'private' || options.scope === 'shared'
-            ? options.scope
-            : undefined,
-        );
-    output.stdout(
-      options.json
-        ? `${JSON.stringify({ schema: 'pappra/docs-metadata-result/1', action: options.action, ...result })}\n`
-        : `${options.action}: ${result.ok ? 'applied' : result.status}\n`,
-    );
-    if (!options.json) printDiagnostics(output, result.diagnostics);
-    return result.ok ? 0 : 1;
+    return applyMetadata();
   }
   if (options.apply) {
     return invalidArguments(

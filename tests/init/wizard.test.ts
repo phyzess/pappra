@@ -26,8 +26,6 @@ import {
   writeMachineConfig,
   writeWorkspaceConfig,
 } from '../workspace/fixtures.js';
-import { getPackageInfo } from '../../src/package-info.js';
-import { runtimePaths } from '../../src/install/runtime.js';
 import { FakeWizardUi, baseInitChoices } from './fixtures.js';
 
 const repositoryPath = 'projects/one/two/three/explicit-repo';
@@ -251,21 +249,22 @@ test('declining the interactive apply confirmation writes nothing', async () => 
       },
       { interactive: true, ui },
     );
-    assert.equal(code, 130);
+    assert.equal(code, 0);
     assert(stdout.join('').includes('Pappra init plan'));
     const confirmation = ui.calls.find((call) => call.kind === 'confirm');
     assert(confirmation !== undefined);
-    assert(confirmation.message.includes('current package'));
-    assert(
-      confirmation.message.includes(
-        runtimePaths(getPackageInfo().version, dataHome).runtimeRoot,
-      ),
-    );
-    assert(
-      confirmation.message.toLowerCase().includes('knowledge registration'),
-    );
+    assert.equal(confirmation.message, 'Apply these workspace changes?');
+    assert.equal(confirmation.initialValue, true);
     assert.equal(existsSync(dataHome), false);
-    assert(stderr.join('').includes('no files were written'));
+    assert(stdout.join('').includes('Nothing was applied.'));
+    assert(
+      stdout
+        .join('')
+        .includes(
+          'After applying, Pappra offers the optional setup steps (code index, documents, coding agents, health check).',
+        ),
+    );
+    assert.equal(stdout.join('').includes('Deferred init work:'), false);
     assert.deepEqual(snapshotTree(root), before);
   } finally {
     if (previousDataHome === undefined) {
@@ -273,6 +272,36 @@ test('declining the interactive apply confirmation writes nothing', async () => 
     } else {
       process.env.PAPPRA_DATA_HOME = previousDataHome;
     }
+    cleanup(root);
+  }
+});
+
+test('an injected non-interactive init fails closed without opening a prompt', async () => {
+  const root = makeTempDir('init-wizard-non-interactive');
+  try {
+    createRepository(root);
+    const before = snapshotTree(root);
+    const ui = new FakeWizardUi({ text: ['unused'] });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runInitCommand(
+      { cwd: root, configPath: null, apply: false, json: false },
+      {
+        stdout: (text) => stdout.push(text),
+        stderr: (text) => stderr.push(text),
+      },
+      { interactive: false, ui },
+    );
+    assert.equal(code, 1);
+    assert(
+      stderr
+        .join('')
+        .includes('Missing init selections in a non-interactive session.'),
+      stderr.join(''),
+    );
+    assert.deepEqual(ui.calls, []);
+    assert.deepEqual(snapshotTree(root), before);
+  } finally {
     cleanup(root);
   }
 });
@@ -910,7 +939,7 @@ test('recoverable validation binding error returns to repository review and retr
       { interactive: true, ui },
     );
 
-    assert.equal(code, 130);
+    assert.equal(code, 0);
     assert(stderr.join('').includes('init_validation_unbound'));
     assert(stdout.join('').includes('Pappra init plan'));
     assert(stdout.join('').includes('Repositories: app:.:write'));

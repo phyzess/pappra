@@ -5,6 +5,13 @@ import {
   type SaveCheckpointInput,
 } from '../../continuity/index.js';
 import type { CliOutput } from '../output.js';
+import {
+  clackWizardUi,
+  pickOne,
+  type ProgressUi,
+  type WizardUi,
+} from '../interactive.js';
+import { checkpointTaskOptions } from '../pickers.js';
 import { resolveWorkspaceRoot } from '../../workspace/resolve.js';
 
 export const checkpointUsage =
@@ -42,8 +49,11 @@ export interface CheckpointCommandOptions {
 export interface ResumeCommandOptions {
   readonly cwd: string;
   readonly json: boolean;
-  readonly taskId: string;
+  /** Null only for an interactive caller, who is then asked to pick a task. */
+  readonly taskId: string | null;
   readonly currentSession: string | null;
+  /** A person at a terminal: plan output may be followed by a prompt. */
+  readonly interactive?: boolean;
 }
 
 function printDiagnostics(
@@ -128,14 +138,46 @@ export async function runCheckpointCommand(
   return result.ok ? 0 : 1;
 }
 
+export interface ResumeCommandDeps {
+  readonly ui?: WizardUi;
+  readonly progress?: ProgressUi;
+}
+
 export async function runResumeCommand(
   options: ResumeCommandOptions,
   output: CliOutput,
+  deps: ResumeCommandDeps = {},
 ): Promise<number> {
+  let taskId = options.taskId;
+  if (taskId === null) {
+    if (options.interactive !== true || options.json === true) {
+      output.stderr('pappra: resume requires a task id.\n');
+      return 2;
+    }
+    const candidates = await checkpointTaskOptions(
+      await serviceRoot(options.cwd),
+    );
+    if (candidates.length === 0) {
+      output.stderr(
+        'No saved tasks yet. Save one with pappra checkpoint --task <id>.\n',
+      );
+      return 1;
+    }
+    const picked = await pickOne(
+      deps.ui ?? clackWizardUi,
+      'Pick a saved task to resume',
+      candidates,
+    );
+    if (picked === null) {
+      output.stdout('Nothing selected; nothing was done.\n');
+      return 0;
+    }
+    taskId = picked;
+  }
   const root = await serviceRoot(options.cwd);
   const service = new CheckpointService(root);
   const result = await service.resume({
-    taskId: options.taskId,
+    taskId,
     currentSession: options.currentSession,
   });
   if (options.json) {

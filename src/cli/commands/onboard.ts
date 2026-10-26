@@ -14,6 +14,18 @@ import {
   type OnboardResult,
 } from '../../app/onboard.js';
 import type { CliOutput } from '../output.js';
+import {
+  clackProgress,
+  clackWizardUi,
+  type ProgressUi,
+  type WizardUi,
+} from '../interactive.js';
+import { runInitCommand } from './init.js';
+import {
+  inspectWorkspaceStatus,
+  runSetupFollowUps,
+  workspaceStatusSummary,
+} from './setup-flow.js';
 
 export const onboardUsage =
   'pappra onboard [--root <dir>] [--config <file>] [--hosts claude,codex,pi]\n' +
@@ -32,6 +44,13 @@ export interface OnboardCommandOptions {
   readonly dryRun: boolean;
   readonly printHandoff: boolean;
   readonly json: boolean;
+  /** A person at a terminal: plan output may be followed by a prompt. */
+  readonly interactive?: boolean;
+}
+
+export interface OnboardCommandDeps {
+  readonly ui?: WizardUi;
+  readonly progress?: ProgressUi;
 }
 
 function printDiagnostics(
@@ -143,7 +162,9 @@ function planReport(plan: OnboardPlan): OnboardResult {
     plan.choices.code.graph !== 'none' &&
     plan.choices.repositories.length > 0
   ) {
-    nextActions.push('pappra code prepare --repo <repo> --apply');
+    nextActions.push(
+      `pappra code prepare --repo ${plan.bundle.scope.repositories[0]?.id ?? '<repository-id>'} --apply`,
+    );
   }
   return {
     schema: 'pappra/onboard/1',
@@ -235,13 +256,59 @@ function printHandoff(
   return 0;
 }
 
+/**
+ * Terminal-only onboarding: a directory without a workspace runs the same
+ * guided init as a bare `pappra`; an existing workspace runs the same guided
+ * setup steps (code index, documents, coding agents, health check).
+ */
+async function runGuidedOnboard(
+  root: string,
+  output: CliOutput,
+  ui: WizardUi,
+  progress: ProgressUi,
+): Promise<number> {
+  const status = await inspectWorkspaceStatus(root);
+  if (status.state === 'absent') {
+    ui.intro('Welcome to Pappra');
+    const code = await runInitCommand(
+      { cwd: root, configPath: null, apply: false, json: false },
+      output,
+      { ui, progress, interactive: true, introShown: true },
+    );
+    if (code === 130) {
+      ui.outro('Setup cancelled.');
+      return 0;
+    }
+    return code;
+  }
+  ui.intro(workspaceStatusSummary(status));
+  return await runSetupFollowUps(status.root, ui, progress, output);
+}
+
 export async function runOnboardCommand(
   options: OnboardCommandOptions,
   output: CliOutput,
+  deps: OnboardCommandDeps = {},
 ): Promise<number> {
   const root = options.root ?? options.cwd;
   if (options.printHandoff) {
     return printHandoff(output, options, root);
+  }
+  const guided =
+    options.interactive === true &&
+    !options.json &&
+    !options.apply &&
+    !options.dryRun &&
+    !options.printHandoff &&
+    options.configPath === null &&
+    options.hosts === null;
+  if (guided) {
+    return await runGuidedOnboard(
+      root,
+      output,
+      deps.ui ?? clackWizardUi,
+      deps.progress ?? clackProgress(),
+    );
   }
   let hosts: HostName[] | null;
   try {
