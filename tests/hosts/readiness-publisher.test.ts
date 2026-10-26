@@ -11,6 +11,7 @@ import {
 import { join } from 'node:path';
 import test from 'node:test';
 import {
+  type ManagedPiReadinessDependencies,
   publishManagedPiReadiness,
   watchManagedPiReadiness,
 } from '../../src/app/managed-pi-readiness.js';
@@ -19,6 +20,38 @@ import { makeCapabilitiesFixture } from '../collab/capabilities-fixtures.js';
 import { cleanup } from '../workspace/fixtures.js';
 
 const SESSION_SCHEMA = 'harness-collab/pi-managed-session/1';
+
+function controlledWatch() {
+  const listeners: Parameters<
+    NonNullable<ManagedPiReadinessDependencies['watch']>
+  >[1][] = [];
+  let closed = 0;
+  const watch: NonNullable<ManagedPiReadinessDependencies['watch']> = (
+    _directory,
+    listener,
+  ) => {
+    listeners.push(listener);
+    return {
+      close: () => {
+        closed += 1;
+      },
+      on() {
+        return this;
+      },
+    };
+  };
+  return {
+    watch,
+    emit: (filename: string | null) => {
+      for (const listener of listeners) listener('change', filename);
+    },
+    closed: () => closed,
+  };
+}
+
+// An event-loop barrier drains the known refresh microtasks without elapsed-time waits.
+const drainRefresh = () =>
+  new Promise<void>((resolve) => setImmediate(resolve));
 
 interface ReadinessPayload {
   schema: string;
@@ -428,8 +461,245 @@ test('an existing transcript is verified when present but is not required before
   }
 });
 
+test('watcher reconciles input arrival in the initial-result finalization window without an event', async () => {
+  const value = setup('readiness-finalization-window');
+  const assignment = readFileSync(value.config.assignmentFile);
+  const template = readFileSync(value.config.templateFile);
+  unlinkSync(value.config.assignmentFile);
+  unlinkSync(value.config.templateFile);
+  const events = controlledWatch();
+  let beforeRefreshCalls = 0;
+  let readyWritten = false;
+  let resolveInitial!: () => void;
+  const initial = new Promise<void>((resolve) => {
+    resolveInitial = resolve;
+  });
+  const publisher = watchManagedPiReadiness(
+    value.config,
+    value.source,
+    (result) => {
+      if (result.code === 'readiness_assignment_unreadable') resolveInitial();
+    },
+    {
+      watch: events.watch,
+      beforeRefresh: async () => {
+        beforeRefreshCalls += 1;
+        if (
+          !readyWritten &&
+          existsSync(value.config.assignmentFile) &&
+          existsSync(value.config.templateFile)
+        ) {
+          readyWritten = true;
+          value.appendReady();
+        }
+      },
+    },
+  );
+  try {
+    await initial;
+    assert.equal(beforeRefreshCalls, 1);
+    assert.equal(readyWritten, false);
+    writeFileSync(value.config.assignmentFile, assignment);
+    writeFileSync(value.config.templateFile, template);
+    await drainRefresh();
+    assert.deepEqual(
+      { status: publisher.status()?.status, beforeRefreshCalls, readyWritten },
+      {
+        status: 'published',
+        beforeRefreshCalls: 2,
+        readyWritten: true,
+      },
+    );
+    assert.equal(publisher.status()?.preflight, 'ready');
+    const bytes = readFileSync(value.config.cardFile);
+    events.emit('card.runtime.json');
+    events.emit('.pappra-readiness-output.tmp');
+    events.emit('pi-events.jsonl');
+    events.emit(null);
+    await drainRefresh();
+    assert.equal(
+      beforeRefreshCalls,
+      2,
+      'output artifacts and unchanged inputs must not create a loop',
+    );
+    assert.deepEqual(readFileSync(value.config.cardFile), bytes);
+  } finally {
+    await publisher.close();
+    cleanup(value.fixture.root);
+  }
+});
+
+test('unchanged missing inputs, rejected hooks, and blocked publication settle without retries', async () => {
+  for (const mode of [
+    'missing',
+    'hook-failure',
+    'mutating-hook-failure',
+    'foreign-card',
+  ] as const) {
+    const value = setup(`readiness-settles-${mode}`);
+    const events = controlledWatch();
+    if (mode === 'missing') unlinkSync(value.config.assignmentFile);
+    if (mode === 'foreign-card') {
+      value.appendReady();
+      writeFileSync(
+        value.config.cardFile,
+        JSON.stringify({
+          ...value.fixture.template,
+          session_id: 'foreign-session',
+        }),
+      );
+    }
+    let calls = 0;
+    let notifications = 0;
+    let publisher!: ReturnType<typeof watchManagedPiReadiness>;
+    publisher = watchManagedPiReadiness(
+      value.config,
+      value.source,
+      () => {
+        notifications += 1;
+        if (notifications > 2) void publisher.close();
+      },
+      {
+        watch: events.watch,
+        beforeRefresh: async () => {
+          calls += 1;
+          // Bound a regressed microtask spin so the test fails instead of starving Node.
+          if (calls > 2) void publisher.close();
+          if (mode === 'mutating-hook-failure') value.appendReady();
+          if (mode === 'hook-failure' || mode === 'mutating-hook-failure')
+            throw new Error('injected refresh failure');
+        },
+      },
+    );
+    try {
+      await drainRefresh();
+      assert.equal(calls, 1, mode);
+      assert.equal(notifications, 1, mode);
+      assert.equal(
+        publisher.status()?.code,
+        {
+          missing: 'readiness_assignment_unreadable',
+          'hook-failure': 'readiness_refresh_dependency_failed',
+          'mutating-hook-failure': 'readiness_refresh_dependency_failed',
+          'foreign-card': 'readiness_card_target_foreign',
+        }[mode],
+      );
+      if (mode !== 'foreign-card')
+        assert.equal(existsSync(value.config.cardFile), false);
+      events.emit('pi-events.jsonl');
+      events.emit(null);
+      await drainRefresh();
+      assert.equal(calls, 1, `${mode}: unchanged native events must not retry`);
+      assert.equal(notifications, 1, mode);
+      if (mode === 'hook-failure' || mode === 'mutating-hook-failure') {
+        value.appendReady();
+        events.emit('pi-events.jsonl');
+        await drainRefresh();
+        assert.equal(
+          calls,
+          2,
+          `${mode}: externally changed input permits retry`,
+        );
+        assert.equal(notifications, 2, mode);
+        assert.equal(existsSync(value.config.cardFile), false);
+      }
+    } finally {
+      await publisher.close();
+      cleanup(value.fixture.root);
+    }
+  }
+});
+
+test('directory replacement during a hook settles blocked without another hook or publication', async () => {
+  const value = setup('readiness-hook-directory-pin');
+  const events = controlledWatch();
+  const moved = `${value.fixture.root}-moved`;
+  let calls = 0;
+  let notifications = 0;
+  const publisher = watchManagedPiReadiness(
+    value.config,
+    value.source,
+    () => {
+      notifications += 1;
+    },
+    {
+      watch: events.watch,
+      beforeRefresh: async () => {
+        calls += 1;
+        if (calls === 1) {
+          renameSync(value.fixture.root, moved);
+          mkdirSync(value.fixture.root);
+          writeFileSync(value.metadataFile, 'replacement must not be consumed');
+        }
+      },
+    },
+  );
+  try {
+    await drainRefresh();
+    assert.equal(calls, 1);
+    assert.equal(notifications, 1);
+    assert.equal(publisher.status()?.code, 'readiness_directory_changed');
+    assert.equal(existsSync(value.config.cardFile), false);
+    assert.equal(
+      readFileSync(value.metadataFile, 'utf8'),
+      'replacement must not be consumed',
+    );
+  } finally {
+    await publisher.close();
+    cleanup(value.fixture.root);
+    cleanup(moved);
+  }
+});
+
+test('close while a hook awaits suppresses publication and notifications on resolve or reject', async () => {
+  for (const rejectHook of [false, true]) {
+    const value = setup(`readiness-close-hook-${rejectHook}`);
+    const events = controlledWatch();
+    let finishHook!: () => void;
+    const hook = new Promise<void>((resolve, reject) => {
+      finishHook = () =>
+        rejectHook ? reject(new Error('closed hook failure')) : resolve();
+    });
+    let calls = 0;
+    let notifications = 0;
+    const publisher = watchManagedPiReadiness(
+      value.config,
+      value.source,
+      () => {
+        notifications += 1;
+      },
+      {
+        watch: events.watch,
+        beforeRefresh: async () => {
+          calls += 1;
+          await hook;
+        },
+      },
+    );
+    try {
+      assert.equal(calls, 1);
+      const closing = publisher.close();
+      value.appendReady();
+      events.emit(null);
+      finishHook();
+      await closing;
+      await publisher.refresh(true);
+      await drainRefresh();
+      assert.equal(calls, 1);
+      assert.equal(notifications, 0);
+      assert.equal(publisher.status(), null);
+      assert.equal(events.closed(), 1);
+      assert.equal(existsSync(value.config.cardFile), false);
+    } finally {
+      finishHook();
+      await publisher.close();
+      cleanup(value.fixture.root);
+    }
+  }
+});
+
 test(
-  'watcher recovers after assignment/template arrival, invokes beforeRefresh, and ignores its own artifact event',
+  'native filesystem watcher recovers after config arrival and observes a later idle metadata update',
   { timeout: 20_000 },
   async () => {
     const value = setup('readiness-watch-recovery');
@@ -487,31 +757,34 @@ test(
       );
       writeFileSync(value.config.assignmentFile, assignment);
       writeFileSync(value.config.templateFile, template);
-      await Promise.race([
-        published,
-        new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(
-            () =>
-              reject(
-                new Error(
-                  `readiness did not recover: ${JSON.stringify({ status: publisher.status(), beforeRefreshCalls, readyWritten })}`,
-                ),
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () =>
+            reject(
+              new Error(
+                `readiness did not recover: ${JSON.stringify({ status: publisher.status(), beforeRefreshCalls, readyWritten })}`,
               ),
-            // Allow filesystem events to settle under the full suite's load.
-            15_000,
-          );
-        }),
-      ]);
+            ),
+          15_000,
+        );
+      });
+      await Promise.race([published, deadline]);
       assert.equal(readyWritten, true);
       assert.equal(publisher.status()?.preflight, 'ready');
       assert.ok(beforeRefreshCalls >= 2);
-      const settledCalls = beforeRefreshCalls;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      assert.equal(
-        beforeRefreshCalls,
-        settledCalls,
-        'sidecar/output writes must not create a watch loop',
-      );
+      await drainRefresh();
+      // This update occurs after refresh finalization; native fs.watch must wake it.
+      const nextPublished = new Promise<void>((resolve) => {
+        completed = resolve;
+      });
+      const latest = structuredClone(value.payload);
+      latest.at = new Date(Date.now() + 10).toISOString();
+      value.appendReady(latest);
+      await Promise.race([nextPublished, deadline]);
+      const card = JSON.parse(readFileSync(value.config.cardFile, 'utf8')) as {
+        observed_at: string;
+      };
+      assert.equal(card.observed_at, latest.at);
     } finally {
       await publisher.close();
       if (timer) clearTimeout(timer);

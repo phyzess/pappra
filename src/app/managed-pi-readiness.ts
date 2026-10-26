@@ -23,6 +23,16 @@ export interface ManagedPiReadinessSource {
 
 export interface ManagedPiReadinessDependencies {
   readonly beforeRefresh?: () => Promise<void>;
+  readonly watch?: (
+    directory: string,
+    listener: (
+      event: fs.WatchEventType,
+      filename: string | Buffer | null,
+    ) => void,
+  ) => {
+    close(): void;
+    on(event: 'error', listener: () => void): unknown;
+  };
 }
 
 export interface ManagedPiReadinessResult {
@@ -211,7 +221,7 @@ export function watchManagedPiReadiness(
   let pending = false;
   let forcePending = false;
   let active: Promise<void> | null = null;
-  const watchers: fs.FSWatcher[] = [];
+  const watchers: { close(): void }[] = [];
   const notify = (result: ManagedPiReadinessResult) => {
     try {
       onResult(result);
@@ -247,6 +257,7 @@ export function watchManagedPiReadiness(
     pending = true;
     forcePending ||= force;
     if (active) return active;
+    let observedCause: string | null = null;
     active = (async () => {
       while (pending && !closed) {
         pending = false;
@@ -263,13 +274,26 @@ export function watchManagedPiReadiness(
           continue;
         }
         const beforeRefreshCause = inputCause();
+        observedCause = beforeRefreshCause;
         if (!forced && beforeRefreshCause === lastCause) continue;
         try {
           await dependencies.beforeRefresh?.();
         } catch {
+          if (closed) break;
+          const current = directoriesCurrent();
+          if (current) {
+            // Consume the hook's own writes even when it rejects. Otherwise they
+            // can repeatedly retrigger the same failing hook via reconciliation
+            // or a later native watch event. A changed input or forced refresh
+            // can still retry it.
+            observedCause = inputCause();
+            lastCause = observedCause;
+          }
           last = {
-            status: 'waiting',
-            code: 'readiness_refresh_dependency_failed',
+            status: current ? 'waiting' : 'blocked',
+            code: current
+              ? 'readiness_refresh_dependency_failed'
+              : 'readiness_directory_changed',
             cardFile: config.cardFile,
             preflight: null,
           };
@@ -288,12 +312,23 @@ export function watchManagedPiReadiness(
           continue;
         }
         const cause = inputCause();
+        observedCause = cause;
         if (!forced && cause === lastCause) continue;
         lastCause = cause;
         last = publishManagedPiReadiness(config, source);
         notify(last);
       }
     })().finally(() => {
+      // A result observer may change inputs before this drain relinquishes active.
+      // Reconcile that window even when fs.watch coalesces its notification. Compare
+      // observed inputs, not successful publication, so unchanged failures settle.
+      if (
+        !closed &&
+        observedCause !== null &&
+        directoriesCurrent() &&
+        inputCause() !== observedCause
+      )
+        pending = true;
       active = null;
       if (pending && !closed) void refresh(forcePending);
     });
@@ -301,11 +336,16 @@ export function watchManagedPiReadiness(
   };
   try {
     for (const [directory, names] of directories) {
-      const watcher = fs.watch(directory, (_event, filename) => {
-        if (closed) return;
-        if (filename === null || names.has(filename.toString())) void refresh();
-      });
+      const watcher = (dependencies.watch ?? fs.watch)(
+        directory,
+        (_event, filename) => {
+          if (closed) return;
+          if (filename === null || names.has(filename.toString()))
+            void refresh();
+        },
+      );
       watcher.on('error', () => {
+        if (closed) return;
         last = {
           status: 'blocked',
           code: 'readiness_watch_failed',

@@ -21,13 +21,13 @@ boundaries. No entry infers a native host load or provider result.
 
 ## 健康度
 
-**R1-01 — Limitation.** tools/tests watcher case raises its budget from 3s to 20s; the load-dependent flake is mitigated, not isolated.
+**R1-01 — Limitation.** A beta.21 deterministic regression reproduces the readiness refresh finalization window: an initial-result continuation writes inputs before the active drain clears, and a missing/coalesced event leaves the watcher waiting. The implementation now reconciles observed input changes at drain completion and settles failed hooks without self-retry. A separate real-filesystem smoke requires an idle metadata event. This fixes the demonstrated state-ordering defect; the native event-loss cause of the original macOS CI failure was not traced, and arbitrary OS event delivery is not guaranteed.
 
-  - Nested concerns: sub: raised timeout; sub: first-run .build failure is historical only.
+  - Nested concerns: sub: the earlier timeout-only mitigation is historical; beta.21 adds no timer, polling or larger budget; sub: first-run .build failure is historical only.
 
 **R1-02 — Limitation.** Commit granularity improved but a single commit still lands 9,259 insertions (26 files).
 
-**R1-03 — Limitation.** The published beta.20 archive is byte-identical to the reviewed candidate: 1,676,693 compressed bytes and 7,944,653 unpacked bytes across 548 files. Five minified bundles total 3,198,573 bytes; duplicate payloads remain. Public tarball integrity and all 548 shipped file hashes were checked after [publication](https://github.com/phyzess/pappra/actions/runs/40245964918). The beta.21 build scheduling change preserves the five bundle bytes; it does not reduce their size.
+**R1-03 — Limitation.** The published beta.20 archive is byte-identical to the reviewed candidate: 1,676,693 compressed bytes and 7,944,653 unpacked bytes across 548 files. Five minified bundles total 3,198,573 bytes; duplicate payloads remain. Public tarball integrity and all 548 shipped file hashes were checked after [publication](https://github.com/phyzess/pappra/actions/runs/40245964918). On frozen beta.20 inputs, the beta.21 build scheduling change preserves the five bundle bytes; it does not reduce their size. Subsequent runtime-source changes are outside that byte-equivalence comparison.
 
 ## P0：建议先修
 
@@ -247,7 +247,7 @@ boundaries. No entry infers a native host load or provider result.
 
 **R2-42 — Limitation.** CI provisions no codegraph, so engine-dependent cases stay skipped there (tests/code/service.test.ts:41-46, :134); the 178s cost is unmeasured here.
 
-**R2-43 — Limitation.** The flaky watcher mitigation is still a timeout bump, now 20s (tests/hosts/readiness-publisher.test.ts:433, :525).
+**R2-43 — Limitation.** The beta.21 readiness change adds deterministic event-suppression, failure-settling, directory-fence and close-during-hook checks, plus a genuine post-quiescence filesystem-event smoke (tests/hosts/readiness-publisher.test.ts). The existing 20s test and 15s rejection budgets stay unchanged. Controlled reproduction supports the bounded finalization fix, not a claim that every filesystem notification is reliable; see R1-01.
 
 ## 文档和 CLI
 
