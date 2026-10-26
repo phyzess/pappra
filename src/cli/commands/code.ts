@@ -15,10 +15,13 @@ import {
 import { workspaceRepositoryOptions } from '../pickers.js';
 
 export const codeUsage =
-  'pappra code status --repo <id> [--json]\n' +
-  'pappra code prepare --repo <id> [--apply] [--rebuild] [--json]\n' +
+  'pappra code status [--repo <id>] [--json]\n' +
+  'pappra code prepare [--repo <id>] [--apply] [--rebuild] [--json]\n' +
   'pappra code query --repo <id> --kind explore|symbol|references|impact|text --query <text>\n' +
-  '  [--limit <1-100>] [--max-bytes <bytes>] [--json]';
+  '  [--limit <1-100>] [--max-bytes <bytes>] [--json]\n' +
+  '\n' +
+  'On a terminal a missing --repo is picked from the workspace; query always needs it.\n' +
+  'prepare mutates the index only with --apply or its own confirmation. status is passive.';
 
 export interface CodeCommandOptions {
   readonly cwd: string;

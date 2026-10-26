@@ -34,8 +34,9 @@ export const docsUsage =
   '  review <documentId> [--scope private|shared] [--expected-digest <digest>] [--apply] [--json]\n\n' +
   'scan registers existing documents discovered under knowledge.sources; newDocuments is\n' +
   'only the destination for future authored documents. Without --apply scan only reports\n' +
-  'candidates. scan and dev:setup never accept changed bytes for an existing registration;\n' +
-  'accepting reviewed bytes is the explicit docs review operation.';
+  'candidates; on a terminal it asks before registering them. scan and dev:setup never\n' +
+  'accept changed bytes for an existing registration; accepting reviewed bytes is the\n' +
+  'explicit docs review operation.';
 
 export interface DocsCommandOptions {
   readonly cwd: string;

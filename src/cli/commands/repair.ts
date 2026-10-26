@@ -10,7 +10,8 @@ import {
 
 export const repairUsage =
   'pappra repair [--root <workspace>] [--runtime-version <v>] [--install-id <uuid>] [--apply] [--quarantine-unowned-locks] [--reset-local --all-writers-stopped] [--json]\n' +
-  'Preview incomplete install journals, or explicitly recover them with --apply.\n' +
+  'Preview incomplete install journals, or explicitly recover them with --apply. On a\n' +
+  'terminal the preview asks one confirmation to recover; --apply never asks.\n' +
   'Also inspect/recover provably dead knowledge and checkpoint writer locks.\n' +
   'Runtime recovery targets the machine data directory for the selected version.\n' +
   'Live/unknown lock owners and modified or unproven files are preserved.\n' +

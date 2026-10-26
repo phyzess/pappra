@@ -32,7 +32,9 @@ export const onboardUsage =
   '  [--yes] [--apply-host] [--dry-run] [--print-handoff] [--json]\n\n' +
   'Plans (default) or applies a workspace setup: init files, durable runtime, and with\n' +
   '--apply-host the verified host wiring. Trust prompts are never approved automatically.\n' +
-  '--print-handoff lists the files to copy to another machine and the commands to run there.';
+  'With no flags on a terminal it runs the guided setup, or the optional steps in an\n' +
+  'existing workspace. --print-handoff lists the files to copy to another machine and\n' +
+  'the commands to run there.';
 
 export interface OnboardCommandOptions {
   readonly cwd: string;

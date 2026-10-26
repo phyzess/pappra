@@ -1,8 +1,14 @@
 # Operations reference
 
+- Agents and scripts: a terminal can prompt. Bare `pappra`, flagless
+  `pappra onboard` and the plan-then-confirm commands below ask the person;
+  pass `--json` or `--no-interactive` (or run without a TTY) and keep using
+  explicit `--apply`, `--yes` and `--config`. A prompt answer is the person's
+  decision and must never be answered by an agent.
 - `pappra onboard` plans or applies a whole workspace setup (config, durable runtime,
   verified host wiring). `--dry-run` writes nothing; `--apply-host` still leaves host trust
-  to the person.
+  to the person. With no flags on a terminal it runs the guided setup, or the
+  optional steps in an existing workspace; its flags keep working unchanged.
 - `pappra init` plans or applies workspace configuration. `--yes` derives
   selections from discovery, `--print-choices` prints that document without
   writing, `--config` reads a `pappra/init-choices/1` document, and
@@ -20,31 +26,37 @@
   already bound matching runtime with no file changes yields apply status
   `no-changes` and exit 0 with `initComplete:false`.
   A TTY wizard opens only when selections are needed; `--config` without
-  `--apply` stays preview-only, an empty plan asks nothing, and the single
-  apply confirmation belongs to the interactive no-`--apply` flow that plans
-  configuration writes. `--apply` itself never prompts.
+  `--apply` stays preview-only, and the single apply confirmation belongs to
+  the interactive no-`--apply` flow. When no file changes are planned that
+  flow asks whether to verify the runtime and continue with the optional
+  setup steps. `--apply` itself never prompts.
   `knowledge.sources` are existing documents registered later by
   `docs scan --apply`, while `knowledge.newDocuments` is only the destination
   for future authored documents and is not created by init.
 - `pappra runtime <install|status|verify|remove|gc|archive>` manages the durable runtime
   copy. `install --apply` defaults to `--from self`; writes require `--apply`.
-- `pappra repair` previews interrupted install journals; `--apply` explicitly recovers
-  proven workspace effects or a selected `--runtime-version`. Live/unknown owners and
-  changed files remain protected.
+- `pappra repair` previews interrupted install journals; `--apply` explicitly
+  recovers proven workspace effects or a selected `--runtime-version`. On a
+  terminal the preview asks one confirmation and recovers without `--apply`.
+  Live/unknown owners and changed files remain protected.
 - `pappra doctor` is passive: it does not install hooks, start hosts, or fix
   state. `runtime verify` is the active runtime check.
 - `pappra checkpoint` writes a task checkpoint; `pappra resume` reads a stored
   snapshot and reports whether execution is allowed.
 - `pappra docs <list|check|review|archive|scan|relocate|forget>` manages the knowledge catalog.
-  `scan --apply` registers documents found under the configured sources.
+  `scan --apply` registers documents found under the configured sources; on a
+  terminal a plain `scan` asks before registering them.
 - `pappra code` operates on an explicitly selected repository and keeps index
-  mutations behind an explicit `--apply`.
+  mutations behind an explicit `--apply`; on a terminal a missing `--repo`
+  is picked and `prepare` confirms before it mutates the index.
 - `pappra host <detect|describe|probe|plan|install|uninstall|verify|bundle|mcp>` wires an optional
-  host. Codex 0.163.0 loads hooks only from `$CODEX_HOME/hooks.json`, so use
-  `install --host codex --scope user`; `bundle --marketplace` exports a plugin
+  host. On a terminal a missing `--host` is picked and install/uninstall ask
+  before writing. Codex 0.163.0 loads hooks only from `$CODEX_HOME/hooks.json`, so
+  use `install --host codex --scope user`; `bundle --marketplace` exports a plugin
   directory without registering it, and `install --mode plugin` fails closed.
 - `pappra mcp` starts the stdio MCP server; `pappra host mcp install --host <name> --apply`
-  registers it. `pappra task pin <id> --auto-resume` controls hook resume injection.
+  registers it. On a terminal it asks before writing.
+  `pappra task pin <id> --auto-resume` controls hook resume injection.
 - `pappra collab prepare --goal <file> --domain-root <dir>` and MCP
   `collab_prepare` share the strict explicit goal; MCP accepts only
   `{domainRoot, goal}`, not the retired flat objective fields, and synthesizes no card.

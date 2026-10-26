@@ -25,7 +25,10 @@ export const checkpointUsage =
   '  [--native-session <id>] [--json]';
 
 export const resumeUsage =
-  'pappra resume <taskId> [--session <native-session-id>] [--json]';
+  'pappra resume [taskId] [--session <native-session-id>] [--json]\n' +
+  '\n' +
+  'On a terminal a missing task id is picked from the saved tasks; a single candidate\n' +
+  'is used without asking.';
 
 export interface CheckpointCommandOptions {
   readonly cwd: string;

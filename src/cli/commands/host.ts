@@ -32,7 +32,7 @@ import {
 import { hostOptions } from '../pickers.js';
 
 export const hostUsage =
-  'pappra host <detect|describe|probe|plan|install|uninstall|verify|bundle|mcp> --host <pi|codex|claude>\n' +
+  'pappra host <detect|describe|probe|plan|install|uninstall|verify|bundle|mcp> [--host <pi|codex|claude>]\n' +
   '  [--host-root <dir>] [--host-version <version>] [--out <dir>]\n' +
   '  [--mode project-settings|plugin] [--scope project|user] [--marketplace] [--apply] [--json]\n' +
   '  probe --host <name> [--host-root <dir>] [--json]\n' +
@@ -42,6 +42,9 @@ export const hostUsage =
   '  bundle --host pi --out <new-private-dir> [--bootstrap-config <abs-file> |\n' +
   '    --recovery-config <abs-file>] [--transition-extension]\n' +
   '\n' +
+  'On a terminal a missing --host is picked from the detected hosts; install,\n' +
+  'uninstall and mcp install ask one confirmation before writing, and --apply\n' +
+  'writes without asking.\n' +
   'bundle exports a host-native plugin/package directory and never registers it or\n' +
   'claims host callability. Recovery and transition extensions are opt-in Pi bundle\n' +
   'artifacts; --recovery-config must pin an exact task-local session and binding.\n' +
