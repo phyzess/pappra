@@ -10,7 +10,7 @@ import test from 'node:test';
 for (const signal of ['SIGTERM', 'SIGHUP'] as const) {
   test(
     `${signal} restores real TTY modes and stops the owned TERM-ignoring Pi`,
-    { timeout: 15_000 },
+    { timeout: 60_000 },
     async () => {
       const root = fs.realpathSync(
         fs.mkdtempSync(path.join(os.tmpdir(), 'pappra-signal-')),
@@ -71,7 +71,10 @@ for (const signal of ['SIGTERM', 'SIGHUP'] as const) {
       };
       let ready: Ready | null = null;
       try {
-        const deadline = Date.now() + 8_000;
+        // Startup is bounded but generous: under a saturated machine (many concurrent test
+        // files) the PTY fork and controller boot were observed to take over eight seconds,
+        // which is CPU starvation rather than a signal-handling fault.
+        const deadline = Date.now() + 40_000;
         while (Date.now() < deadline && child.exitCode === null) {
           try {
             ready = JSON.parse(
