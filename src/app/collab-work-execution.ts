@@ -26,6 +26,7 @@ import {
   type HerdrPromptResult,
   type HerdrTransport,
   type NotifyResult,
+  type NotificationEffect,
 } from './collab-notify.js';
 import { collabBindingSchema } from '../schemas/collaboration.js';
 import {
@@ -77,6 +78,8 @@ export interface WorkExecutionDispatchRequest {
   readonly messageId: string;
   readonly bindingFile: string;
   readonly callerPane: string;
+  /** Set only after a validated durable no-effect outcome permits one retry. */
+  readonly retryNoEffect?: boolean;
   readonly finalAuthorityCheck?: () => Promise<{
     readonly ok: boolean;
     readonly reason: string;
@@ -98,6 +101,8 @@ export interface WorkExecutionObservation {
   readonly ok: boolean;
   readonly status: string;
   readonly detail: string | null;
+  /** Missing means the producer could not prove a no-effect refusal. */
+  readonly effect?: NotificationEffect;
   readonly delivery_path?: string | null;
   readonly message_digest?: string | null;
   readonly target_pane?: string | null;
@@ -223,6 +228,8 @@ const LIMITS = Object.freeze([
   'no-native-fencing-or-session-launch',
 ]);
 
+const DISPATCH_RECONCILIATION_NEXT_ACTION =
+  'Inspect current delivery and native evidence, reconcile through the existing supported flow, and create an explicit repair/new attempt if needed. Do not delete the intent or treat notification as consumption, execution, or acceptance.';
 function sha256(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
 }
@@ -292,13 +299,16 @@ function nodeResult(
     work_plan_status: 'unknown',
     execution_status: status,
     blockers: [...new Set(blockers)].sort(),
-    next_action: null,
     assignment: { ref: null, digest: null },
     capabilities: { ref: null, digest: null },
     intent_message_id: null,
     delivery: null,
     acceptance: 'not-applicable',
     ...extras,
+    next_action:
+      status === 'reconciliation-required'
+        ? (extras.next_action ?? DISPATCH_RECONCILIATION_NEXT_ACTION)
+        : (extras.next_action ?? null),
   };
 }
 
@@ -1060,17 +1070,20 @@ function asObservation(value: {
   readonly value?: NotifyResult;
   readonly code?: string;
   readonly message?: string;
+  readonly effect?: NotificationEffect;
 }): WorkExecutionObservation {
   if (!value.ok || !value.value)
     return {
       ok: false,
       status: value.code ?? 'notify_refused',
+      effect: value.effect ?? 'possible',
       detail: value.message ?? 'Notification preflight refused.',
     };
   const result = value.value;
   return {
     ok: result.status === 'planned' || result.status === 'submitted',
     status: result.status,
+    effect: result.effect ?? 'possible',
     detail: result.detail,
     delivery_path: result.deliveryPath,
     message_digest: result.messageDigest,
@@ -1116,6 +1129,7 @@ export function createHerdrWorkExecutionAdapter(
           if (!request.finalAuthorityCheck)
             return {
               status: 'blocked',
+              effect: 'none',
               detail:
                 'Final work authority callback is missing; no prompt was sent.',
             };
@@ -1125,12 +1139,14 @@ export function createHerdrWorkExecutionAdapter(
           } catch (error) {
             return {
               status: 'blocked',
+              effect: 'none',
               detail: `Final work authority check failed: ${error instanceof Error ? error.message : String(error)}`,
             };
           }
           if (!authority.ok)
             return {
               status: 'blocked',
+              effect: 'none',
               detail: `Final work authority check refused the prompt: ${authority.reason}`,
             };
           return transport.prompt(agent, promptText, registered);
@@ -1142,7 +1158,7 @@ export function createHerdrWorkExecutionAdapter(
           messageId: request.messageId,
           bindingFile: request.bindingFile,
           apply: true,
-          retry: false,
+          retry: request.retryNoEffect === true,
           callerPane: request.callerPane,
           transport: guardedTransport,
         }),

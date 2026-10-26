@@ -82,10 +82,13 @@ export type HerdrCallerResult =
       readonly detail: string;
     };
 
+export type NotificationEffect = 'none' | 'possible';
 export interface HerdrPromptResult {
   readonly status:
     'submitted' | 'blocked' | 'refused' | 'unknown' | 'failed' | 'unavailable';
   readonly detail: string | null;
+  /** Typed effect evidence; missing preserves the conservative interpretation. */
+  readonly effect?: NotificationEffect;
 }
 
 export type HerdrListResult =
@@ -263,6 +266,7 @@ function refusalStatus(code: string): HerdrPromptResult {
   if (code === 'agent_blocked') {
     return {
       status: 'blocked',
+      effect: 'none',
       detail:
         'the target agent is blocked; a blocked native UI is never auto-answered',
     };
@@ -274,7 +278,11 @@ function refusalStatus(code: string): HerdrPromptResult {
     };
   }
   if (RECOGNIZED_REFUSALS.has(code)) {
-    return { status: 'refused', detail: `Herdr refused the prompt: ${code}` };
+    return {
+      status: 'refused',
+      effect: 'none',
+      detail: `Herdr refused the prompt: ${code}`,
+    };
   }
   return {
     status: 'unknown',
@@ -756,6 +764,8 @@ export interface NotifyResult {
     | 'already_recorded'
     | 'in_flight_unknown'
     | 'retry_limit';
+  /** Missing retains the conservative possibly-delivered interpretation. */
+  readonly effect?: NotificationEffect;
   readonly messageId: string;
   readonly messagePath: string;
   readonly messageDigest: string;
@@ -773,6 +783,10 @@ export interface NotifyResult {
   readonly taskAccepted: false;
 }
 
+export type NotifyServiceResult<T> =
+  | { readonly ok: true; readonly value: T }
+  | (MessageServiceFailure & { readonly effect?: NotificationEffect });
+
 function nowIso(clock: number | undefined): string {
   return new Date(clock ?? Date.now()).toISOString();
 }
@@ -785,8 +799,22 @@ function failure(
   code: string,
   message: string,
   nextAction: string | null,
-): MessageServiceFailure {
-  return { ok: false, code, message, nextAction };
+): MessageServiceFailure & { readonly effect: 'possible' } {
+  return { ok: false, code, message, nextAction, effect: 'possible' };
+}
+
+function noEffectFailure(
+  code: string,
+  message: string,
+  nextAction: string | null,
+): MessageServiceFailure & { readonly effect: 'none' } {
+  return { ok: false, code, message, nextAction, effect: 'none' };
+}
+
+function noEffect(
+  failure: MessageServiceFailure,
+): MessageServiceFailure & { readonly effect: 'none' } {
+  return { ...failure, effect: 'none' };
 }
 
 function notificationRouteFailure(
@@ -1098,10 +1126,12 @@ function resultOf(
     readonly attempts: number;
     readonly priorStatus: CollabDeliveryStatus | null;
     readonly detail: string | null;
+    readonly effect?: NotificationEffect;
   },
 ): NotifyResult {
   return {
     status: fields.status,
+    effect: fields.effect ?? 'possible',
     messageId: base.message.message_id,
     messagePath: base.messagePath,
     messageDigest: base.digest,
@@ -1212,12 +1242,12 @@ function verifyLiveParticipant(
  */
 export async function notifyRegisteredMessage(
   options: NotifyOptions,
-): Promise<MessageServiceResult<NotifyResult>> {
+): Promise<NotifyServiceResult<NotifyResult>> {
   const opened = await openMessageTask(options.taskRoot);
-  if (!opened.ok) return opened;
+  if (!opened.ok) return noEffect(opened);
   const { taskRoot, record } = opened.value;
   if (!isSafeMessageId(options.messageId)) {
-    return failure(
+    return noEffectFailure(
       'message_id_invalid',
       `Unsafe message id: ${options.messageId}`,
       'Use a registered message id from collab message list.',
@@ -1227,19 +1257,19 @@ export async function notifyRegisteredMessage(
     opened.value,
     options.messageId,
   );
-  if (!registered.ok) return registered;
+  if (!registered.ok) return noEffect(registered);
   const message = registered.value.message;
   const messagePath = registered.value.file;
   const digest = registered.value.digest;
   if (!controlFree(messagePath) || !controlFree(digest)) {
-    return failure(
+    return noEffectFailure(
       'message_pointer_unsafe',
       'Message path or digest contains control characters',
       'Rename the task root; pointers are sent as one plain line.',
     );
   }
   if (message.task_id !== record.task_id) {
-    return failure(
+    return noEffectFailure(
       'message_task_mismatch',
       'Registered message does not belong to this task record',
       'Inspect the task record and message; nothing was notified.',
@@ -1249,7 +1279,7 @@ export async function notifyRegisteredMessage(
     typeof message.to.agent_id !== 'string' ||
     typeof message.to.harness !== 'string'
   ) {
-    return failure(
+    return noEffectFailure(
       'message_recipient_missing',
       'Registered message has no explicit recipient',
       'Persist a message with an explicit to identity.',
@@ -1261,19 +1291,19 @@ export async function notifyRegisteredMessage(
     taskRoot,
     record.task_id,
   );
-  if (!binding.ok) return binding;
+  if (!binding.ok) return noEffect(binding);
   const sender = binding.value.participants.find(
     (item) => item.agent_id === message.from.agent_id,
   );
   if (sender === undefined) {
-    return failure(
+    return noEffectFailure(
       'binding_sender_missing',
       `Binding has no participant for sender ${message.from.agent_id}`,
       'Bind both the sender and recipient; routing metadata must describe this message.',
     );
   }
   if (sender.harness !== message.from.harness) {
-    return failure(
+    return noEffectFailure(
       'binding_sender_mismatch',
       `Binding harness ${sender.harness} does not match message sender ${String(message.from.harness)}`,
       'Correct the binding; sender harness must match the message.',
@@ -1283,7 +1313,7 @@ export async function notifyRegisteredMessage(
     sender.native_session_id !== null &&
     sender.native_session_id !== message.from.session_id
   ) {
-    return failure(
+    return noEffectFailure(
       'binding_sender_session_mismatch',
       'Binding native_session_id does not match the message sender session',
       'Bind the exact sender session; sessions are never inferred from names.',
@@ -1293,14 +1323,14 @@ export async function notifyRegisteredMessage(
     (item) => item.agent_id === message.to.agent_id,
   );
   if (participant === undefined) {
-    return failure(
+    return noEffectFailure(
       'binding_recipient_missing',
       `Binding has no participant for ${message.to.agent_id}`,
       'Add the exact protocol recipient to the binding; nothing was notified.',
     );
   }
   if (participant.harness !== message.to.harness) {
-    return failure(
+    return noEffectFailure(
       'binding_harness_mismatch',
       `Binding harness ${participant.harness} does not match message recipient ${message.to.harness}`,
       'Correct the binding; routing metadata must describe this recipient exactly.',
@@ -1310,7 +1340,7 @@ export async function notifyRegisteredMessage(
     participant.native_session_id !== null &&
     participant.native_session_id !== message.to.session_id
   ) {
-    return failure(
+    return noEffectFailure(
       'binding_session_mismatch',
       'Binding native_session_id does not match the message recipient session',
       'Bind the exact protocol session; sessions are never inferred from names.',
@@ -1321,7 +1351,7 @@ export async function notifyRegisteredMessage(
   // check is pure current-record evaluation: it happens before any caller or live Herdr
   // query and before any send, and it never rewrites the message or delivery record.
   const initialRouteFailure = notificationRouteFailure(record, message);
-  if (initialRouteFailure !== null) return initialRouteFailure;
+  if (initialRouteFailure !== null) return noEffect(initialRouteFailure);
 
   // Record files legitimately change inode on any atomic task commit. Recheck
   // the selected message and participants, then evaluate routes from a fresh
@@ -1390,6 +1420,7 @@ export async function notifyRegisteredMessage(
       ok: true,
       value: resultOf(base, {
         status: 'planned',
+        effect: 'none',
         target: plannedTarget,
         caller: null,
         transport: 'none',
@@ -1417,6 +1448,7 @@ export async function notifyRegisteredMessage(
       ok: true,
       value: resultOf(base, {
         status,
+        effect: 'none',
         target: null,
         caller: null,
         transport: 'none',
@@ -1437,6 +1469,7 @@ export async function notifyRegisteredMessage(
         status:
           agents.status === 'unavailable' ? 'herdr_unavailable' : 'failed',
         target: null,
+        effect: 'none',
         caller: null,
         transport: 'herdr',
         deliveryPath: null,
@@ -1450,12 +1483,12 @@ export async function notifyRegisteredMessage(
   // Async seams end here: revalidate the task namespace and the registered bytes
   // before any mutation or native submission.
   const changed = await assertNotificationCurrent();
-  if (changed !== null) return changed;
+  if (changed !== null) return noEffect(changed);
 
   // The selected routing candidate must be the sender's bound pane. This is a
   // task-bound routing check, not process authentication.
   if (caller.paneId !== sender.pane_id) {
-    return failure(
+    return noEffectFailure(
       'caller_pane_mismatch',
       `Selected caller pane ${caller.paneId} does not match the sender binding pane ${sender.pane_id}`,
       'Pass the sender pane explicitly with --caller-pane, or correct the binding; nothing was notified.',
@@ -1467,14 +1500,14 @@ export async function notifyRegisteredMessage(
     message.from.session_id,
     agents.agents,
   );
-  if (!senderCheck.ok) return senderCheck;
+  if (!senderCheck.ok) return noEffect(senderCheck);
   const recipientCheck = verifyLiveParticipant(
     'recipient',
     participant,
     message.to.session_id,
     agents.agents,
   );
-  if (!recipientCheck.ok) return recipientCheck;
+  if (!recipientCheck.ok) return noEffect(recipientCheck);
 
   const callerEvidence: NotifyCallerEvidence = {
     source: caller.source,
@@ -1493,12 +1526,12 @@ export async function notifyRegisteredMessage(
   };
 
   const directory = await ensureNotificationsDirectory(opened.value);
-  if (!directory.ok) return directory;
+  if (!directory.ok) return noEffect(directory);
   const deliveryFile = deliveryPathFor(taskRoot, message.message_id);
   const lockPath = lockPathFor(deliveryFile);
   const existing = readDeliveryRecord(taskRoot, message.message_id);
   if (fs.existsSync(deliveryFile) && existing === null) {
-    return failure(
+    return noEffectFailure(
       'delivery_state_invalid',
       `Delivery metadata exists but is not a valid pappra/collab-delivery/1 document: ${deliveryFile}`,
       'Inspect or remove that file explicitly; Pappra does not overwrite unreadable delivery evidence.',
@@ -1522,7 +1555,7 @@ export async function notifyRegisteredMessage(
     };
   }
   if (lock === 'failed') {
-    return failure(
+    return noEffectFailure(
       'delivery_state_unwritable',
       `Cannot reserve delivery metadata: ${lockPath}`,
       'Inspect task permissions; nothing was notified.',
@@ -1659,6 +1692,7 @@ export async function notifyRegisteredMessage(
       ok: true,
       value: resultOf(base, {
         status: 'unknown',
+        effect: 'possible',
         target,
         caller: callerEvidence,
         transport: 'herdr',
@@ -1674,6 +1708,7 @@ export async function notifyRegisteredMessage(
     ok: true,
     value: resultOf(base, {
       status,
+      effect: result.effect ?? 'possible',
       target,
       caller: callerEvidence,
       transport: 'herdr',
