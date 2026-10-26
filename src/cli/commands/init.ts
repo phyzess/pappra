@@ -1773,7 +1773,7 @@ export async function runInitCommand(
 
   printPlan(output, bundle, runtimeOperation, interactive && !options.apply);
   if (!options.apply) {
-    if (!interactive || bundle.plan.files.length === 0) {
+    if (!interactive) {
       output.stdout(
         runtimeOperation.runtimeRequested
           ? 'Plan only; no files or runtime operations were performed. Re-run with --apply to apply files and attempt the described runtime operation, even if no files change.\n'
@@ -1781,7 +1781,28 @@ export async function runInitCommand(
       );
       return 0;
     }
-    if (!(await confirmApply(ui, 'Apply these workspace changes?', true))) {
+    if (bundle.plan.files.length === 0) {
+      output.stdout('Workspace files are already up to date.\n');
+      const question = runtimeOperation.runtimeRequested
+        ? 'Verify the Pappra runtime and continue with the optional setup steps?'
+        : 'Continue with the optional setup steps?';
+      if (!(await confirmApply(ui, question, true))) {
+        output.stdout('Nothing was applied.\n');
+        return 0;
+      }
+      if (!runtimeOperation.runtimeRequested) {
+        return await runSetupFollowUps(
+          bundle.scope.workspaceRoot,
+          ui,
+          progress,
+          output,
+        );
+      }
+      // An up-to-date workspace still needs the runtime action, so continue into
+      // the shared apply path: the empty plan, then the runtime flow and follow-ups.
+    } else if (
+      !(await confirmApply(ui, 'Apply these workspace changes?', true))
+    ) {
       output.stdout('Nothing was applied.\n');
       return 0;
     }
@@ -1889,6 +1910,8 @@ export const initUsage =
   'external-actions-pending and exit 0 for the requested configuration-only work; when the workspace already has a bound matching\n' +
   'runtime and no file changes are needed the result is ok:true, apply status no-changes and\n' +
   'exit 0, while initComplete stays false because this invocation verified no runtime.\n' +
-  'A TTY run that collected selections without --apply prints the plan and asks one confirmation\n' +
-  'when config writes are planned; declining writes nothing. --config previews and empty plans\n' +
-  'do not prompt, and --apply never prompts.\n';
+  'A TTY run that collected selections without --apply prints the plan and asks one confirmation;\n' +
+  'a confirmed apply continues with the optional setup steps. A workspace whose files are\n' +
+  'already up to date asks whether to verify the runtime and continue those steps; --config\n' +
+  'previews without prompting, and --apply never prompts. CI or --no-interactive turns every\n' +
+  'prompt off.\n';

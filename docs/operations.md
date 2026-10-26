@@ -142,10 +142,13 @@ them and does not install, index, execute or wire anything by itself.
 
 A TTY run that collected selections without `--apply` prints the plan and asks one
 confirmation when configuration writes are planned; declining prints `Nothing was applied.`
-and exits `0` with no files written. Cancelling the wizard exits `130` for `pappra init`,
-while the guided entries (bare `pappra` and a flagless `pappra onboard`) print
-`Setup cancelled.` and exit `0`. `--apply` never prompts, `--config` without `--apply` stays a
-preview, and `--print-choices` writes nothing.
+and exits `0` with no files written. When no file changes are planned, `init` reports
+`Workspace files are already up to date.` and asks whether to verify the runtime and
+continue with the optional setup steps (`--no-runtime` asks only about those steps);
+declining prints `Nothing was applied.` and writes nothing. Cancelling the wizard exits
+`130` for `pappra init`, while the guided entries (bare `pappra` and a flagless
+`pappra onboard`) print `Setup cancelled.` and exit `0`. `--apply` never prompts,
+`--config` without `--apply` stays a preview, and `--print-choices` writes nothing.
 
 After a confirmed apply from a terminal, `pappra init` also offers the optional follow-up
 steps: prepare the code index, register the discovered knowledge documents, connect coding

@@ -58,6 +58,24 @@ function createUnboundValidationWorkspace(
   return config;
 }
 
+/** A valid workspace whose configuration and machine binding are already current. */
+function createUpToDateWorkspace(root: string): void {
+  createRepository(root);
+  writeWorkspaceConfig(
+    root,
+    baseWorkspaceConfig({
+      name: 'up to date',
+      repositories: [{ id: 'app', path: '.', access: 'write' }],
+      knowledge: {
+        sources: [],
+        newDocuments: '.pappra/knowledge',
+        taskVisibility: 'private',
+      },
+    }),
+  );
+  writeMachineConfig(root, baseMachineConfig(root, { selectedHosts: [] }));
+}
+
 test('cancelling the wizard leaves the workspace byte-identical', async () => {
   const root = makeTempDir('init-wizard-cancel');
   try {
@@ -272,6 +290,182 @@ test('declining the interactive apply confirmation writes nothing', async () => 
     } else {
       process.env.PAPPRA_DATA_HOME = previousDataHome;
     }
+    cleanup(root);
+  }
+});
+
+test('an up-to-date interactive init offers the optional setup steps', async () => {
+  const root = makeTempDir('init-wizard-up-to-date');
+  const previousPath = process.env['PATH'];
+  try {
+    createUpToDateWorkspace(root);
+    process.env['PATH'] = '';
+    const before = snapshotTree(root);
+    const ui = new FakeWizardUi({ confirm: [true] });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runInitCommand(
+      {
+        cwd: root,
+        configPath: null,
+        apply: false,
+        json: false,
+        noRuntime: true,
+      },
+      {
+        stdout: (text) => stdout.push(text),
+        stderr: (text) => stderr.push(text),
+      },
+      { interactive: true, ui },
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert(
+      stdout.join('').includes('Workspace files are already up to date.'),
+      stdout.join(''),
+    );
+    assert.deepEqual(
+      ui.calls.map((call) => call.kind),
+      ['confirm'],
+      'the up-to-date plan asks once before the optional steps',
+    );
+    const confirmation = ui.calls[0];
+    assert(confirmation !== undefined);
+    assert.equal(
+      confirmation.message,
+      'Continue with the optional setup steps?',
+    );
+    assert.equal(confirmation.initialValue, true);
+    assert(
+      stdout
+        .join('')
+        .includes('No supported coding agent was detected on PATH'),
+      stdout.join(''),
+    );
+    assert.match(stdout.join(''), /Health: /);
+    assert.equal(stdout.join('').includes('Nothing was applied.'), false);
+    assert.equal(stdout.join('').includes('Plan only'), false);
+    assert.deepEqual(snapshotTree(root), before);
+  } finally {
+    if (previousPath === undefined) delete process.env['PATH'];
+    else process.env['PATH'] = previousPath;
+    cleanup(root);
+  }
+});
+
+test('an up-to-date interactive init asks about the runtime and writes nothing when declined', async () => {
+  const root = makeTempDir('init-wizard-up-to-date-runtime');
+  const previousDataHome = process.env.PAPPRA_DATA_HOME;
+  try {
+    createUpToDateWorkspace(root);
+    const dataHome = join(root, 'isolated-data');
+    process.env.PAPPRA_DATA_HOME = dataHome;
+    const before = snapshotTree(root);
+    const ui = new FakeWizardUi({ confirm: [false] });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runInitCommand(
+      { cwd: root, configPath: null, apply: false, json: false },
+      {
+        stdout: (text) => stdout.push(text),
+        stderr: (text) => stderr.push(text),
+      },
+      { interactive: true, ui },
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert(
+      stdout.join('').includes('Workspace files are already up to date.'),
+      stdout.join(''),
+    );
+    const confirmation = ui.calls.at(-1);
+    assert(confirmation !== undefined);
+    assert.equal(confirmation.kind, 'confirm');
+    assert.equal(
+      confirmation.message,
+      'Verify the Pappra runtime and continue with the optional setup steps?',
+    );
+    assert.equal(confirmation.initialValue, true);
+    assert(stdout.join('').includes('Nothing was applied.'));
+    assert.equal(stdout.join('').includes('Applied files:'), false);
+    assert.equal(existsSync(dataHome), false);
+    assert.deepEqual(snapshotTree(root), before);
+  } finally {
+    if (previousDataHome === undefined) {
+      delete process.env.PAPPRA_DATA_HOME;
+    } else {
+      process.env.PAPPRA_DATA_HOME = previousDataHome;
+    }
+    cleanup(root);
+  }
+});
+
+test('declining the optional setup steps from an up-to-date workspace writes nothing', async () => {
+  const root = makeTempDir('init-wizard-up-to-date-decline');
+  try {
+    createUpToDateWorkspace(root);
+    const before = snapshotTree(root);
+    const ui = new FakeWizardUi({ confirm: [false] });
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const code = await runInitCommand(
+      {
+        cwd: root,
+        configPath: null,
+        apply: false,
+        json: false,
+        noRuntime: true,
+      },
+      {
+        stdout: (text) => stdout.push(text),
+        stderr: (text) => stderr.push(text),
+      },
+      { interactive: true, ui },
+    );
+    assert.equal(code, 0, stderr.join(''));
+    assert(stdout.join('').includes('Nothing was applied.'));
+    assert.equal(stdout.join('').includes('Deferred init work:'), false);
+    assert.deepEqual(snapshotTree(root), before);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('a non-interactive up-to-date init keeps the plain plan-only output', async () => {
+  const root = makeTempDir('init-wizard-up-to-date-scripted');
+  try {
+    createUpToDateWorkspace(root);
+    const before = snapshotTree(root);
+    const ui = new FakeWizardUi({});
+    const run = async (noRuntime: boolean): Promise<string> => {
+      const stdout: string[] = [];
+      const code = await runInitCommand(
+        {
+          cwd: root,
+          configPath: null,
+          apply: false,
+          json: false,
+          ...(noRuntime ? { noRuntime: true } : {}),
+        },
+        { stdout: (text) => stdout.push(text), stderr: () => undefined },
+        { interactive: false, ui },
+      );
+      assert.equal(code, 0);
+      return stdout.join('');
+    };
+    assert.equal(
+      (await run(false)).includes(
+        'Plan only; no files or runtime operations were performed. Re-run with --apply to apply files and attempt the described runtime operation, even if no files change.\n',
+      ),
+      true,
+    );
+    assert.equal(
+      (await run(true)).includes(
+        'Plan only; no files or runtime operations were performed. Re-run with --apply to apply files; --no-runtime will continue to suppress runtime work.\n',
+      ),
+      true,
+    );
+    assert.deepEqual(ui.calls, [], 'a scripted run opens no prompt');
+    assert.deepEqual(snapshotTree(root), before);
+  } finally {
     cleanup(root);
   }
 });
