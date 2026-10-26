@@ -25,7 +25,7 @@
  * is unresolved every snapshot reports `notificationBacklogOverflow`, `settled: 'unknown'` and
  * `toolTrackingHealthy: false`, and no ordinary later event restores healthy confidence.
  *
- * Installed Pi 1.3.0 API pinned from the installed docs/examples (the package ships no .d.ts):
+ * Installed Pi 1.3.0 API pinned from the Pi package's own docs/examples (the package ships no .d.ts):
  *   docs/extensions.md (sha256:a2b5ff0f95e7e470ed0846d7c4fbfc5781fe7e694b8e7f51ea08859f3ad7325d):
  *   lifecycle events `session_start`, `before_agent_start` (a run becomes busy), `agent_settled`
  *   (final, "Pi will not continue automatically"), and nested `tool_execution_start` /

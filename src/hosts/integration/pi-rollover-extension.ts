@@ -21,7 +21,7 @@
  * it. There is intentionally NO thaw: recovery/release is a later, separately scoped,
  * authority-checked integration.
  *
- * Installed Pi 1.3.0 API pinned from the installed example extensions (the package ships no .d.ts):
+ * Installed Pi 1.3.0 API pinned from the Pi package's own example extensions (the package ships no .d.ts):
  *   permission-gate.ts (sha256:e32086ba9dd9b4ba0fd308b65241d9affa0b5ecd3f90ef7ea1b9f2b30cab8cc1),
  *   protected-paths.ts (sha256:9ca66b1f3b1b9a61cc5ddc660f92cca2ea66c4264a1bdb6b00e0da5844399fe2),
  *   commands.ts        (sha256:36716b53da169936c7e1360a4fde1e2fc0c3356a6505f177235f09c5538c6e4f),

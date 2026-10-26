@@ -112,7 +112,7 @@ import { canonicalJson } from '../../collab/envelope.js';
 // The exact original session file is reopened through `pi --mode rpc` and only
 // get_state, get_messages and get_session_stats are sent. No command in this file can
 // start model work, run a tool, or change the session. This is NOT a query against an
-// already-live Pi process and NOT a read of the shared task record; see docs/a09-native-query.md.
+// already-live Pi process and NOT a read of the shared task record.
 //
 // Protocol facts used (Pi 1.3.0 docs/rpc.md): strict JSONL framed on LF only, every
 // command carries an `id` that its `response` repeats, stdout carries events that are not

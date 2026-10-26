@@ -22,7 +22,8 @@ Both the stream wrapper and fetch adapter reject repeat calls; SDK retries are s
 A successful acceptance requires all of: the first process journaled `unavailable` + `none` with
 an outcome timestamp; that process exited; the same cause resumed in a different process within
 the original total retry budget; the restarted controller called the native worker exactly once;
-the SDK request passed the restored loopback gate and returned HTTP 200; and the owned runtime
+the SDK request passed the restored loopback gate, returned HTTP 200 and produced the actual
+final assistant response (`stopReason: stop` with the fixed reply); and the owned runtime
 was disposed. If the provider is unavailable or returns another terminal result, the evidence
 retains the exact sanitized status (for example `http_401`, `ECONNREFUSED`, or
 `provider_request_rejected`), records `acceptance_passed: false`, and does not claim success. A
@@ -106,5 +107,5 @@ the explicit opt-in experiment and inspect the sanitized `acceptance_passed` and
 The earlier retained proof stopped before the native provider attempt reached a terminal result.
 The known-no-effect restart path exists, but the retained native-provider run did not supply
 terminal acceptance. No provider success should be claimed
-unless the new terminal evidence contains HTTP 200 and `runtime_disposed`. This page records the
-contract and the observed gap; it does not claim a passed acceptance.
+unless the new terminal evidence contains HTTP 200, the final assistant reply at
+`stopReason: stop` and `runtime_disposed`. This page records the contract and the observed gap; it does not claim a passed acceptance.
