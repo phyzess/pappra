@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { lstatSync } from 'node:fs';
+import fs, { lstatSync } from 'node:fs';
 import {
   isAssignment,
   isCard,
@@ -16,6 +16,7 @@ import { ACTIVE_STATES, findAttempt } from '../../collab/lifecycle.js';
 import {
   createHerdrWorkExecutionAdapter,
   type WorkExecutionAdapter,
+  type WorkExecutionObservation,
 } from '../collab-work-execution.js';
 import { submitMessage } from '../../collab/messages.js';
 import {
@@ -28,7 +29,7 @@ import {
 import { activeClaims, claimResources } from '../../collab/resources.js';
 import { claimCovers } from '../../collab/admission.js';
 import { describeResource } from '../../collab/canonical.js';
-import { readRecord } from '../../collab/store.js';
+import { digestText, readRecord } from '../../collab/store.js';
 import type { Message } from '../../collab/types.js';
 import {
   workflowAssignmentPath,
@@ -58,6 +59,223 @@ import {
 } from './types.js';
 import type { TaskRecord } from '../../collab/types.js';
 
+const DISPATCH_OUTCOME_SCHEMA = 'pappra/collab-workflow-dispatch-outcome/1';
+
+/**
+ * Delivery statuses that can never certify "no effect": the prompt may have been, or was,
+ * submitted. Shared by the writer of an outcome and the reader that grants a retry, so a
+ * forged or corrupted pairing such as effect none + submitted fails closed.
+ */
+const NEVER_NO_EFFECT_STATUSES: readonly string[] = [
+  'submitted',
+  'unknown',
+  'already_recorded',
+  'in_flight_unknown',
+  'retry_limit',
+];
+
+interface DispatchOutcome {
+  readonly schema: typeof DISPATCH_OUTCOME_SCHEMA;
+  readonly effect: 'none' | 'possible';
+  readonly subtask_id: string;
+  readonly attempt: number;
+  readonly intent_digest: string;
+  readonly status: string;
+  readonly detail: string | null;
+  readonly recorded_at: string;
+}
+
+interface DispatchOutcomeRead {
+  readonly outcome: DispatchOutcome | null;
+  readonly digest: string | null;
+  readonly error: string | null;
+}
+
+function readDispatchOutcome(
+  taskRoot: string,
+  file: string,
+  subtaskId: string,
+  attempt: number,
+  intentDigest: string,
+): DispatchOutcomeRead {
+  if (assertRealChain(taskRoot, file) !== null)
+    return { outcome: null, digest: null, error: 'unsafe_outcome_path' };
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT')
+      return { outcome: null, digest: null, error: null };
+    return { outcome: null, digest: null, error: 'outcome_unreadable' };
+  }
+  if (!stat.isFile())
+    return { outcome: null, digest: null, error: 'outcome_not_regular' };
+  const read = readBoundedDocument(file, 'dispatch outcome');
+  if (!read.ok) return { outcome: null, digest: null, error: read.code };
+  const value = read.value.value;
+  if (typeof value !== 'object' || value === null || Array.isArray(value))
+    return { outcome: null, digest: null, error: 'outcome_not_an_object' };
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  const expected = [
+    'attempt',
+    'detail',
+    'effect',
+    'intent_digest',
+    'recorded_at',
+    'schema',
+    'status',
+    'subtask_id',
+  ].sort();
+  if (
+    keys.join('|') !== expected.join('|') ||
+    candidate.schema !== DISPATCH_OUTCOME_SCHEMA ||
+    (candidate.effect !== 'none' && candidate.effect !== 'possible') ||
+    candidate.subtask_id !== subtaskId ||
+    candidate.attempt !== attempt ||
+    candidate.intent_digest !== intentDigest ||
+    typeof candidate.status !== 'string' ||
+    candidate.status.length === 0 ||
+    (candidate.effect === 'none' &&
+      NEVER_NO_EFFECT_STATUSES.includes(candidate.status)) ||
+    (typeof candidate.detail !== 'string' && candidate.detail !== null) ||
+    typeof candidate.recorded_at !== 'string' ||
+    !Number.isFinite(Date.parse(candidate.recorded_at))
+  )
+    return { outcome: null, digest: null, error: 'outcome_invalid' };
+  return {
+    outcome: candidate as unknown as DispatchOutcome,
+    digest: read.value.digest,
+    error: null,
+  };
+}
+
+function outcomeDigestMatches(file: string, expected: string | null): boolean {
+  const read = readBoundedDocument(file, 'dispatch outcome');
+  if (expected !== null) return read.ok && read.value.digest === expected;
+  return !read.ok && !fs.existsSync(file);
+}
+
+function writeDispatchOutcome(
+  taskRoot: string,
+  file: string,
+  outcome: DispatchOutcome,
+  expectedDigest: string | null,
+):
+  | { readonly ok: true; readonly digest: string }
+  | { readonly ok: false; readonly detail: string } {
+  if (
+    assertRealChain(taskRoot, file) !== null ||
+    !outcomeDigestMatches(file, expectedDigest)
+  )
+    return { ok: false, detail: 'outcome_changed_or_unsafe' };
+  const bytes = `${JSON.stringify(outcome, null, 2)}\n`;
+  const digest = digestText(bytes);
+  const temporary = `${file}.tmp-${process.pid}-${Date.now()}`;
+  let handle: number | null = null;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    handle = fs.openSync(temporary, 'wx', 0o600);
+    fs.writeSync(handle, bytes);
+    fs.fsyncSync(handle);
+    fs.closeSync(handle);
+    handle = null;
+    if (
+      assertRealChain(taskRoot, file) !== null ||
+      !outcomeDigestMatches(file, expectedDigest)
+    )
+      return { ok: false, detail: 'outcome_changed_before_publish' };
+    fs.renameSync(temporary, file);
+    return { ok: true, digest };
+  } catch (error) {
+    return {
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (handle !== null) fs.closeSync(handle);
+    try {
+      fs.unlinkSync(temporary);
+    } catch {
+      // The temporary was renamed or was never created; unknown files are not removed.
+    }
+  }
+}
+
+function acquireOutcomeLock(file: string): boolean {
+  try {
+    fs.mkdirSync(file, { mode: 0o700 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function releaseOutcomeLock(file: string): void {
+  try {
+    fs.rmdirSync(file);
+  } catch {
+    // A residual lock is reconciliation evidence, never a retry permission.
+  }
+}
+
+function isProvableNoEffect(delivered: WorkExecutionObservation): boolean {
+  return (
+    !delivered.ok &&
+    delivered.effect === 'none' &&
+    !NEVER_NO_EFFECT_STATUSES.includes(delivered.status)
+  );
+}
+
+/**
+ * Intent fields that describe the evidence a dispatch was judged on (the capability card
+ * source, its digest, its derivation state and the evidence count) plus its timestamp. They
+ * change legitimately between a refused attempt and its corrected retry, because a native
+ * session log keeps growing and a derived card is re-observed. The attempt identity is the
+ * remaining fields; the original intent file keeps its bytes either way.
+ */
+const INTENT_EVIDENCE_FIELDS = [
+  'created_at',
+  'card_file',
+  'card_digest',
+  'card_state',
+  'evidence_checked',
+] as const;
+
+function equivalentIntentEvidence(
+  existing: unknown,
+  candidate: unknown,
+): Record<string, unknown> | null {
+  if (
+    typeof existing !== 'object' ||
+    existing === null ||
+    Array.isArray(existing) ||
+    typeof candidate !== 'object' ||
+    candidate === null ||
+    Array.isArray(candidate)
+  )
+    return null;
+  const current = existing as Record<string, unknown>;
+  if (
+    typeof current.created_at !== 'string' ||
+    !Number.isFinite(Date.parse(current.created_at))
+  )
+    return null;
+  const identity = (value: Record<string, unknown>) =>
+    JSON.stringify(
+      Object.fromEntries(
+        Object.entries(value).filter(
+          ([key]) =>
+            !(INTENT_EVIDENCE_FIELDS as readonly string[]).includes(key),
+        ),
+      ),
+    );
+  if (identity(current) !== identity(candidate as Record<string, unknown>))
+    return null;
+  return Object.fromEntries(
+    INTENT_EVIDENCE_FIELDS.map((key) => [key, current[key]]),
+  );
+}
 /**
  * Dispatch: notify one registered assignment through its observed binding.
  *
@@ -871,6 +1089,11 @@ export async function applyDispatch(
       workflowIntentsDir(task.taskRoot),
       `dispatch-${node.subtask_id}-${node.attempt}.json`,
     );
+    const outcomeFile = path.join(
+      workflowIntentsDir(task.taskRoot),
+      `dispatch-${node.subtask_id}-${node.attempt}.outcome.json`,
+    );
+    const outcomeLockFile = `${outcomeFile}.lock`;
     const intent = {
       schema: 'pappra/collab-workflow-dispatch-intent/1',
       subtask_id: node.subtask_id,
@@ -883,7 +1106,17 @@ export async function applyDispatch(
       caller_pane: request.caller_pane,
       created_at: new Date(options.clock ?? Date.now()).toISOString(),
     };
-    const write = writeJsonExclusive(task.taskRoot, intentFile, intent);
+    let write = writeJsonExclusive(task.taskRoot, intentFile, intent);
+    if (write.status === 'conflict') {
+      const prior = readBoundedDocument(intentFile, 'dispatch intent');
+      const evidence = prior.ok
+        ? equivalentIntentEvidence(prior.value.value, intent)
+        : null;
+      if (evidence !== null) {
+        Object.assign(intent, evidence);
+        write = writeJsonExclusive(task.taskRoot, intentFile, intent);
+      }
+    }
     if (write.status === 'conflict') {
       blockers.push({
         code: 'dispatch_intent_conflict',
@@ -903,140 +1136,232 @@ export async function applyDispatch(
       return;
     }
     intents.push(intentFile);
-    if (write.status === 'identical') {
-      // The intent is durable evidence that a delivery was already attempted here.
+    if (!acquireOutcomeLock(outcomeLockFile)) {
       blockers.push({
         code: 'dispatch_already_attempted',
-        detail: `A dispatch intent for ${node.subtask_id}#${node.attempt} already exists.`,
+        detail: `Dispatch outcome for ${node.subtask_id}#${node.attempt} is busy or unreadable; no retry was attempted.`,
         next_action:
-          'Inspect the recorded delivery; dispatch never replays a possibly delivered notification.',
+          'Inspect the intent, outcome and current delivery evidence; never replay an ambiguous notification.',
       });
       return;
     }
-
-    const changed = await revalidateWorkflowTask(task);
-    if (!changed.ok) {
-      blockers.push({
-        code: changed.code,
-        detail: changed.message,
-        next_action: changed.nextAction,
-      });
-      return;
-    }
-    const adapter = options.adapter ?? createHerdrWorkExecutionAdapter();
-    // Re-verify THIS node against a fresh record inside the existing notifier seam: revoked
-    // claims, changed epochs, a changed sealed pin or a lost coordinator stop the transport
-    // instead of delivering on stale evidence. Shared validators only.
-    const finalAuthorityCheck = async (): Promise<{
-      readonly ok: boolean;
-      readonly reason: string;
-    }> => {
-      const fresh = readRecord(task.taskRoot);
-      if (fresh === null) return { ok: false, reason: 'record_unreadable' };
-      if (
-        fresh.coordinator === null ||
-        fresh.coordinator.agent_id !== request.caller.agent_id ||
-        fresh.coordinator.session_id !== request.caller.session_id
-      )
-        return { ok: false, reason: 'coordinator_changed' };
-      const attempt = findAttempt(fresh, node.subtask_id, node.attempt);
-      if (attempt === null) return { ok: false, reason: 'attempt_missing' };
-      const sealedDoc = readBoundedDocument(
-        workflowAssignmentPath(task.taskRoot, node.subtask_id),
-        'sealed assignment',
-      );
-      if (!sealedDoc.ok) return { ok: false, reason: sealedDoc.code };
-      if (sealedDoc.value.digest !== attempt.assignment_digest)
-        return { ok: false, reason: 'assignment_digest_mismatch' };
-      if (
-        fresh.coordinator?.owner_epoch !== attempt.owner_epoch ||
-        (isAssignment(sealedDoc.value.value) &&
-          sealedDoc.value.value.coordinator.owner_epoch !== attempt.owner_epoch)
-      )
-        return { ok: false, reason: 'owner_epoch_changed' };
-      if (
-        isAssignment(sealedDoc.value.value) &&
-        (sealedDoc.value.value.inputs[0]?.digest ?? null) !==
-          (fresh.input_revision ?? null)
-      )
-        return { ok: false, reason: 'input_revision_changed' };
-      if (attempt.state === 'unknown')
-        return { ok: false, reason: 'attempt_state_reconciliation_required' };
-      // Reuse the same scoped admission projection instead of a third, weaker variant:
-      // it re-derives this node's state, assignee, raw pin, card and coverage on the
-      // fresh record.
-      const scoped = collectNodes(
-        { ...request, subtasks: [node.subtask_id] },
-        fresh,
-        options.clock ?? Date.now(),
-      );
-      if (scoped.blockers.length > 0)
-        return { ok: false, reason: scoped.blockers[0]!.code };
-      const scopedNode = scoped.nodes.find(
-        (candidate) =>
-          candidate.subtask_id === node.subtask_id &&
-          candidate.attempt === node.attempt,
-      );
-      if (scopedNode === undefined)
-        return { ok: false, reason: 'attempt_not_dispatchable' };
-      const resources: DeclaredResource[] = isAssignment(sealedDoc.value.value)
-        ? sealedDoc.value.value.resources.map((resource) => ({
-            path: String(resource.path),
-            access: resource.access === 'write' ? 'write' : 'read',
-            ...(resource.scope === 'file' || resource.scope === 'tree'
-              ? { scope: resource.scope }
-              : {}),
-            ...(Number.isSafeInteger(resource.resource_epoch) &&
-            (resource.resource_epoch ?? 0) > 0
-              ? { resource_epoch: resource.resource_epoch }
-              : {}),
-          }))
-        : [];
-      const coverage = claimCoverageBlockers(
-        fresh,
+    try {
+      const existing = readDispatchOutcome(
+        task.taskRoot,
+        outcomeFile,
         node.subtask_id,
         node.attempt,
-        {
-          agent_id: attempt.assignee.agent_id,
-          session_id: attempt.assignee.session_id,
-        },
-        resources,
+        write.digest,
       );
-      return coverage.length === 0
-        ? { ok: true, reason: 'ok' }
-        : { ok: false, reason: coverage[0]!.code };
-    };
-    const delivered = await adapter.dispatch({
-      taskRoot: task.taskRoot,
-      messageId: intent.message_id,
-      bindingFile: workflowBindingPath(task.taskRoot),
-      callerPane: request.caller_pane,
-      finalAuthorityCheck,
-    });
-    messages.push({
-      message_id: intent.message_id,
-      type: 'ASSIGN',
-      registration: null,
-      duplicate: false,
-      delivery: delivered.status,
-      digest: delivered.message_digest ?? null,
-    });
-    native.push({
-      subtask_id: node.subtask_id,
-      attempt: node.attempt,
-      // `submitted` proves a delivery submission, never native execution/consumption.
-      observation: 'unknown',
-      card: node.card_state,
-    });
-    if (delivered.ok && delivered.status === 'submitted')
-      notified.push(node.subtask_id);
-    else
-      blockers.push({
-        code: `delivery_${delivered.status}`,
-        detail: `Delivery for ${node.subtask_id} reported ${delivered.status}: ${String(delivered.detail ?? '')}.`,
-        next_action:
-          'Reconcile the recorded delivery record; an unknown or blocked delivery is not retried automatically.',
+      if (
+        existing.error !== null ||
+        (write.status === 'created' && existing.outcome !== null)
+      ) {
+        blockers.push({
+          code: 'dispatch_already_attempted',
+          detail: `A dispatch intent or unreadable outcome already exists for ${node.subtask_id}#${node.attempt}.`,
+          next_action:
+            'Inspect the intent and outcome; corrupt or unexpected evidence never permits a retry.',
+        });
+        return;
+      }
+      let retryNoEffect = false;
+      let outcomeExpectedDigest: string | null = null;
+      if (write.status === 'identical') {
+        if (existing.outcome === null || existing.outcome.effect !== 'none') {
+          blockers.push({
+            code: 'dispatch_already_attempted',
+            detail: `A dispatch intent for ${node.subtask_id}#${node.attempt} already exists without a valid provably no-effect outcome.`,
+            next_action:
+              'Inspect current delivery and native evidence; never delete the intent or replay an ambiguous notification.',
+          });
+          return;
+        }
+        retryNoEffect = true;
+        warnings.push(
+          `Earlier no-effect dispatch refusal for ${node.subtask_id}#${node.attempt}: ${existing.outcome.status}${existing.outcome.detail === null ? '' : ` (${existing.outcome.detail})`}. The intent was retained; retrying after explicit correction.`,
+        );
+        // Fence the retry before any await. A crash or ambiguous successor outcome can
+        // never reuse the older no-effect certificate as permission for another prompt.
+        const fenced = writeDispatchOutcome(
+          task.taskRoot,
+          outcomeFile,
+          {
+            schema: DISPATCH_OUTCOME_SCHEMA,
+            effect: 'possible',
+            subtask_id: node.subtask_id,
+            attempt: node.attempt,
+            intent_digest: write.digest,
+            status: 'retry_in_progress',
+            detail: null,
+            recorded_at: new Date(options.clock ?? Date.now()).toISOString(),
+          },
+          existing.digest,
+        );
+        if (!fenced.ok) {
+          blockers.push({
+            code: 'dispatch_outcome_unsafe',
+            detail: `Cannot fence the earlier no-effect outcome before retrying: ${fenced.detail}.`,
+            next_action:
+              'Inspect the intent and outcome; no notification was attempted.',
+          });
+          return;
+        }
+        outcomeExpectedDigest = fenced.digest;
+      }
+      const changed = await revalidateWorkflowTask(task);
+      if (!changed.ok) {
+        blockers.push({
+          code: changed.code,
+          detail: changed.message,
+          next_action: changed.nextAction,
+        });
+        return;
+      }
+      const adapter = options.adapter ?? createHerdrWorkExecutionAdapter();
+      // Re-verify THIS node against a fresh record inside the existing notifier seam: revoked
+      // claims, changed epochs, a changed sealed pin or a lost coordinator stop the transport
+      // instead of delivering on stale evidence. Shared validators only.
+      const finalAuthorityCheck = async (): Promise<{
+        readonly ok: boolean;
+        readonly reason: string;
+      }> => {
+        const fresh = readRecord(task.taskRoot);
+        if (fresh === null) return { ok: false, reason: 'record_unreadable' };
+        if (
+          fresh.coordinator === null ||
+          fresh.coordinator.agent_id !== request.caller.agent_id ||
+          fresh.coordinator.session_id !== request.caller.session_id
+        )
+          return { ok: false, reason: 'coordinator_changed' };
+        const attempt = findAttempt(fresh, node.subtask_id, node.attempt);
+        if (attempt === null) return { ok: false, reason: 'attempt_missing' };
+        const sealedDoc = readBoundedDocument(
+          workflowAssignmentPath(task.taskRoot, node.subtask_id),
+          'sealed assignment',
+        );
+        if (!sealedDoc.ok) return { ok: false, reason: sealedDoc.code };
+        if (sealedDoc.value.digest !== attempt.assignment_digest)
+          return { ok: false, reason: 'assignment_digest_mismatch' };
+        if (
+          fresh.coordinator?.owner_epoch !== attempt.owner_epoch ||
+          (isAssignment(sealedDoc.value.value) &&
+            sealedDoc.value.value.coordinator.owner_epoch !==
+              attempt.owner_epoch)
+        )
+          return { ok: false, reason: 'owner_epoch_changed' };
+        if (
+          isAssignment(sealedDoc.value.value) &&
+          (sealedDoc.value.value.inputs[0]?.digest ?? null) !==
+            (fresh.input_revision ?? null)
+        )
+          return { ok: false, reason: 'input_revision_changed' };
+        if (attempt.state === 'unknown')
+          return { ok: false, reason: 'attempt_state_reconciliation_required' };
+        // Reuse the same scoped admission projection instead of a third, weaker variant:
+        // it re-derives this node's state, assignee, raw pin, card and coverage on the
+        // fresh record.
+        const scoped = collectNodes(
+          { ...request, subtasks: [node.subtask_id] },
+          fresh,
+          options.clock ?? Date.now(),
+        );
+        if (scoped.blockers.length > 0)
+          return { ok: false, reason: scoped.blockers[0]!.code };
+        const scopedNode = scoped.nodes.find(
+          (candidate) =>
+            candidate.subtask_id === node.subtask_id &&
+            candidate.attempt === node.attempt,
+        );
+        if (scopedNode === undefined)
+          return { ok: false, reason: 'attempt_not_dispatchable' };
+        const resources: DeclaredResource[] = isAssignment(
+          sealedDoc.value.value,
+        )
+          ? sealedDoc.value.value.resources.map((resource) => ({
+              path: String(resource.path),
+              access: resource.access === 'write' ? 'write' : 'read',
+              ...(resource.scope === 'file' || resource.scope === 'tree'
+                ? { scope: resource.scope }
+                : {}),
+              ...(Number.isSafeInteger(resource.resource_epoch) &&
+              (resource.resource_epoch ?? 0) > 0
+                ? { resource_epoch: resource.resource_epoch }
+                : {}),
+            }))
+          : [];
+        const coverage = claimCoverageBlockers(
+          fresh,
+          node.subtask_id,
+          node.attempt,
+          {
+            agent_id: attempt.assignee.agent_id,
+            session_id: attempt.assignee.session_id,
+          },
+          resources,
+        );
+        return coverage.length === 0
+          ? { ok: true, reason: 'ok' }
+          : { ok: false, reason: coverage[0]!.code };
+      };
+      const delivered = await adapter.dispatch({
+        taskRoot: task.taskRoot,
+        messageId: intent.message_id,
+        bindingFile: workflowBindingPath(task.taskRoot),
+        callerPane: request.caller_pane,
+        retryNoEffect,
+        finalAuthorityCheck,
       });
+      messages.push({
+        message_id: intent.message_id,
+        type: 'ASSIGN',
+        registration: null,
+        duplicate: false,
+        delivery: delivered.status,
+        digest: delivered.message_digest ?? null,
+      });
+      native.push({
+        subtask_id: node.subtask_id,
+        attempt: node.attempt,
+        // `submitted` proves a delivery submission, never native execution/consumption.
+        observation: 'unknown',
+        card: node.card_state,
+      });
+      const outcomeEffect = isProvableNoEffect(delivered) ? 'none' : 'possible';
+      const outcomeWrite = writeDispatchOutcome(
+        task.taskRoot,
+        outcomeFile,
+        {
+          schema: DISPATCH_OUTCOME_SCHEMA,
+          effect: outcomeEffect,
+          subtask_id: node.subtask_id,
+          attempt: node.attempt,
+          intent_digest: write.digest,
+          status: delivered.status,
+          detail: delivered.detail,
+          recorded_at: new Date(options.clock ?? Date.now()).toISOString(),
+        },
+        outcomeExpectedDigest,
+      );
+      if (!outcomeWrite.ok)
+        blockers.push({
+          code: 'dispatch_outcome_unsafe',
+          detail: `Cannot record the dispatch outcome durably: ${outcomeWrite.detail}.`,
+          next_action:
+            'Inspect the intent and outcome before any further dispatch; a missing or stale outcome never permits replay.',
+        });
+      if (delivered.ok && delivered.status === 'submitted')
+        notified.push(node.subtask_id);
+      else
+        blockers.push({
+          code: `delivery_${delivered.status}`,
+          detail: `Delivery for ${node.subtask_id} reported ${delivered.status}: ${String(delivered.detail ?? '')}.`,
+          next_action:
+            'Reconcile the recorded delivery record; an unknown or blocked delivery is not retried automatically.',
+        });
+    } finally {
+      releaseOutcomeLock(outcomeLockFile);
+    }
   };
 
   for (const node of planned.nodes) await deliverNode(node);

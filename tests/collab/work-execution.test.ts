@@ -788,6 +788,14 @@ test('duplicate invocation and unknown notification are reconciliation-only', as
       ),
       true,
     );
+    for (const node of second.nodes) {
+      assert.match(
+        node.next_action ?? '',
+        /Inspect current delivery and native evidence/,
+      );
+      assert.match(node.next_action ?? '', /explicit repair\/new attempt/);
+      assert.match(node.next_action ?? '', /Do not delete the intent/);
+    }
     assert.equal(sends, 2);
   } finally {
     fixture.cleanup();
