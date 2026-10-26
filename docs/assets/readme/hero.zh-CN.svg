@@ -1,41 +1,58 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
-  <title id="title">Pappra</title>
-  <desc id="desc">Pappra 是面向编码 Agent 的工作区管理器。Agent 的工作应当放在工作区自己拥有的文件里，而不是某一段聊天记录中。图中是 pappra resume 的真实输出摘录：验证状态是最新的、不允许执行，并列出了阻塞原因。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="460" viewBox="0 0 1200 460" role="img" aria-labelledby="title desc">
+  <title id="title">Pappra：会话结束，任务没有结束</title>
+  <desc id="desc">一个 Agent 会话结束了，任务没有结束：目标、决策和下一步都以普通文件的形式留在项目里，任何 Agent 都能接着做。图中是 pappra resume 真实输出的摘录，以“会话 A 交给会话 B”的方式呈现：上下文完整、不允许执行、下一步是写第一个测试。</desc>
 
-  <rect width="1200" height="420" rx="24" fill="#F0F0EE"/>
+  <rect width="1200" height="460" rx="24" fill="#F0F0EE"/>
 
   <g id="title-block" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
-    <rect x="57" y="49" width="270" height="34" rx="17" fill="none" stroke="#8F8E86" stroke-width="1.5" stroke-dasharray="5 4"/>
-    <text x="76" y="72" font-size="17" font-weight="600" letter-spacing="1" fill="#5A5957">面向编码 Agent 的工作区管理器</text>
-    <text x="52" y="178" font-size="104" font-weight="800" letter-spacing="-3.5" fill="#1F1E1C">Pappra</text>
-    <g font-size="30" font-weight="500" fill="#4A4946">
-      <text x="56" y="232">Agent 的工作，应当放在</text>
-      <text x="56" y="272">工作区自己拥有的文件里 ——</text>
-      <text x="56" y="312">而不是某一段聊天记录中。</text>
+    <rect x="56" y="44" width="191" height="34" rx="17" fill="none" stroke="#8F8E86" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="76" y="67" font-size="16" font-weight="600" letter-spacing="1" fill="#5A5957">目标 · 决定 · 下一步</text>
+
+    <text x="53" y="184" font-size="96" font-weight="800" letter-spacing="-3" fill="#1F1E1C">Pappra</text>
+
+    <g font-size="24" fill="#4A4946">
+      <text x="56" y="244">Agent 会话结束之后，</text>
+      <text x="56" y="276">任务还在：目标、决策和下一步</text>
+      <text x="56" y="308">都以普通文件留在项目里，</text>
+      <text x="56" y="340">下一个会话用任何 Agent 都能接着做。</text>
     </g>
-    <line x1="56" y1="352" x2="560" y2="352" stroke="#C0BFB7" stroke-width="1.5"/>
-    <text x="56" y="386" font-size="16" font-weight="600" letter-spacing="1.8" fill="#727270">@PHYZESS/PAPPRA · NODE 24+ · MIT</text>
+
+    <line x1="56" y1="368" x2="600" y2="368" stroke="#C0BFB7" stroke-width="1.5"/>
+    <text x="56" y="400" font-size="16" font-weight="600" letter-spacing="1.8" fill="#727270">@PHYZESS/PAPPRA · NODE 24+ · GIT · MIT</text>
+  </g>
+
+  <g id="handoff" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="18">
+    <text x="640" y="60" font-weight="600" fill="#727270">会话 A</text>
+    <line x1="724" y1="54" x2="748" y2="54" stroke="#8F8E86" stroke-width="1.5"/>
+    <path d="M742 48 L748 54 L742 60" fill="none" stroke="#8F8E86" stroke-width="1.5"/>
+    <text x="762" y="60" font-weight="700" fill="#1F1E1C">.pappra/local/</text>
+    <line x1="908" y1="54" x2="932" y2="54" stroke="#8F8E86" stroke-width="1.5"/>
+    <path d="M926 48 L932 54 L926 60" fill="none" stroke="#8F8E86" stroke-width="1.5"/>
+    <text x="946" y="60" font-weight="600" fill="#727270">会话 B</text>
   </g>
 
   <g id="project-proof">
-    <rect x="640" y="36" width="504" height="340" rx="24" fill="#1F1E1C"/>
-    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="20">
-      <text x="672" y="86" fill="#F0F0EE"><tspan fill="#8F8E86">$</tspan> pappra resume demo --session demo</text>
-      <text x="672" y="120" fill="#A9A8A0">Task: demo</text>
-      <rect x="656" y="132" width="472" height="34" rx="9" fill="#2B2927"/>
-      <rect x="656" y="132" width="5" height="34" rx="2.5" fill="#F5572F"/>
-      <text x="672" y="156" font-weight="700" fill="#F5572F">Execution allowed: no</text>
-      <g fill="#A9A8A0">
-        <text x="672" y="190">Context: partial</text>
-        <text x="672" y="218">Code drift: unchanged</text>
-        <text x="672" y="246">Verification: current</text>
-        <text x="672" y="274">Objective: Try Pappra</text>
+    <rect x="640" y="96" width="504" height="330" rx="24" fill="#1F1E1C"/>
+
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace">
+      <text x="672" y="136" font-size="20" fill="#F0F0EE"><tspan fill="#8F8E86">$</tspan> pappra resume demo</text>
+
+      <text x="672" y="182" font-size="20" font-weight="600" fill="#A9A8A0">Execution allowed: no</text>
+
+      <g font-size="20" fill="#A9A8A0">
+        <text x="672" y="224">Context: complete</text>
+        <text x="672" y="256">Code drift: unchanged</text>
+        <text x="672" y="288">Verification: current</text>
+        <text x="672" y="320">Objective: Try Pappra</text>
       </g>
-      <g fill="#C0BFB7">
-        <text x="672" y="312">Blocked: live_writer_unverified: …</text>
-        <text x="672" y="340">Blocked: context_partial: …</text>
-      </g>
+
+      <text x="672" y="344" font-size="18" fill="#6E6C68">…</text>
+      <text x="1112" y="344" text-anchor="end" font-size="16" font-weight="600" letter-spacing="0.6" fill="#6E6C68">已省略部分输出行</text>
     </g>
-    <text x="1144" y="402" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" font-weight="600" letter-spacing="1.2" fill="#727270">摘录 · PAPPRA RESUME 的真实输出</text>
+
+    <path d="M640 364 H1144 V402 A24 24 0 0 1 1120 426 H664 A24 24 0 0 1 640 402 Z" fill="#F0F0EE"/>
+    <rect x="668" y="382" width="5" height="26" rx="2.5" fill="#BE4020"/>
+    <text x="690" y="404" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="20" font-weight="700" fill="#BE4020">Next: Write the first test</text>
+    <text x="1118" y="402" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" font-weight="600" letter-spacing="1" fill="#727270">交接给下一个会话</text>
   </g>
 </svg>

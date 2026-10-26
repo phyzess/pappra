@@ -1,49 +1,82 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
-  <title id="title">Pappra 如何工作</title>
-  <desc id="desc">可选的编码宿主（Claude Code、Codex、Pi）通过钩子、MCP 服务或命令行调用 Pappra。Pappra 读写工作区自己拥有的文件：共享并提交的工作区配置，以及私有、会自动忽略自身的本地状态。恢复只报告状态，绝不授予执行权限。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">从一个会话到下一个会话</title>
+  <desc id="desc">四个步骤。会话 A 像平时一样工作并保存一个检查点。任务的状态变成 .pappra/local/ 下的文件：tasks/demo/ 里有 task-context.json、latest.json 和 checkpoints。新会话在任何 Agent 里用 pappra resume 打开这些文件。你和 Agent 再读这份交接，决定执行什么，因为恢复只报告状态，绝不授予执行权限。</desc>
 
-  <rect width="1200" height="480" rx="24" fill="#F0F0EE"/>
+  <rect width="1200" height="560" rx="24" fill="#F0F0EE"/>
 
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
-    <text x="56" y="68" font-size="34" font-weight="800" letter-spacing="-0.4" fill="#1F1E1C">Pappra 如何工作</text>
-    <text x="56" y="100" font-size="20" fill="#5A5957">宿主调用 Pappra · Pappra 把状态存放在两处 · 空心圆点 = 私有</text>
-
-    <g font-size="16" font-weight="600" letter-spacing="1.4" fill="#727270">
-      <text x="56" y="150">宿主 · 可选</text>
-      <text x="440" y="150">PAPPRA</text>
-      <text x="836" y="150">你的工作区</text>
-    </g>
-
-    <g font-size="24" font-weight="600" fill="#1F1E1C">
-      <circle cx="68" cy="190" r="9" fill="#1F1E1C"/><text x="94" y="199">Claude Code</text>
-      <circle cx="68" cy="254" r="9" fill="#1F1E1C"/><text x="94" y="263">Codex</text>
-      <circle cx="68" cy="318" r="9" fill="#1F1E1C"/><text x="94" y="327">Pi</text>
-    </g>
-
-    <rect x="440" y="168" width="320" height="190" rx="24" fill="#1F1E1C"/>
-    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="22" fill="#F0F0EE">
-      <text x="472" y="212">checkpoint</text>
-      <text x="472" y="246">resume</text>
-      <text x="472" y="280">docs</text>
-      <text x="472" y="314">code</text>
-    </g>
-    <text x="472" y="344" font-size="16" font-weight="600" letter-spacing="1.4" fill="#A9A8A0">钩子 · MCP · 命令行</text>
-
-    <circle cx="848" cy="204" r="9" fill="#1F1E1C"/>
-    <text x="874" y="204" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="21" font-weight="700" fill="#1F1E1C">.pappra/workspace.json</text>
-    <text x="874" y="234" font-size="20" fill="#5A5957">共享 · 已提交</text>
-    <circle cx="848" cy="296" r="8" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="3"/>
-    <text x="874" y="296" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="21" font-weight="700" fill="#1F1E1C">.pappra/local/</text>
-    <text x="874" y="326" font-size="20" fill="#5A5957">私有 · 会自动忽略自身</text>
-
-    <g stroke="#8F8E86" stroke-width="1.5" fill="none">
-      <path d="M262 190 H440"/><path d="M262 254 H440"/><path d="M262 318 H440"/>
-      <path d="M760 204 H836"/><path d="M760 296 H836"/>
-    </g>
-
-    <line x1="56" y1="392" x2="1144" y2="392" stroke="#C0BFB7" stroke-width="1.5"/>
-    <circle cx="68" cy="428" r="10" fill="#F5572F"/>
-    <text x="94" y="436" font-size="24" font-weight="700" fill="#1F1E1C">恢复只报告状态，绝不授予执行权限。</text>
-    <text x="1144" y="466" text-anchor="end" font-size="16" font-weight="600" letter-spacing="1.2" fill="#727270">系统图 · 宿主 → PAPPRA → 工作区文件</text>
+    <text x="56" y="68" font-size="34" font-weight="800" fill="#1F1E1C">从一个会话到下一个会话</text>
+    <text x="56" y="100" font-size="20" fill="#5A5957">检查点就是一个文件，任何 Agent 都能恢复它。</text>
   </g>
+
+  <line x1="84" y1="160" x2="1116" y2="160" stroke="#C0BFB7" stroke-width="1.5"/>
+  <g stroke="#8F8E86" stroke-width="1.5" fill="none">
+    <path d="M314 154 L320 160 L314 166"/>
+    <path d="M594 154 L600 160 L594 166"/>
+    <path d="M874 154 L880 160 L874 166"/>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="20" font-weight="700" text-anchor="middle">
+    <circle cx="180" cy="160" r="20" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="1.5"/>
+    <circle cx="460" cy="160" r="20" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="1.5"/>
+    <circle cx="740" cy="160" r="20" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="1.5"/>
+    <circle cx="1020" cy="160" r="20" fill="#F5572F" stroke="#F5572F" stroke-width="1.5"/>
+    <g fill="#1F1E1C">
+      <text x="180" y="167">1</text>
+      <text x="460" y="167">2</text>
+      <text x="740" y="167">3</text>
+    </g>
+    <text x="1020" y="167" fill="#F0F0EE">4</text>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="17" font-weight="700" letter-spacing="0.5" fill="#5A5957" text-anchor="middle">
+    <text x="180" y="204">会话 A</text>
+    <text x="460" y="204">你的项目</text>
+    <text x="740" y="204">会话 B · 任意 Agent</text>
+    <text x="1020" y="204">你 + Agent</text>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="20" fill="#2E2D2A">
+    <text x="56" y="232">你和 Agent 照常</text>
+    <text x="56" y="260">在一个会话里工作。</text>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#5A5957">
+    <text x="56" y="326"><tspan fill="#8F8E86">$</tspan> pappra checkpoint \</text>
+    <text x="56" y="348">  --task demo</text>
+  </g>
+
+  <text x="336" y="232" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="20" fill="#2E2D2A">任务的状态变成文件：</text>
+  <rect x="336" y="280" width="248" height="160" rx="16" fill="#E7E7E3"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#5A5957">
+    <text x="348" y="304" font-weight="700" fill="#1F1E1C">.pappra/local/</text>
+    <text x="348" y="328">└ tasks/demo/</text>
+    <text x="368" y="352">├ task-context.json</text>
+    <text x="368" y="376">├ latest.json</text>
+    <text x="368" y="400">└ checkpoints/</text>
+    <text x="388" y="424">0001-….json</text>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="20" fill="#2E2D2A">
+    <text x="616" y="232">新会话在任何 Agent 里</text>
+    <text x="616" y="260">打开，读这些文件：</text>
+  </g>
+  <rect x="616" y="280" width="248" height="160" rx="16" fill="#1F1E1C"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17">
+    <text x="632" y="350" fill="#F0F0EE"><tspan fill="#8F8E86">$</tspan> pappra resume demo</text>
+    <text x="632" y="376" fill="#A9A8A0">Context: complete</text>
+  </g>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="20" fill="#2E2D2A">
+    <text x="896" y="232">你和 Agent 一起</text>
+    <text x="896" y="260">读完这份交接，</text>
+    <text x="896" y="288">再决定执行什么。</text>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#5A5957">
+    <text x="896" y="326">Execution allowed: no</text>
+    <text x="896" y="348">Next: Write the first test</text>
+  </g>
+
+  <line x1="56" y1="468" x2="1144" y2="468" stroke="#C0BFB7" stroke-width="1.5"/>
+  <circle cx="64" cy="496" r="9" fill="#F5572F"/>
+  <text x="88" y="504" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="22" font-weight="700" fill="#1F1E1C">恢复只报告状态，绝不授予执行权限。</text>
 </svg>

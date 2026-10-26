@@ -3,63 +3,85 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme/hero.svg" width="100%" alt="Pappra, a workspace manager for coding agents: agent work belongs in files your workspace owns, not in one chat transcript. An excerpt of real pappra resume output shows the task is current, execution is not allowed, and the blocking reasons.">
+  <img src="docs/assets/readme/hero.svg" width="100%" alt="Pappra: your agent's session ends, the task does not. A hand-off from one session to the next, built around an excerpt of real pappra resume output: the objective, the context status and the next step handed to the next session; the other lines are omitted.">
 </p>
 
-**Pappra saves what your AI coding agent was doing as plain files inside your project, so any
-agent can pick the work back up.**
+**Your coding agent's session ends; the task does not. Pappra keeps the goal, the decisions and
+the next step in your project as plain files, so the next session, in any agent, can pick the
+work back up.**
 
-## Why Pappra?
+## What is Pappra?
 
-You ask a coding agent (Claude Code, Codex, Pi…) to do something big. Halfway through, the
-chat gets too long, you switch tools, or you come back tomorrow, and the new session knows
-nothing. The goal, the decisions already made and the next step were all trapped in one chat.
+You already give your coding agent standing instructions in `CLAUDE.md` or `AGENTS.md`: how to
+build, how to test, what style to follow. Those files say how to work, not where the work stands.
+That lives in the conversation, so when a session gets too long, you switch tools, or you come
+back tomorrow, the new session starts from nothing.
 
-Pappra moves that knowledge out of the chat and into files in your project folder. Any agent
-you choose can read the same files. You don't need an agent, a model account or any extra
-service to try it: Node.js is enough.
+Pappra keeps the state of the task in progress — the objective, the decisions, what was tried,
+what is blocked, what to do next — as files in your project folder. Any agent you choose can read
+them, and none of it is lost with the chat.
 
-## Words you will see
+- **Pick up a task in any agent.** A checkpoint saved by one session can be read by the next one,
+  whichever agent it runs in.
+- **Project knowledge.** Register the documents an agent should read, so the next session finds
+  them instead of asking you to paste them again.
+- **Code navigation.** Look up code without handing over the whole repository. Text and structure
+  search work with no extra tools installed.
+- **Connect your agents.** Claude Code, Codex and Pi can read checkpoints through Pappra's skill and
+  hook, and the skill saves one when you ask.
 
-| Word                | What it means here                                                                           |
-| ------------------- | -------------------------------------------------------------------------------------------- |
-| **Workspace**       | The project folder Pappra manages. Its files live in a `.pappra/` folder inside it.          |
-| **Agent / host**    | The AI coding tool (Claude Code, Codex, Pi). Pappra calls the tool a "host".                 |
-| **Checkpoint**      | A saved note about a task: the goal, how you know it is done, and what to do next.           |
-| **Resume**          | Reading a checkpoint back. It only reports; it never starts any work.                        |
-| **Knowledge**       | Project documents you choose to register, so agents can find them.                           |
-| **Code navigation** | A bounded way to look up code. It works without extra tools, and can use a code graph later. |
+Use only the parts you need.
 
-## Try it in 5 minutes
+## See it
 
-You need [Node.js](https://nodejs.org/) 24 or later and Git. Check your version first:
+A checkpoint is a saved note about one task: what it is, how you know it is done, where it stopped. A
+new session runs `pappra resume demo` and gets the state of the task, not the old transcript:
 
-```sh
-# Should print v24 or higher
-node --version
+```text
+Task: demo
+Checkpoint: checkpoints/0001-d523d72a-4553-4579-883d-93409c9df53e.json@1
+Execution allowed: no
+Context: complete
+Code drift: unchanged
+Verification: current
+Objective: Try Pappra
+Blocked: live_writer_unverified: P07 cannot establish live writer/stop ownership from a stored session string; execution remains blocked.
+Blocked: unknown_writer: Checkpoint author session is unknown; execution is blocked.
+Next: Write the first test
 ```
 
-**1. Create a practice folder and start Pappra in it.** In a terminal, running Pappra with no
-arguments is the whole setup: it reads the folder, asks a few questions, prints the plan it
-will write, and applies it after one confirmation. Then it offers the optional steps one at a
-time — prepare the code index, register knowledge documents, connect your coding agents
-(Claude Code, Codex, Pi, including MCP registration) and run a health check — and each one
-can be skipped.
+The new session gets the objective, the reasons it cannot start on its own, and the next step, so it
+can continue without the old chat. `Execution allowed: no` is intentional: a resume hands over
+context, never permission; you and the agent decide what runs. The command exits `0`, and may print
+read-only diagnostics on stderr.
+
+## Quick start
+
+You need [Node.js](https://nodejs.org/) 24 or later and Git.
+
+**1. Set Pappra up in a practice folder.** Run it with no arguments in an empty folder. On a
+terminal that is the whole setup: it asks for a workspace name, which repositories to include and
+which documents to register, and most questions have a default you can accept with Enter. It then
+prints the plan it will write and applies it after one confirmation, and offers the optional steps
+one at a time, each skippable: prepare the code index, register the documents it found, connect your
+coding agents (Claude Code, Codex, Pi, including MCP registration), run a health check. Pappra works
+from a repository with at least one commit, which is why the practice folder gets an empty one.
 
 ```sh
 mkdir pappra-demo && cd pappra-demo
 git init
+git commit --allow-empty -m init
 npx @phyzess/pappra@beta
 ```
 
-You now have a `.pappra/` folder. `.pappra/workspace.json` is shared and meant to be
-committed; `.pappra/local/` is private and ignores itself, so it never lands in Git. The
-setup also puts one copy of Pappra under your user data folder so `npx` cache cleaning cannot
-break it. You can repeat the read-only check at any time with `pappra doctor`: a few
-`[WARNING]` or `[UNKNOWN]` lines for things you have not set up, such as hosts, are normal,
-and `[ERROR]` lines are the ones to fix.
+You now have a `.pappra/` folder. `.pappra/workspace.json` is shared and meant to be committed;
+`.pappra/local/` is private, ignores itself, and never lands in Git. If you use Pappra every day,
+install it once so the steps below can say `pappra`: `npm install -g @phyzess/pappra@beta`.
 
-Scripts and CI use explicit flags instead, which never prompt:
+<details>
+<summary>Scripts and CI</summary>
+
+Explicit flags never prompt: `init --yes` prints the plan and `--apply` writes it.
 
 ```sh
 npx @phyzess/pappra@beta init --yes
@@ -67,120 +89,90 @@ npx @phyzess/pappra@beta init --yes --apply
 npx @phyzess/pappra@beta doctor
 ```
 
-`init --yes` only prints the plan and writes nothing; adding `--apply` writes it.
+</details>
 
-**2. Save a checkpoint, then read it back.**
+**2. Connect your agent (optional).** `pappra host install --host claude` (or `codex`, `pi`) adds
+Pappra's skill and lifecycle hook to that agent, so it knows when and how to save a checkpoint. It
+asks one confirmation, then prints the files it wrote. Pappra never answers the agent's own trust
+prompt; you approve it inside the agent. MCP is a separate, also optional step: `pappra host mcp
+install --host claude --apply` registers `pappra mcp`, whose tools are read-mostly and whose writes
+need trusted server startup policy.
 
 ```sh
-npx @phyzess/pappra@beta checkpoint --task demo --objective 'Try Pappra' \
-  --acceptance 'Resume stays advisory' \
-  --author-session demo --native-session demo \
-  --context-completeness complete --json
-npx @phyzess/pappra@beta resume demo --session demo
+pappra host install --host claude
 ```
 
-The output at the top of this page is an excerpt of the last command.
+**3. Save a task, then resume it.** Once the agent is connected, ask it to save a checkpoint when
+you stop for the day. You can also run the two commands yourself in the practice folder:
 
-**3. Read the result.** You should see `Execution allowed: no` and some `Blocked:` lines.
-That is the correct result, not an error. Resume only reports the state of a task. It never
-gives an agent permission to start working, and this demo checkpoint has no decisions or next
-steps yet, so Pappra honestly says the context is incomplete. The command exits with `0`;
-only stale verification makes it exit non-zero.
+```sh
+pappra checkpoint --task demo --objective 'Try Pappra' \
+  --acceptance 'A new session can pick it up' --next-action 'Write the first test'
+pappra resume demo
+```
 
-That is the whole core idea. Everything below is optional.
+The first command writes one checkpoint under `.pappra/local/tasks/demo/checkpoints/`. The second
+prints what a new session sees, as in the output above.
 
 ## How it works
 
 <p align="center">
-  <img src="docs/assets/readme/how-it-works.svg" width="100%" alt="Optional hosts (Claude Code, Codex, Pi) call Pappra through hooks, an MCP server or the command line. Pappra reads and writes two places in your workspace: .pappra/workspace.json, which is shared and committed, and .pappra/local/, which is private and ignores itself. A resume reports state and never grants permission to execute.">
+  <img src="docs/assets/readme/how-it-works.svg" width="100%" alt="The lifecycle: session A works, then saves a checkpoint into .pappra/local/; session B, in any agent, resumes it; you and the agent then decide what to run. Pappra reports state and never starts work by itself.">
 </p>
 
-Agents talk to Pappra through hooks, an MCP server or the command line. Pappra reads and
-writes two places in your workspace: `.pappra/workspace.json` (shared, committed) and
-`.pappra/local/` (private, ignores itself). Code-engine registrations live under
-`.pappra/local/code`, never inside your checkout.
+You and your agent work in a session as usual. When you stop, ask the agent to save a checkpoint into
+`.pappra/local/`, the private part of your project folder: the objective, the decisions, what was
+tried, what is blocked and the next step. A new session, in any agent, reads that file with
+`pappra resume`, or receives it from Pappra's hook when the task is pinned with
+`pappra task pin <id> --auto-resume`. Nothing runs on its own: you and the agent read the hand-off
+and decide what to run.
 
-## What you get
+## Where to go next
 
-- **Workspace configuration:** `.pappra/workspace.json`, plus `.pappra/local/machine.json` for
-  settings that only apply to this computer.
-- **Knowledge:** a catalog of the documents agents should know about. Registering is always
-  preview-then-apply, and each document is its own file, so two people registering at once
-  do not collide.
-- **Continuity:** private checkpoints and resume reports that agents can read.
-- **Code navigation:** status, preparation and lookup for the repositories you select. Plain
-  text and structure search works with no code graph installed.
-- **Integrations, all optional:** agent hooks, agent tools over MCP, and collaboration
-  between agents.
+| I want to…                                   | Read                                                     |
+| -------------------------------------------- | -------------------------------------------------------- |
+| Run every command and flag                   | [Operations](docs/operations.md)                         |
+| Connect Claude Code, Codex or Pi, with hooks | [Quick start](docs/quickstart.md)                        |
+| Use Pappra from an agent over MCP            | [Agent-native usage](docs/agent-native.md)               |
+| Adopt an existing multi-repository workspace | [Quick start](docs/quickstart.md)                        |
+| Move the workspace to another machine        | [Portability](docs/portability.md)                       |
+| Coordinate several agents on one task        | [Collaboration workflow](docs/collaboration-workflow.md) |
+| Start a managed Pi session that Pappra owns  | [Managed Pi sessions](docs/managed-pi-session.md)        |
+| Check supported versions and limits          | [Support and limitations](docs/support.md)               |
+| Build against the API                        | [API boundaries](docs/api.md)                            |
+| Work on Pappra itself                        | [Development](docs/development.md)                       |
 
-## Next steps
+## FAQ
 
-Pick what you need. None of it is required.
+**Does Pappra start my agent or call a model?** No. It writes and reads files in your project; your
+agent is the only thing that calls a model, and you start it.
 
-- **Install it once:** `npx` downloads Pappra on each run. If you use it every day, install
-  it so the command is just `pappra`:
+**Does Pappra approve my agent's trust prompts?** No. Connecting an agent adds Pappra's skill and
+hook, and the first-run approval inside Claude Code, Codex or Pi is yours to give.
 
-  ```sh
-  npm install -g @phyzess/pappra@beta
-  ```
+**How is this different from `CLAUDE.md` or agent memory?** Those files hold standing instructions
+and say the same thing every session. A checkpoint records where one task stands, including the
+decisions and the next step, and it is written when you ask your agent to save one (it runs
+`pappra checkpoint`, as the skill teaches) or when you run that command yourself. A hook only hands
+a saved checkpoint to the next session; nothing is saved automatically.
 
-- **Let your agent use it:** `pappra mcp` gives an agent a few safe tools over stdio. For
-  Claude Code or Pi, register it with the command below; Codex uses `codex mcp add`. Tools
-  that write need trusted server startup policy, not a flag the agent passes itself. See
-  [agent-native usage](docs/agent-native.md).
+**What gets committed, and what stays on my machine?** `.pappra/workspace.json` is meant to be
+committed. `.pappra/local/` holds checkpoints and machine settings; it ignores itself and stays out
+of Git. The copy of Pappra itself lives in your user data folder, so clearing the `npx` cache cannot
+break it.
 
-  ```sh
-  pappra host mcp install --host claude --apply
-  ```
+**Do I need a code graph, or an agent, to try it?** No. Node.js and Git are enough: checkpoints and
+resumes work without an agent, and code queries fall back to text without a graph engine.
 
-- **Hooks:** `pappra host install` adds Pappra's own hook entries without taking over your
-  configuration. `pappra task pin <id> --auto-resume` lets a hook hand an agent a bounded
-  resume packet. See [host plugin validation](docs/host-plugin-validation.md).
-- **Managed sessions:** `pappra session` starts a visible Pi terminal session that Pappra
-  owns. See [managed Pi sessions](docs/managed-pi-session.md).
-- **Collaboration:** `pappra collab workflow` coordinates several agents on one task. Roles
-  grant no authority, a report is not acceptance, and a notification is not execution. See
-  [the workflow contract](docs/collaboration-workflow.md) and
-  [bounded collaboration](skills/pappra/references/collaboration.md).
-- **Come back later:** running `pappra` with no arguments inside a workspace shows the current
-  status and a short menu: resume a task, prepare the code index, scan documents, connect
-  coding agents, health check, reconfigure, exit.
+**Why does resume say execution is not allowed?** Because handing over context is not the same as
+permission to run. `Execution allowed: no` is the normal answer; you and the agent decide what
+happens next.
 
-| Capability                                            | Needs                                          | Default                                        |
-| ----------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
-| Workspace, init, doctor, checkpoint/resume, knowledge | Node.js only; Git to identify repositories     | Core, always available                         |
-| Code graph status/prepare/query                       | An optional external code-graph engine         | Off unless selected; text fallback still works |
-| Host hooks                                            | You choose Pi, Codex or Claude Code explicitly | Never installed automatically                  |
-| Collaboration controller                              | An explicit `--controller <fixture\|pi-rpc>`   | No implicit controller                         |
+## Status
 
-Naming a host or protocol here only says Pappra can integrate with it. None of them is needed
-for the core workflow above.
-
-## Documentation
-
-- [Quick start](docs/quickstart.md) and the [operations reference](docs/operations.md), which
-  explains how `init` plans and applies, how the runtime copy is managed and how to repair
-  interrupted state
-- [API boundaries](docs/api.md) and [agent-native usage](docs/agent-native.md)
-- [Support and limitations](docs/support.md), [portability](docs/portability.md) and
-  [distribution](docs/distribution-plan.md)
-- [Development](docs/development.md), for working inside this repository (`pnpm check`)
-
-## Status and limits
-
-Pappra is development software (`0.1.0-beta.22`), published as `@phyzess/pappra` under the
-`beta` dist-tag. Pin either `beta` or an exact version, because pre-release versions are never
-republished. Releases come from GitHub Actions through npm trusted publishing (OIDC); no npm
-token is stored here.
-
-The automated tests use synthetic workspaces, fixtures and local processes. They do not show
-real-model behaviour, that every host works on every platform, that a graph engine is
-complete, Windows/Linux parity or production performance. A host version listed as supported
-is an observed claim, not proof that your installation loads or runs it.
-
-Review state, with every tracked finding and its status, is in
-[review closeout](docs/review-closeout.md). What the cold-start cases actually showed is in
-[cold-start acceptance](docs/cold-start-acceptance.md).
+Pappra is beta software (`0.1.0-beta.22`), published as `@phyzess/pappra` under the `beta` dist-tag.
+Pin `beta` or an exact version, because pre-release versions are never republished. What is supported is in
+[support and limitations](docs/support.md); tracked findings in [review closeout](docs/review-closeout.md).
 
 ## License
 

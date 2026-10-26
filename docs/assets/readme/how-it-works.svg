@@ -1,54 +1,91 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
-  <title id="title">How Pappra works</title>
-  <desc id="desc">Optional coding hosts such as Claude Code, Codex and Pi call Pappra through hooks, an MCP server or the command line. Pappra reads and writes files owned by the workspace: a shared, committed workspace configuration and a private, self-ignored local state. A resume reports state and never grants permission to execute.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="560" viewBox="0 0 1200 560" role="img" aria-labelledby="title desc">
+  <title id="title">From one session to the next</title>
+  <desc id="desc">Four steps. Session A works as usual and saves a checkpoint. The task's state becomes files under .pappra/local/, where tasks/demo/ holds task-context.json, latest.json and checkpoints. A new session, in any agent, opens those files with pappra resume. You and the agent then read the hand-off and decide what to run, because a resume reports state and never grants permission to execute.</desc>
 
-  <rect width="1200" height="480" rx="24" fill="#F0F0EE"/>
+  <rect width="1200" height="560" rx="24" fill="#F0F0EE"/>
 
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
-    <text x="56" y="68" font-size="34" font-weight="800" letter-spacing="-0.6" fill="#1F1E1C">How Pappra works</text>
-    <text x="56" y="100" font-size="20" fill="#5A5957">hosts call Pappra · Pappra keeps state in two places · hollow dot = private</text>
-
-    <g font-size="16" font-weight="600" letter-spacing="1.8" fill="#727270">
-      <text x="56" y="150">HOSTS · OPTIONAL</text>
-      <text x="440" y="150">PAPPRA</text>
-      <text x="836" y="150">YOUR WORKSPACE</text>
-    </g>
-
-    <!-- hosts -->
-    <g font-size="24" font-weight="600" fill="#1F1E1C">
-      <circle cx="68" cy="190" r="9" fill="#1F1E1C"/><text x="94" y="199">Claude Code</text>
-      <circle cx="68" cy="254" r="9" fill="#1F1E1C"/><text x="94" y="263">Codex</text>
-      <circle cx="68" cy="318" r="9" fill="#1F1E1C"/><text x="94" y="327">Pi</text>
-    </g>
-
-    <!-- hub -->
-    <rect x="440" y="168" width="320" height="190" rx="24" fill="#1F1E1C"/>
-    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="22" fill="#F0F0EE">
-      <text x="472" y="212">checkpoint</text>
-      <text x="472" y="246">resume</text>
-      <text x="472" y="280">docs</text>
-      <text x="472" y="314">code</text>
-    </g>
-    <text x="472" y="344" font-size="16" font-weight="600" letter-spacing="1.4" fill="#A9A8A0">HOOKS · MCP · CLI</text>
-
-    <!-- workspace -->
-    <circle cx="848" cy="204" r="9" fill="#1F1E1C"/>
-    <text x="874" y="204" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="21" font-weight="700" fill="#1F1E1C">.pappra/workspace.json</text>
-    <text x="874" y="234" font-size="20" fill="#5A5957">shared · committed</text>
-    <circle cx="848" cy="296" r="8" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="3"/>
-    <text x="874" y="296" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="21" font-weight="700" fill="#1F1E1C">.pappra/local/</text>
-    <text x="874" y="326" font-size="20" fill="#5A5957">private · ignores itself</text>
-
-    <!-- hairlines -->
-    <g stroke="#8F8E86" stroke-width="1.5" fill="none">
-      <path d="M262 190 H440"/><path d="M262 254 H440"/><path d="M262 318 H440"/>
-      <path d="M760 204 H836"/><path d="M760 296 H836"/>
-    </g>
-
-    <!-- the one protagonist -->
-    <line x1="56" y1="392" x2="1144" y2="392" stroke="#C0BFB7" stroke-width="1.5"/>
-    <circle cx="68" cy="428" r="10" fill="#F5572F"/>
-    <text x="94" y="436" font-size="24" font-weight="700" fill="#1F1E1C">A resume reports state. It never grants permission to execute.</text>
-    <text x="1144" y="466" text-anchor="end" font-size="16" font-weight="600" letter-spacing="1.8" fill="#727270">SYSTEM MAP · HOSTS → PAPPRA → WORKSPACE FILES</text>
+    <text x="56" y="68" font-size="34" font-weight="800" letter-spacing="-0.6" fill="#1F1E1C">From one session to the next</text>
+    <text x="56" y="100" font-size="20" fill="#5A5957">A checkpoint is a file. Any agent can resume it.</text>
   </g>
+
+  <!-- sequence spine -->
+  <line x1="84" y1="160" x2="1116" y2="160" stroke="#C0BFB7" stroke-width="1.5"/>
+  <g stroke="#8F8E86" stroke-width="1.5" fill="none">
+    <path d="M314 154 L320 160 L314 166"/>
+    <path d="M594 154 L600 160 L594 166"/>
+    <path d="M874 154 L880 160 L874 166"/>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="20" font-weight="700" text-anchor="middle">
+    <circle cx="180" cy="160" r="20" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="1.5"/>
+    <circle cx="460" cy="160" r="20" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="1.5"/>
+    <circle cx="740" cy="160" r="20" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="1.5"/>
+    <circle cx="1020" cy="160" r="20" fill="#F5572F" stroke="#F5572F" stroke-width="1.5"/>
+    <g fill="#1F1E1C">
+      <text x="180" y="167">1</text>
+      <text x="460" y="167">2</text>
+      <text x="740" y="167">3</text>
+    </g>
+    <text x="1020" y="167" fill="#F0F0EE">4</text>
+  </g>
+
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" font-weight="700" letter-spacing="1.2" fill="#5A5957" text-anchor="middle">
+    <text x="180" y="204">SESSION A</text>
+    <text x="460" y="204">YOUR PROJECT</text>
+    <text x="740" y="204">SESSION B · ANY AGENT</text>
+    <text x="1020" y="204">YOU + THE AGENT</text>
+  </g>
+
+  <!-- 1 · session A -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="20" fill="#2E2D2A">
+    <text x="56" y="232">You and your agent</text>
+    <text x="56" y="260">work in a session</text>
+    <text x="56" y="288">as usual.</text>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#5A5957">
+    <text x="56" y="326"><tspan fill="#8F8E86">$</tspan> pappra checkpoint \</text>
+    <text x="56" y="348">  --task demo</text>
+  </g>
+
+  <!-- 2 · the files -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="20" fill="#2E2D2A">
+    <text x="336" y="232">The task becomes files:</text>
+  </g>
+  <rect x="336" y="280" width="248" height="160" rx="16" fill="#E7E7E3"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#5A5957">
+    <text x="348" y="304" font-weight="700" fill="#1F1E1C">.pappra/local/</text>
+    <text x="348" y="328">└ tasks/demo/</text>
+    <text x="368" y="352">├ task-context.json</text>
+    <text x="368" y="376">├ latest.json</text>
+    <text x="368" y="400">└ checkpoints/</text>
+    <text x="388" y="424">0001-….json</text>
+  </g>
+
+  <!-- 3 · session B -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="20" fill="#2E2D2A">
+    <text x="616" y="232">A new session, in any</text>
+    <text x="616" y="260">agent, opens the files:</text>
+  </g>
+  <rect x="616" y="280" width="248" height="160" rx="16" fill="#1F1E1C"/>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17">
+    <text x="632" y="350" fill="#F0F0EE"><tspan fill="#8F8E86">$</tspan> pappra resume demo</text>
+    <text x="632" y="376" fill="#A9A8A0">Context: complete</text>
+  </g>
+
+  <!-- 4 · you two decide -->
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="20" fill="#2E2D2A">
+    <text x="896" y="232">You and the agent read</text>
+    <text x="896" y="260">the hand-off and decide</text>
+    <text x="896" y="288">what to run.</text>
+  </g>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="17" fill="#5A5957">
+    <text x="896" y="326">Execution allowed: no</text>
+    <text x="896" y="348">Next: Write the first test</text>
+  </g>
+
+  <!-- the one promise -->
+  <line x1="56" y1="468" x2="1144" y2="468" stroke="#C0BFB7" stroke-width="1.5"/>
+  <circle cx="64" cy="496" r="9" fill="#F5572F"/>
+  <text x="88" y="504" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="22" font-weight="700" fill="#1F1E1C">A resume reports state. It never grants permission to execute.</text>
 </svg>
