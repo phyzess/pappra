@@ -5,6 +5,18 @@
 command-family handler, and each handler owns its own option contract and
 delegates to the existing command implementation.
 
+## Where a bare `pappra` goes
+
+The top-level entry lives in `run.ts`. When the invocation names no command, asks for no
+`--help` and no `--json`, and the run is interactive (both streams are TTYs, no
+`--no-interactive`, not `CI`), it delegates to the home command in
+`src/cli/commands/home.ts`; that command shows the guided setup or the workspace menu
+described in the [operations reference](operations.md). Without a terminal, or with `--json`
+or `--no-interactive`, a bare `pappra` prints the same usage summary and exits `0` as before,
+so scripts see no change.
+
+Everything below is specific to the `pappra collab …` family, whose routing is unchanged.
+
 ## Layout
 
 | Module | Responsibility |

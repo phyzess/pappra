@@ -25,29 +25,47 @@ mkdir pappra-demo && cd pappra-demo
 git init
 ```
 
-先**预览**配置。这一步只会打印计划，不写入任何内容，所以随时可以放心运行：
+现在不带任何参数运行 Pappra。在终端里，这会启动引导式配置：`init` 向导、一份将要写入的计划预览，
+以及一次确认。回答“是”，它就会应用这份计划。
 
 ```sh
-npx @phyzess/pappra@beta init --yes
+npx @phyzess/pappra@beta
 ```
 
-`--yes` 的意思是“根据这个文件夹里能发现的东西选择合理的默认值，不要问我问题”。计划看起来没问题后，
-加上 `--apply` 来**应用**它，然后运行 `doctor`，检查一切是否就位：
+工作区建好之后，它会逐项提供可选的后续步骤，每一步都可以跳过：
 
-```sh
-npx @phyzess/pappra@beta init --yes --apply
-npx @phyzess/pappra@beta doctor
-```
+- 为工作区里的仓库准备代码索引；
+- 登记它发现的知识文档；
+- 接入你的编码 Agent——Claude Code、Codex 或 Pi——包括 MCP 登记；
+- 运行健康检查。
+
+Pappra 不会替你回答宿主自己的信任提示：Claude Code、Codex 或 Pi 是否可以加载 Pappra 的钩子或
+MCP 服务，需要你在那个 Agent 里自己决定。
 
 刚才发生了什么：
 
 - 出现了一个 `.pappra/` 目录。`.pappra/workspace.json` 是共享设置，应当提交到 Git。
   `.pappra/local/` 只属于这台电脑，并且会自动忽略自身，所以不会进入 Git。
-- 应用时还在你的用户数据目录里安装了一份 Pappra 的副本，并记录在 `.pappra/local/machine.json`
-  中。这样即使 `npx` 清理了缓存，这套配置也能继续工作。如果暂时想跳过，可以加上 `--no-runtime`。
-- `doctor` 每项检查输出一行，例如 `[OK]` 或 `[WARNING]`。出现几条 `[WARNING]`、`[UNKNOWN]` 或
-  `[PARTIAL]`，对应的是你还没有配置的东西（宿主、代码图），这很正常。请留意 `[ERROR]`，那才是需要
-  修的。
+- 配置过程还在你的用户数据目录里安装了一份 Pappra 的副本，并记录在 `.pappra/local/machine.json`
+  中。这样即使 `npx` 清理了缓存，这套配置也能继续工作。如果你不想要这份副本，可以改用显式写法并
+  带上 `--no-runtime`：`npx @phyzess/pappra@beta init --no-runtime`，再加上 `--yes --apply`
+  就会真正写入。
+- 引导式健康检查会打印一行汇总和所有错误；`pappra doctor` 随时可以把同一批检查逐条打印出来：
+  出现几条 `[WARNING]`、`[UNKNOWN]` 或 `[PARTIAL]`，对应的是你还没有配置的东西（宿主、代码图），
+  这很正常，`[ERROR]` 才是需要修的。
+
+### 脚本与 CI
+
+显式写法从不提问，所以脚本和 CI 任务应当使用它：
+
+```sh
+npx @phyzess/pappra@beta init --yes
+npx @phyzess/pappra@beta init --yes --apply
+npx @phyzess/pappra@beta doctor
+```
+
+`--yes` 的意思是“根据这个文件夹里能发现的东西选择合理的默认值，不要问我问题”。第一条命令只打印
+计划，不写入任何内容，所以随时可以放心运行；第二条才会应用它，之后由 `doctor` 检查一切是否就位。
 
 ### 命令以数字退出时
 
@@ -150,7 +168,9 @@ MCP 是让 Agent 调用工具的一种标准方式。`pappra mcp` 会为当前�
 ## 设置新的工作区或新的机器
 
 想用一条命令代替好几个步骤？`pappra onboard` 会规划或应用整套配置：工作区配置、持久运行时，以及
-（加上 `--apply-host` 时）为已显式准入的、被观察到的宿主版本接入宿主。
+（加上 `--apply-host` 时）为已显式准入的、被观察到的宿主版本接入宿主。在终端里，不带任何标志的
+`pappra onboard` 在没有工作区时会运行引导式配置；已有工作区时则运行可选的后续步骤（代码索引、文档、
+编码 Agent、健康检查），不显示菜单。下面的标志依然有效，可供脚本使用。
 
 ```sh
 pappra onboard --dry-run --json            # 只读：范围、文件、宿主版本

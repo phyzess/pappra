@@ -39,23 +39,35 @@ You need [Node.js](https://nodejs.org/) 24 or later and Git. Check your version 
 node --version
 ```
 
-**1. Create a practice folder and set Pappra up in it.** `init` first shows a plan and
-writes nothing; the second `init` applies it. `doctor` then checks that everything is in
-place.
+**1. Create a practice folder and start Pappra in it.** In a terminal, running Pappra with no
+arguments is the whole setup: it reads the folder, asks a few questions, prints the plan it
+will write, and applies it after one confirmation. Then it offers the optional steps one at a
+time — prepare the code index, register knowledge documents, connect your coding agents
+(Claude Code, Codex, Pi, including MCP registration) and run a health check — and each one
+can be skipped.
 
 ```sh
 mkdir pappra-demo && cd pappra-demo
 git init
+npx @phyzess/pappra@beta
+```
+
+You now have a `.pappra/` folder. `.pappra/workspace.json` is shared and meant to be
+committed; `.pappra/local/` is private and ignores itself, so it never lands in Git. The
+setup also puts one copy of Pappra under your user data folder so `npx` cache cleaning cannot
+break it. You can repeat the read-only check at any time with `pappra doctor`: a few
+`[WARNING]` or `[UNKNOWN]` lines for things you have not set up, such as hosts, are normal,
+and `[ERROR]` lines are the ones to fix.
+
+Scripts and CI use explicit flags instead, which never prompt:
+
+```sh
 npx @phyzess/pappra@beta init --yes
 npx @phyzess/pappra@beta init --yes --apply
 npx @phyzess/pappra@beta doctor
 ```
 
-You now have a `.pappra/` folder. `.pappra/workspace.json` is shared and meant to be
-committed; `.pappra/local/` is private and ignores itself, so it never lands in Git. Apply
-also puts one copy of Pappra under your user data folder so `npx` cache cleaning cannot break
-the setup. `doctor` may list a few `[WARNING]` or `[UNKNOWN]` lines for things you have not
-set up, such as hosts. Look for `[ERROR]` lines; those are the ones to fix.
+`init --yes` only prints the plan and writes nothing; adding `--apply` writes it.
 
 **2. Save a checkpoint, then read it back.**
 
@@ -130,6 +142,9 @@ Pick what you need. None of it is required.
   grant no authority, a report is not acceptance, and a notification is not execution. See
   [the workflow contract](docs/collaboration-workflow.md) and
   [bounded collaboration](skills/pappra/references/collaboration.md).
+- **Come back later:** running `pappra` with no arguments inside a workspace shows the current
+  status and a short menu: resume a task, prepare the code index, scan documents, connect
+  coding agents, health check, reconfigure, exit.
 
 | Capability                                            | Needs                                          | Default                                        |
 | ----------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |

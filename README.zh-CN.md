@@ -37,21 +37,32 @@ Pappra 把这些信息从聊天里搬出来，放进你项目文件夹里的文�
 node --version
 ```
 
-**1. 新建一个练习文件夹，并在里面配置 Pappra。** 第一次 `init` 只展示计划，不会写入任何内容；
-第二次 `init` 才会真正应用。之后用 `doctor` 检查一切是否就位。
+**1. 新建一个练习文件夹，然后在里面启动 Pappra。** 在终端里不带任何参数运行 Pappra，配置就
+全部完成了：它读取这个文件夹、问几个问题、打印将要写入的计划，并在你确认一次之后应用它。之后它会
+逐项提供可选的后续步骤——准备代码索引、登记知识文档、接入你的编码 Agent（Claude Code、Codex、Pi，
+包括 MCP 登记）以及运行健康检查——每一步都可以跳过。
 
 ```sh
 mkdir pappra-demo && cd pappra-demo
 git init
+npx @phyzess/pappra@beta
+```
+
+现在你有了一个 `.pappra/` 目录。`.pappra/workspace.json` 是共享的，应当提交到 Git；
+`.pappra/local/` 是私有的，并且会自动忽略自身，所以不会进入 Git。配置过程还会在你的用户数据目录里
+放一份 Pappra 的副本，这样清理 `npx` 缓存也不会弄坏这套配置。你随时可以用 `pappra doctor`
+重新运行这项只读检查：出现几条 `[WARNING]` 或 `[UNKNOWN]`，对应的是你还没有配置的东西，比如宿主，
+这很正常；`[ERROR]` 才是需要修的。
+
+脚本和 CI 请改用显式标志，它们绝不会提问：
+
+```sh
 npx @phyzess/pappra@beta init --yes
 npx @phyzess/pappra@beta init --yes --apply
 npx @phyzess/pappra@beta doctor
 ```
 
-现在你有了一个 `.pappra/` 目录。`.pappra/workspace.json` 是共享的，应当提交到 Git；
-`.pappra/local/` 是私有的，并且会自动忽略自身，所以不会进入 Git。应用时还会在你的用户数据目录里
-放一份 Pappra 的副本，这样清理 `npx` 缓存也不会弄坏这套配置。`doctor` 可能会列出几条
-`[WARNING]` 或 `[UNKNOWN]`，对应的是你还没有配置的东西，比如宿主。请留意 `[ERROR]`，那才是需要修的。
+`init --yes` 只打印计划，不写入任何内容；加上 `--apply` 才会写入。
 
 **2. 保存一个检查点，再把它读回来。**
 
@@ -119,6 +130,8 @@ Agent 通过钩子、MCP 服务或命令行与 Pappra 交互。Pappra 读写工�
 - **协作：** `pappra collab workflow` 协调多个 Agent 共同完成一项任务。角色不授予任何权限，
   报告不等于验收，通知也不等于执行。见[工作流契约](docs/collaboration-workflow.md)和
   [有界协作](skills/pappra/references/collaboration.md)（均为英文）。
+- **再次回到工作区：** 在工作区里不带参数运行 `pappra`，会显示当前状态和一个简短菜单：恢复任务、
+  准备代码索引、扫描文档、接入编码 Agent、健康检查、重新配置、退出。
 
 | 能力                                    | 前提                                    | 默认状态                         |
 | --------------------------------------- | --------------------------------------- | -------------------------------- |

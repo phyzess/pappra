@@ -28,33 +28,53 @@ mkdir pappra-demo && cd pappra-demo
 git init
 ```
 
-First **preview** the setup. This only prints a plan and writes nothing, so it is always safe
-to run:
+Now run Pappra with no arguments. In a terminal, that starts the guided setup: the `init`
+wizard, a preview of the plan it will write, and one confirmation. Answer yes and it applies
+that plan.
 
 ```sh
-npx @phyzess/pappra@beta init --yes
+npx @phyzess/pappra@beta
 ```
 
-`--yes` means "pick sensible defaults from what you find in this folder, and don't ask me
-questions". When the plan looks right, **apply** it by adding `--apply`, then run `doctor`,
-which checks that everything is in place:
+When the workspace exists it offers the optional steps one at a time, and each one can be
+skipped:
 
-```sh
-npx @phyzess/pappra@beta init --yes --apply
-npx @phyzess/pappra@beta doctor
-```
+- prepare the code index for the workspace's repositories;
+- register the knowledge documents it found;
+- connect your coding agents — Claude Code, Codex or Pi — including MCP registration;
+- run a health check.
+
+Pappra never answers a host's own trust prompt for you: whether Claude Code, Codex or Pi may
+load Pappra's hooks or MCP server is your decision, made inside that agent.
 
 What just happened:
 
 - A `.pappra/` folder appeared. `.pappra/workspace.json` is shared settings meant to be
   committed to Git. `.pappra/local/` is private to this computer and ignores itself, so it
   never lands in Git.
-- Apply also installed one copy of Pappra under your user data folder and recorded it in
+- The setup also installed one copy of Pappra under your user data folder and recorded it in
   `.pappra/local/machine.json`. That keeps the setup working even if `npx` clears its cache.
-  Add `--no-runtime` if you want to skip this for now.
-- `doctor` prints one line per check, such as `[OK]` or `[WARNING]`. A few `[WARNING]`,
-  `[UNKNOWN]` or `[PARTIAL]` lines about things you have not set up (hosts, code graphs) are
-  normal. Look for `[ERROR]`; that is what needs fixing.
+  To skip that copy, use the explicit form with `--no-runtime`:
+  `npx @phyzess/pappra@beta init --no-runtime`, plus `--yes --apply` when you want it to
+  write.
+- The guided health check prints a summary and every error; `pappra doctor` prints the same
+  checks one line at a time whenever you want them: a few `[WARNING]`, `[UNKNOWN]` or
+  `[PARTIAL]` lines for things you have not set up (hosts, code graphs) are normal, and
+  `[ERROR]` lines are what needs fixing.
+
+### For scripts and CI
+
+The explicit form never prompts, so scripts and CI jobs should use it:
+
+```sh
+npx @phyzess/pappra@beta init --yes
+npx @phyzess/pappra@beta init --yes --apply
+npx @phyzess/pappra@beta doctor
+```
+
+`--yes` means "pick sensible defaults from what you find in this folder, and don't ask me
+questions". The first command only prints the plan and writes nothing, so it is always safe to
+run; the second applies it, and `doctor` then checks that everything is in place.
 
 ### If a command exits with a number
 
@@ -169,7 +189,10 @@ for that task. See [agent-native usage](agent-native.md) for the full tool and c
 
 Want one command instead of several steps? `pappra onboard` plans or applies the whole
 setup: workspace config, durable runtime, and (with `--apply-host`) host wiring for
-explicitly admitted observed host versions.
+explicitly admitted observed host versions. On a terminal, `pappra onboard` with no flags
+runs the guided setup when there is no workspace; in an existing workspace it runs the
+optional steps (code index, documents, coding agents, health check) and does not show the
+menu. The flags below keep working for scripts.
 
 ```sh
 pappra onboard --dry-run --json            # read-only: scope, files, host versions

@@ -1,8 +1,8 @@
 # Operations reference
 
 Detail for operating a Pappra workspace: what `init` writes and when, how the durable
-runtime copy is managed, how to repair interrupted state, and how the interactive wizard
-behaves. The [README](../README.md) keeps only the shortest path to a first run, and the
+runtime copy is managed, how to repair interrupted state, and how interactive and scripted
+use differ. The [README](../README.md) keeps only the shortest path to a first run, and the
 [quick start](quickstart.md) walks through setup; this page is the reference for the rest.
 
 ## Init and runtime semantics
@@ -87,6 +87,48 @@ including writes performed without `init`. Checkpoint payloads retain tracked di
 untracked files contribute only their path, object type and content digest; their contents
 and symlink target text are not copied into the checkpoint.
 
+## Interactive and scripted use
+
+Pappra prompts only for a person at a terminal: both stdin and stdout are TTYs, the invocation
+has no `--json` and no `--no-interactive`, and `CI` is unset or false. `init` applies the same
+rule, so a CI job that allocates a PTY does not open its wizard. `--no-interactive` is
+accepted by every command; before this change, a non-`init` command rejected it with exit `2`.
+Outside interactive mode nothing else changed: `--json` output, including the `usage` field of
+`pappra --json`, and the non-interactive usage summary are unchanged. The human `--help` text
+gained a `--no-interactive` options line and the sentence "Run pappra with no arguments on a
+terminal for guided setup or the workspace menu."
+
+A bare `pappra` uses that mode:
+
+- With no workspace in the directory it starts the guided setup: the `init` wizard, a preview
+  of the plan, one confirmation that applies it, and then the optional steps — prepare the
+  code index, register knowledge documents, connect coding agents (Claude Code, Codex, Pi,
+  including MCP registration) and a health check. Every optional step can be skipped. Trust
+  prompts inside a coding agent are still answered by the person in that agent; Pappra never
+  approves them.
+- In an existing workspace it prints a short status and a menu: resume a task, prepare the
+  code index, scan documents, connect coding agents, health check, reconfigure, exit.
+
+On a terminal, commands that change state (`docs scan`, `docs relocate`, `docs forget`,
+`code prepare`, `host install`, `host uninstall`, `host mcp install`, `repair`) print their
+plan and then ask one confirmation instead of telling you to rerun with `--apply`. Answering
+yes performs exactly the apply the flag would; declining or cancelling writes nothing.
+Destructive operations default to "no", and a prompt never adds `--force`,
+`--quarantine-unowned-locks`, `--reset-local` or `--all-writers-stopped`; pass those yourself
+when you mean them. A missing required `--repo`, `--host` or resume task id is asked with a
+picker; a single candidate is used without asking, cancelling the picker prints
+`Nothing selected; nothing was done.` and exits `0`, and no candidate prints one line and
+exits `1`. `host mcp install` asks only when it has something to write: an entry that already
+matches is reported without a question, and a conflicting entry is reported without one and
+needs an explicit `--force`.
+
+Scripts, agents and CI keep the explicit contract: `--json` never prompts, `--apply` never
+prompts, `init` takes `--yes` or `--config`, and `--no-interactive`, `CI=true` or a non-TTY
+stream turns every prompt off. `pappra onboard` with no flags on a terminal runs the guided
+setup when there is no workspace; in an existing workspace it runs the optional steps (code
+index, documents, coding agents, health check) and does not show the menu. Its flags keep
+working unchanged.
+
 ## Interactive init
 
 A TTY opens the full wizard only when selections are actually needed: a plain `init` in a
@@ -95,13 +137,21 @@ state, and `--reconfigure` opens the editor. Repository and knowledge sections p
 current choices and offer **Add existing repository…** and **Add existing knowledge file or
 folder…**; that action inspects only the workspace-relative path you type and never scans
 ancestors or the home directory. Advanced preferences are opt-in. Graph, symbol, preparation,
-validation and host declarations are recorded preferences only: `init` does not install,
-index, execute or wire them.
+validation and host declarations are recorded preferences only: a confirmed apply records
+them and does not install, index, execute or wire anything by itself.
 
 A TTY run that collected selections without `--apply` prints the plan and asks one
-confirmation when configuration writes are planned; declining exits `130` with no files
-written. `--apply` never prompts, `--config` without `--apply` stays a preview, and
-`--print-choices` writes nothing.
+confirmation when configuration writes are planned; declining prints `Nothing was applied.`
+and exits `0` with no files written. Cancelling the wizard exits `130` for `pappra init`,
+while the guided entries (bare `pappra` and a flagless `pappra onboard`) print
+`Setup cancelled.` and exit `0`. `--apply` never prompts, `--config` without `--apply` stays a
+preview, and `--print-choices` writes nothing.
+
+After a confirmed apply from a terminal, `pappra init` also offers the optional follow-up
+steps: prepare the code index, register the discovered knowledge documents, connect coding
+agents including MCP registration, and run a health check. Each step asks before it writes and
+can be skipped; `--apply`, `--yes`, `--config` and `--json` never run them. The plan says
+those steps follow instead of claiming that init will not scan or index anything.
 
 ## Development checks
 
