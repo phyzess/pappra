@@ -36,21 +36,49 @@ export interface WizardUi {
   cancel(message: string): void;
 }
 
+/**
+ * A default can stand in for an empty answer only when clack can substitute it:
+ * `finalize` assigns `value || defaultValue`, so an empty default leaves the empty value
+ * in place and the caller's validator must still judge it.
+ */
+function hasUsableTextDefault(defaultValue: string | undefined): boolean {
+  return defaultValue !== undefined && defaultValue !== '';
+}
+
+/**
+ * Builds the validator handed to clack's text prompt. Clack runs `validate` with the value
+ * seen on Enter and applies `defaultValue` only afterwards in `finalize`, so an empty value
+ * means the prefilled input has not reached the prompt yet: with a usable default that
+ * default is the answer, and the caller's validator is neither consulted nor given `''`.
+ * Every other value reaches `validate` unchanged.
+ */
+export function textPromptValidator(
+  validate: ((value: string) => string | undefined) | undefined,
+  defaultValue: string | undefined,
+): ((value: string | undefined) => string | undefined) | undefined {
+  if (validate === undefined) return undefined;
+  const acceptsEmpty = hasUsableTextDefault(defaultValue);
+  return (value) => {
+    if (value === undefined) return undefined;
+    if (value === '' && acceptsEmpty) return undefined;
+    return validate(value);
+  };
+}
+
 export const clackWizardUi: WizardUi = {
   intro: (message) => prompts.intro(message),
   outro: (message) => prompts.outro(message),
   note: (message, title) => prompts.note(message, title),
-  text: async (message, initialValue, validate) =>
-    prompts.text({
+  text: async (message, initialValue, validate) => {
+    const promptValidator = textPromptValidator(validate, initialValue);
+    return prompts.text({
       message,
-      ...(initialValue === undefined ? {} : { initialValue }),
-      ...(validate === undefined
+      ...(initialValue === undefined
         ? {}
-        : {
-            validate: (value: string | undefined) =>
-              value === undefined ? undefined : validate(value),
-          }),
-    }),
+        : { initialValue, defaultValue: initialValue }),
+      ...(promptValidator === undefined ? {} : { validate: promptValidator }),
+    });
+  },
   select: async (message, options, initialValue) =>
     prompts.select<string>({
       message,
