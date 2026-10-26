@@ -246,3 +246,78 @@ test(
     }
   },
 );
+
+function docsSourceConfig(): Record<string, unknown> {
+  return baseWorkspaceConfig({
+    knowledge: {
+      sources: ['docs'],
+      newDocuments: '.pappra/knowledge',
+      taskVisibility: 'private',
+    },
+  });
+}
+
+test('a docs source that is also a well-known root is traversed once', async () => {
+  const root = makeTempDir('discovery-docs-once');
+  try {
+    for (let index = 0; index < 5; index += 1)
+      writeText(join(root, 'docs', `note-${index}.md`), `# ${index}\n`);
+    writeWorkspaceConfig(root, docsSourceConfig());
+
+    const result = await discoverWorkspace(root, { maxEntriesPerDirectory: 3 });
+    const entryLimit = result.diagnostics.filter(
+      (entry) =>
+        entry.code === 'discovery_limit_reached' &&
+        entry.message.startsWith('Document directory has'),
+    );
+    assert.equal(entryLimit.length, 1);
+    assert.equal(result.documents.length, 3);
+  } finally {
+    cleanup(root);
+  }
+});
+
+function documentLimit(
+  result: { readonly diagnostics: readonly { readonly message: string }[] },
+  prefix: string,
+): boolean {
+  return result.diagnostics.some((entry) => entry.message.startsWith(prefix));
+}
+
+test('directories reached through two roots count once against the directory bound', async () => {
+  const root = makeTempDir('discovery-docs-directories');
+  try {
+    writeText(join(root, 'docs', 'a', 'one.md'), '# one\n');
+    writeText(join(root, 'docs', 'b', 'two.md'), '# two\n');
+    writeWorkspaceConfig(root, docsSourceConfig());
+
+    // docs, docs/a and docs/b: exactly three directories, so a bound of three loses nothing.
+    const result = await discoverWorkspace(root, { maxDirectories: 3 });
+    assert.equal(result.documents.length, 2);
+    assert(!documentLimit(result, 'Document scan stopped'));
+
+    const tight = await discoverWorkspace(root, { maxDirectories: 2 });
+    assert(documentLimit(tight, 'Document scan stopped after 2 directories'));
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('exactly maxDocuments documents is complete and reports no truncation', async () => {
+  const root = makeTempDir('discovery-docs-exact-bound');
+  try {
+    for (let index = 0; index < 4; index += 1)
+      writeText(join(root, 'docs', `note-${index}.md`), `# ${index}\n`);
+    writeWorkspaceConfig(root, docsSourceConfig());
+
+    const exact = await discoverWorkspace(root, { maxDocuments: 4 });
+    assert.equal(exact.documents.length, 4);
+    assert(!documentLimit(exact, 'Document discovery stopped'));
+
+    const short = await discoverWorkspace(root, { maxDocuments: 3 });
+    assert.equal(short.documents.length, 3);
+    assert(documentLimit(short, 'Document discovery stopped after 3 entries'));
+  } finally {
+    cleanup(root);
+  }
+});

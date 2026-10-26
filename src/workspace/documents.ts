@@ -118,6 +118,11 @@ export async function discoverDocuments(
   const excluded = config === null ? [] : normalizedExcludes(config);
   let truncated = false;
   let scannedDirectories = 0;
+  // Greatest remaining depth budget a directory was entered with, keyed by real path. The
+  // `docs` directory is both a configured knowledge source and a well-known root, so it was
+  // traversed twice: that doubled the work, duplicated limit diagnostics and counted every
+  // directory twice against `maxDirectories`.
+  const enteredDirectories = new Map<string, number>();
 
   const enclosingRepository = (path: string): DiscoveredRepository | null => {
     let match: DiscoveredRepository | null = null;
@@ -137,21 +142,14 @@ export async function discoverDocuments(
     containmentRoot: string,
     forcedKind: DocumentKind | null = null,
   ): Promise<void> => {
-    if (documents.size >= options.maxDocuments) {
-      if (!truncated) {
-        diagnostics.push(
-          createDiagnostic({
-            code: diagnosticCodes.discoveryLimitReached,
-            severity: 'warning',
-            message: `Document discovery stopped after ${options.maxDocuments} entries.`,
-            source: root,
-            hint: 'Reduce knowledge.sources or raise the bound explicitly.',
-          }),
-        );
-        truncated = true;
-      }
+    // At the bound only a genuinely new document loses coverage. Probing a path that does
+    // not exist, or one that is already counted, must not report a truncation, so the
+    // diagnostic is raised after the candidate is confirmed. Once truncated, return at once.
+    if (
+      documents.size >= options.maxDocuments &&
+      (truncated || documents.has(path))
+    )
       return;
-    }
     const observation = await observePath(path);
     if (observation.kind === 'missing' || observation.kind === 'other') return;
     if (observation.kind === 'symlink') {
@@ -200,6 +198,19 @@ export async function discoverDocuments(
       return;
     }
     if (documents.has(real)) return;
+    if (documents.size >= options.maxDocuments) {
+      diagnostics.push(
+        createDiagnostic({
+          code: diagnosticCodes.discoveryLimitReached,
+          severity: 'warning',
+          message: `Document discovery stopped after ${options.maxDocuments} entries.`,
+          source: root,
+          hint: 'Reduce knowledge.sources or raise the bound explicitly.',
+        }),
+      );
+      truncated = true;
+      return;
+    }
     const repository = enclosingRepository(real);
     documents.set(real, {
       path: real,
@@ -223,6 +234,13 @@ export async function discoverDocuments(
     const visit = async (current: string, depth: number): Promise<void> => {
       if (scannedDirectories >= options.maxDirectories) {
         if (!truncated) {
+          // A directory an earlier root already entered costs no budget and loses nothing.
+          const known = await resolveRealpath(current);
+          if (
+            known !== null &&
+            (enteredDirectories.get(known) ?? -1) >= depthLimit - depth
+          )
+            return;
           diagnostics.push(
             createDiagnostic({
               code: diagnosticCodes.discoveryLimitReached,
@@ -236,8 +254,13 @@ export async function discoverDocuments(
         }
         return;
       }
-      scannedDirectories += 1;
       const directoryReal = await resolveRealpath(current);
+      if (directoryReal !== null) {
+        const remaining = depthLimit - depth;
+        if ((enteredDirectories.get(directoryReal) ?? -1) >= remaining) return;
+        enteredDirectories.set(directoryReal, remaining);
+      }
+      scannedDirectories += 1;
       if (directoryReal === null) {
         diagnostics.push(
           createDiagnostic({
