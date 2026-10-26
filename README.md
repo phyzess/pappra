@@ -6,78 +6,58 @@
   <img src="docs/assets/readme/hero.svg" width="100%" alt="Pappra, a workspace manager for coding agents: agent work belongs in files your workspace owns, not in one chat transcript. An excerpt of real pappra resume output shows the task is current, execution is not allowed, and the blocking reasons.">
 </p>
 
-Pappra keeps what a coding agent needs to continue a task — workspace configuration,
-selected project knowledge, checkpoints, recovery context and bounded code navigation — in
-files owned by the workspace, not in one chat transcript. The hosts you opt into read and
-write the same state.
+**Pappra saves what your AI coding agent was doing as plain files inside your project, so any
+agent can pick the work back up.**
 
-Pappra is the manager. External coding hosts, code-graph engines and collaboration
-controllers are optional integrations, not installation prerequisites.
+## Why Pappra?
 
-## What you get
+You ask a coding agent (Claude Code, Codex, Pi…) to do something big. Halfway through, the
+chat gets too long, you switch tools, or you come back tomorrow, and the new session knows
+nothing. The goal, the decisions already made and the next step were all trapped in one chat.
 
-- **Workspace configuration:** `.pappra/workspace.json`, plus checkout-local
-  `.pappra/local/machine.json`.
-- **Knowledge:** workspace and private document catalogs with explicit preview and apply
-  steps; shared catalogs commit one record per file so parallel registrations do not
-  collide on a single aggregate timestamp.
-- **Continuity:** private checkpoints and bounded advisory resume packets. Resume never
-  grants execution by itself; `executionAllowed:false` with blocking reasons is a normal,
-  successful result.
-- **Code intelligence:** status, explicit preparation and bounded query for selected
-  repositories. Text and structure fallback works without a graph engine.
-- **Integrations, all optional:** host hooks, agent tools over MCP, and bounded
-  collaboration between agents.
+Pappra moves that knowledge out of the chat and into files in your project folder. Any agent
+you choose can read the same files. You don't need an agent, a model account or any extra
+service to try it: Node.js is enough.
 
-## How it works
+## Words you will see
 
-<p align="center">
-  <img src="docs/assets/readme/how-it-works.svg" width="100%" alt="Optional hosts (Claude Code, Codex, Pi) call Pappra through hooks, an MCP server or the command line. Pappra reads and writes two places in your workspace: .pappra/workspace.json, which is shared and committed, and .pappra/local/, which is private and ignores itself. A resume reports state and never grants permission to execute.">
-</p>
+| Word                | What it means here                                                                           |
+| ------------------- | -------------------------------------------------------------------------------------------- |
+| **Workspace**       | The project folder Pappra manages. Its files live in a `.pappra/` folder inside it.          |
+| **Agent / host**    | The AI coding tool (Claude Code, Codex, Pi). Pappra calls the tool a "host".                 |
+| **Checkpoint**      | A saved note about a task: the goal, how you know it is done, and what to do next.           |
+| **Resume**          | Reading a checkpoint back. It only reports; it never starts any work.                        |
+| **Knowledge**       | Project documents you choose to register, so agents can find them.                           |
+| **Code navigation** | A bounded way to look up code. It works without extra tools, and can use a code graph later. |
 
-Hosts talk to Pappra through hooks, an MCP server or the command line. Pappra reads and
-writes two places: `.pappra/workspace.json`, which is shared and committed, and
-`.pappra/local/`, which is private and ignores itself. Registrations for code engines live
-under `.pappra/local/code`, never inside a checkout.
+## Try it in 5 minutes
 
-## Quick start
-
-Requirements: Node.js 24 or later. `pnpm` 12.3.4 is required only for development inside
-this repository; Git is required only when a command observes repository identity.
-
-The package is published as `@phyzess/pappra`. Install it once for daily use
-(`npm install -g @phyzess/pappra@beta`, the command is `pappra`), or run it with `npx` when
-you want a zero-install, version-pinned invocation.
+You need [Node.js](https://nodejs.org/) 24 or later and Git. Check your version first:
 
 ```sh
-# In an empty target workspace (not this checkout)
-mkdir -p <empty-dir> && cd <empty-dir>
-curl -fsSL https://raw.githubusercontent.com/phyzess/pappra/main/examples/minimal-choices.json -o ./minimal-choices.json
-
-# Preview first. JSON/config mode is non-interactive and does not prompt.
-npx @phyzess/pappra@beta init --config ./minimal-choices.json --json
-
-# Apply the same choices. Apply also installs and binds a durable runtime copy,
-# so this converges with exit code 0; add --no-runtime to leave that work pending.
-npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
-npx @phyzess/pappra@beta doctor --json
+# Should print v24 or higher
+node --version
 ```
 
-`examples/minimal-choices.json` is complete for a host-free, no-graph, single-directory
-workspace. For a non-interactive derived setup, `npx @phyzess/pappra@beta init --yes --apply
---json` derives repositories, knowledge sources, code engine, validation commands, excludes
-and hosts from discovery. `--print-choices` prints the derived choices and writes nothing.
+**1. Create a practice folder and set Pappra up in it.** `init` first shows a plan and
+writes nothing; the second `init` applies it. `doctor` then checks that everything is in
+place.
 
-Development from a checkout works the same way: `pnpm install --frozen-lockfile`,
-`pnpm build`, then invoke `dist/cli/main.js` by absolute path from the target workspace.
+```sh
+mkdir pappra-demo && cd pappra-demo
+git init
+npx @phyzess/pappra@beta init --yes
+npx @phyzess/pappra@beta init --yes --apply
+npx @phyzess/pappra@beta doctor
+```
 
-How `init` plans and applies, how the runtime copy is managed, and how to repair interrupted
-state are in the [operations reference](docs/operations.md).
+You now have a `.pappra/` folder. `.pappra/workspace.json` is shared and meant to be
+committed; `.pappra/local/` is private and ignores itself, so it never lands in Git. Apply
+also puts one copy of Pappra under your user data folder so `npx` cache cleaning cannot break
+the setup. `doctor` may list a few `[WARNING]` or `[UNKNOWN]` lines for things you have not
+set up, such as hosts. Look for `[ERROR]` lines; those are the ones to fix.
 
-## Try a checkpoint and resume
-
-Once the target is a Git worktree, create an advisory checkpoint and read it back. The
-output at the top of this page is an excerpt of the last command.
+**2. Save a checkpoint, then read it back.**
 
 ```sh
 npx @phyzess/pappra@beta checkpoint --task demo --objective 'Try Pappra' \
@@ -87,67 +67,103 @@ npx @phyzess/pappra@beta checkpoint --task demo --objective 'Try Pappra' \
 npx @phyzess/pappra@beta resume demo --session demo
 ```
 
-A resume packet is advisory. Check `executionAllowed`: a readable checkpoint does not grant
-permission to start work, and `executionAllowed:false` with blocking reasons is a successful
-advisory result (exit `0`). Stale verification is what exits nonzero.
+The output at the top of this page is an excerpt of the last command.
 
-## Integrations
+**3. Read the result.** You should see `Execution allowed: no` and some `Blocked:` lines.
+That is the correct result, not an error. Resume only reports the state of a task. It never
+gives an agent permission to start working, and this demo checkpoint has no decisions or next
+steps yet, so Pappra honestly says the context is incomplete. The command exits with `0`;
+only stale verification makes it exit non-zero.
 
-Everything here is optional and has prerequisites rather than generated files; none is
-needed for the core workflow above.
+That is the whole core idea. Everything below is optional.
 
-- **Host integration:** `pappra host install` merges Pappra-owned hook entries without
-  taking over user configuration. Hooks ship as a dependency-free bundle; Claude Code uses
-  `${CLAUDE_PROJECT_DIR}`, Pi imports its runtime relatively, and Codex is wired user-scope
-  (`--scope user`). `host bundle --marketplace` exports registration material but does not
-  register or trust anything. See [host plugin validation](docs/host-plugin-validation.md).
-- **Agent-native tools:** `pappra mcp` serves bounded tools over stdio; write tools require
-  trusted server startup policy, not an agent-supplied flag. `pappra host mcp install`
-  registers it for Claude Code or Pi; Codex uses `codex mcp add`. `pappra task pin <id>
---auto-resume` lets hooks inject a bounded resume packet. See
+## How it works
+
+<p align="center">
+  <img src="docs/assets/readme/how-it-works.svg" width="100%" alt="Optional hosts (Claude Code, Codex, Pi) call Pappra through hooks, an MCP server or the command line. Pappra reads and writes two places in your workspace: .pappra/workspace.json, which is shared and committed, and .pappra/local/, which is private and ignores itself. A resume reports state and never grants permission to execute.">
+</p>
+
+Agents talk to Pappra through hooks, an MCP server or the command line. Pappra reads and
+writes two places in your workspace: `.pappra/workspace.json` (shared, committed) and
+`.pappra/local/` (private, ignores itself). Code-engine registrations live under
+`.pappra/local/code`, never inside your checkout.
+
+## What you get
+
+- **Workspace configuration:** `.pappra/workspace.json`, plus `.pappra/local/machine.json` for
+  settings that only apply to this computer.
+- **Knowledge:** a catalog of the documents agents should know about. Registering is always
+  preview-then-apply, and each document is its own file, so two people registering at once
+  do not collide.
+- **Continuity:** private checkpoints and resume reports that agents can read.
+- **Code navigation:** status, preparation and lookup for the repositories you select. Plain
+  text and structure search works with no code graph installed.
+- **Integrations, all optional:** agent hooks, agent tools over MCP, and collaboration
+  between agents.
+
+## Next steps
+
+Pick what you need. None of it is required.
+
+- **Install it once:** `npx` downloads Pappra on each run. If you use it every day, install
+  it so the command is just `pappra`:
+
+  ```sh
+  npm install -g @phyzess/pappra@beta
+  ```
+
+- **Let your agent use it:** `pappra mcp` gives an agent a few safe tools over stdio. For
+  Claude Code or Pi, register it with the command below; Codex uses `codex mcp add`. Tools
+  that write need trusted server startup policy, not a flag the agent passes itself. See
   [agent-native usage](docs/agent-native.md).
-- **Managed native sessions:** `pappra session plan|start|status|fence|stop --config
-<absolute-file>` starts a controller-owned visible Pi TUI. The PTY mode reports queue,
-  approval and in-flight inventory as unknown and `transferReady: false`; the opt-in SDK
-  mode pins Pi 1.4.0 and proves only disposal of its owned runtime. See
-  [managed Pi sessions](docs/managed-pi-session.md).
-- **Collaboration:** `pappra collab workflow prepare|dispatch|ack|report|accept|release`
-  composes the existing protocol for a declared cohort. Roles grant no authority, a report
-  is not acceptance, and a notification is not execution. See
+
+  ```sh
+  pappra host mcp install --host claude --apply
+  ```
+
+- **Hooks:** `pappra host install` adds Pappra's own hook entries without taking over your
+  configuration. `pappra task pin <id> --auto-resume` lets a hook hand an agent a bounded
+  resume packet. See [host plugin validation](docs/host-plugin-validation.md).
+- **Managed sessions:** `pappra session` starts a visible Pi terminal session that Pappra
+  owns. See [managed Pi sessions](docs/managed-pi-session.md).
+- **Collaboration:** `pappra collab workflow` coordinates several agents on one task. Roles
+  grant no authority, a report is not acceptance, and a notification is not execution. See
   [the workflow contract](docs/collaboration-workflow.md) and
   [bounded collaboration](skills/pappra/references/collaboration.md).
 
-| Capability                                            | Requirement                                              | Default                                         |
-| ----------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------- |
-| Workspace, init, doctor, checkpoint/resume, knowledge | Node.js only; Git for repository identity                | Core                                            |
-| Code graph status/prepare/query                       | Optional external code-graph engine                      | Disabled unless selected; text fallback remains |
-| Host hooks                                            | Explicitly selected Pi, Codex or Claude Code integration | Not installed automatically                     |
-| Collaboration controller                              | Explicit `--controller <fixture\|pi-rpc>`                | No implicit controller                          |
+| Capability                                            | Needs                                          | Default                                        |
+| ----------------------------------------------------- | ---------------------------------------------- | ---------------------------------------------- |
+| Workspace, init, doctor, checkpoint/resume, knowledge | Node.js only; Git to identify repositories     | Core, always available                         |
+| Code graph status/prepare/query                       | An optional external code-graph engine         | Off unless selected; text fallback still works |
+| Host hooks                                            | You choose Pi, Codex or Claude Code explicitly | Never installed automatically                  |
+| Collaboration controller                              | An explicit `--controller <fixture\|pi-rpc>`   | No implicit controller                         |
 
-Host names and protocol identifiers describe supported integration surfaces. They do not make
-any host, model, graph engine or private workspace a prerequisite for core use.
+Naming a host or protocol here only says Pappra can integrate with it. None of them is needed
+for the core workflow above.
 
 ## Documentation
 
-- [Quick start](docs/quickstart.md) and the [operations reference](docs/operations.md)
+- [Quick start](docs/quickstart.md) and the [operations reference](docs/operations.md), which
+  explains how `init` plans and applies, how the runtime copy is managed and how to repair
+  interrupted state
 - [API boundaries](docs/api.md) and [agent-native usage](docs/agent-native.md)
 - [Support and limitations](docs/support.md), [portability](docs/portability.md) and
   [distribution](docs/distribution-plan.md)
-- [Development](docs/development.md), which also covers `pnpm check`
+- [Development](docs/development.md), for working inside this repository (`pnpm check`)
 
 ## Status and limits
 
-Pappra is development software (`0.1.0-beta.22`). The package is `@phyzess/pappra` with the
-`beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing
-(OIDC); no npm token is stored here. Pin either the moving `beta` tag or an exact version,
-because pre-release versions are never republished.
+Pappra is development software (`0.1.0-beta.22`), published as `@phyzess/pappra` under the
+`beta` dist-tag. Pin either `beta` or an exact version, because pre-release versions are never
+republished. Releases come from GitHub Actions through npm trusted publishing (OIDC); no npm
+token is stored here.
 
-The deterministic suite covers synthetic workspaces, fixtures and local process boundaries.
-It does not establish real-model behaviour, native host callability on every platform,
-graph-engine completeness, Windows/Linux parity or production performance. A host version
-pin is an observed support claim, not proof that a particular installation loads or runs.
+The automated tests use synthetic workspaces, fixtures and local processes. They do not show
+real-model behaviour, that every host works on every platform, that a graph engine is
+complete, Windows/Linux parity or production performance. A host version listed as supported
+is an observed claim, not proof that your installation loads or runs it.
 
-Review state, with every tracked finding and its current status, is in
+Review state, with every tracked finding and its status, is in
 [review closeout](docs/review-closeout.md). What the cold-start cases actually showed is in
 [cold-start acceptance](docs/cold-start-acceptance.md).
 

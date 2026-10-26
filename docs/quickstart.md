@@ -1,37 +1,132 @@
+<p align="center">
+  <strong>English</strong> · <a href="quickstart.zh-CN.md">简体中文</a>
+</p>
+
 # Pappra quick start
 
-Pappra is a workspace-local manager. It does not require a private repository, a running
-host, a model provider, a code-graph service or a global `pappra` binary.
+This guide takes you from nothing to a working Pappra setup, step by step. No prior
+knowledge is needed. If you only want the big picture first, read the
+[README](../README.md).
 
-## Published package
+**What Pappra does:** it saves what your AI coding agent was working on (the goal, the
+decisions, the next step) as plain files inside your project, so a new chat or a different
+agent can pick the work back up.
 
-The package is published as `@phyzess/pappra`. Install it once if you use it every day
-(`npm install -g @phyzess/pappra@beta`), then the command is plain `pappra`; with mise or
-another version manager, use `npm install -g --prefix "$HOME/.local"` so the command is not
-bound to one Node version's shim. The `npx` form stays valid and pins a version without
-installing. From an empty target workspace:
+You do **not** need a coding agent, a model account, a private repository or any extra
+service to follow this page. You need:
+
+- [Node.js](https://nodejs.org/) 24 or later. Check with `node --version`.
+- Git, so Pappra can recognize your repository.
+
+## Step 1: Set Pappra up in a practice folder
+
+Make an empty folder so nothing real is touched. `npx` downloads and runs Pappra without
+installing it; `@beta` is the release channel the package is published on.
 
 ```sh
-npx @phyzess/pappra@beta init --config ./minimal-choices.json --json
-npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
-npx @phyzess/pappra@beta doctor --json
+mkdir pappra-demo && cd pappra-demo
+git init
 ```
 
-`examples/minimal-choices.json` in this repository is the selection file used above.
-For derived selections without a file:
+First **preview** the setup. This only prints a plan and writes nothing, so it is always safe
+to run:
+
+```sh
+npx @phyzess/pappra@beta init --yes
+```
+
+`--yes` means "pick sensible defaults from what you find in this folder, and don't ask me
+questions". When the plan looks right, **apply** it by adding `--apply`, then run `doctor`,
+which checks that everything is in place:
+
+```sh
+npx @phyzess/pappra@beta init --yes --apply
+npx @phyzess/pappra@beta doctor
+```
+
+What just happened:
+
+- A `.pappra/` folder appeared. `.pappra/workspace.json` is shared settings meant to be
+  committed to Git. `.pappra/local/` is private to this computer and ignores itself, so it
+  never lands in Git.
+- Apply also installed one copy of Pappra under your user data folder and recorded it in
+  `.pappra/local/machine.json`. That keeps the setup working even if `npx` clears its cache.
+  Add `--no-runtime` if you want to skip this for now.
+- `doctor` prints one line per check, such as `[OK]` or `[WARNING]`. A few `[WARNING]`,
+  `[UNKNOWN]` or `[PARTIAL]` lines about things you have not set up (hosts, code graphs) are
+  normal. Look for `[ERROR]`; that is what needs fixing.
+
+### If a command exits with a number
+
+| Exit code | Meaning                                                      |
+| --------- | ------------------------------------------------------------ |
+| `0`       | The work you asked for is done                               |
+| `1`       | A conflict, or the requested work is incomplete              |
+| `2`       | Invalid input, such as a typo in a flag                      |
+| `3`       | The environment is unavailable                               |
+
+`doctor` also exits `1` when it wants you to look at something. Read its summary line.
+
+## Step 2: Save a checkpoint and read it back
+
+A **checkpoint** is a saved note about a task. A **resume** reads it back. Resume only
+reports; it never starts any work.
+
+```sh
+npx @phyzess/pappra@beta checkpoint --task demo --objective 'Try Pappra' \
+  --acceptance 'Resume stays advisory' \
+  --author-session demo --native-session demo \
+  --context-completeness complete --json
+npx @phyzess/pappra@beta resume demo --session demo
+```
+
+You should see `Execution allowed: no` and some `Blocked:` lines. **That is the correct
+result, not an error.** A resume packet is advisory: a readable checkpoint never gives an
+agent permission to start work. This demo checkpoint also has no decisions or next steps, so
+Pappra says the context is incomplete instead of pretending otherwise. The command still
+exits `0`; only stale verification makes it exit non-zero. In machine-readable (`--json`)
+output the same information is `executionAllowed:false` with non-empty `blockingReasons`.
+
+That is the core of Pappra. Everything below is optional.
+
+## Step 3 (optional): Install it once
+
+If you use Pappra every day, install it so the command is simply `pappra`:
+
+```sh
+npm install -g @phyzess/pappra@beta
+```
+
+With mise or another version manager, use `npm install -g --prefix "$HOME/.local"` so the
+command is not bound to one Node version's shim. The `npx` form stays valid and pins a
+version without installing.
+
+## Beyond the basics
+
+Everything from here on is optional and written for when you need it. Skim the headings and
+jump to what matches your situation.
+
+## Reconfigure, manage the runtime copy, and other `init` details
+
+`init --print-choices` prints the derived choices as a document and writes nothing; with a
+file instead, use `--config`:
 
 ```sh
 npx @phyzess/pappra@beta init --print-choices        # print the derived document, write nothing
-npx @phyzess/pappra@beta init --yes --apply --json   # derive and apply without prompting
+npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
 ```
 
-`--yes` and `--print-choices` never prompt, so they work in CI. `init --json` without
-selections still exits nonzero, but it returns the discovery candidates and the suggested
-`pappra/init-choices/1` document; only a TTY without selections opens the wizard.
+`examples/minimal-choices.json` in this repository is a complete selection file for a
+host-free, no-graph, single-directory workspace. `--yes` and `--print-choices` never prompt,
+so they work in CI. `init --json` without selections still exits nonzero, but it returns the
+discovery candidates and the suggested `pappra/init-choices/1` document; only a TTY without
+selections opens the wizard.
 
 `init --apply` installs a durable runtime copy of the executing package and binds it in
 `machine.json`, which is what makes an npx/dlx bootstrap survive cache eviction. Pass
-`--no-runtime` to leave that action pending. The copy can be managed directly:
+`--no-runtime` to leave that action pending (the result is `ok:true`,
+`status:"external-actions-pending"`, exit `0`; inspect `pendingExternalActions` instead of
+treating it as corrupt configuration). The copy can be managed directly:
 
 ```sh
 npx @phyzess/pappra@beta runtime install --apply --json   # default --from self
@@ -58,25 +153,23 @@ A successful apply also reports advisory `nextActions`: `pappra code prepare --r
 --apply` when a code engine is selected, and `pappra docs scan --apply` to register documents
 that discovery already reports under the configured knowledge sources.
 
-Exit codes: `0` requested work completed (including configuration-only `--no-runtime`, which
-reports `status:"external-actions-pending"`), `1` conflict or incomplete requested work, `2`
-invalid input, `3` unavailable environment.
+## Let your agent call Pappra (MCP)
 
-## Agent-native tools
-
-`pappra mcp` starts a stdio MCP server for the current workspace. Read-only tools cover
-workspace status, resume, documents, code queries and runtime state. Write-capable tools
-require trusted server startup policy; an `apply` argument alone never grants authorization.
+MCP is a standard way for agents to call tools. `pappra mcp` starts a stdio MCP server for
+the current workspace. Read-only tools cover workspace status, resume, documents, code
+queries and runtime state. Write-capable tools require trusted server startup policy; an
+`apply` argument alone never grants authorization.
 `pappra host mcp install --host claude|pi --apply` registers it in `.mcp.json` / `.pi/mcp.json`;
 Codex uses `codex mcp add pappra -- pappra mcp`.
 
 `pappra task pin <id> --auto-resume` makes the lifecycle hook inject a bounded resume packet
 for that task. See [agent-native usage](agent-native.md) for the full tool and consent model.
 
-## New workspace or new machine
+## Set up a new workspace or a new machine
 
-`pappra onboard` plans or applies the whole setup: workspace config, durable runtime, and
-(with `--apply-host`) host wiring for explicitly admitted observed host versions.
+Want one command instead of several steps? `pappra onboard` plans or applies the whole
+setup: workspace config, durable runtime, and (with `--apply-host`) host wiring for
+explicitly admitted observed host versions.
 
 ```sh
 pappra onboard --dry-run --json            # read-only: scope, files, host versions
@@ -90,7 +183,7 @@ are skipped; install a supported version or use manual checkpoint/resume. Copyin
 another machine is covered in [portability](portability.md); `.pappra/local/` is machine-local
 and must not be copied.
 
-## Adopting an existing multi-repository workspace
+## Adopt an existing multi-repository workspace
 
 A workspace root often contains many checkouts plus vendored dependencies and worktrees.
 `init --yes` derives every discovered checkout, which is usually too broad; use an explicit
@@ -128,7 +221,9 @@ Notes:
   with a real session instead.
 - The workspace root does not have to be a Git repository; checkpoints work without it.
 
-## Development checkout
+## Work on Pappra itself (development checkout)
+
+Only needed if you are changing Pappra's own source code.
 
 The checkout and the target workspace are different directories. Build once in
 the checkout, then invoke `dist/cli/main.js` by absolute path from the target
@@ -156,7 +251,9 @@ A converged apply exits `0`. With `--no-runtime` the result is `ok:true` with
 `doctor` reports the resulting runtime conditions; `pappra runtime verify` runs
 the active check.
 
-## Optional continuity after a successful core setup
+## Checkpoint and resume, the JSON form
+
+The same flow as Step 2, as a script-friendly variant for a development checkout.
 
 Once the target is a Git worktree and the required workspace identity is
 available, create and read an advisory checkpoint:
@@ -174,7 +271,7 @@ permission to start work. `executionAllowed:false` with non-empty `blockingReaso
 successful advisory result (exit `0`), not a command failure; stale verification is what
 exits nonzero.
 
-## Optional code, host and collaboration surfaces
+## Code graphs, host hooks and collaboration
 
 These are not prerequisites for the workflow above, and no example files for
 them are generated by init.
