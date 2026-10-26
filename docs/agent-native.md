@@ -21,8 +21,8 @@ Write tools, gated by arguments:
 | --- | --- |
 | `checkpoint` | `apply: true` |
 | `docs_scan` | `apply: true` registers; omitted/`false` only plans |
-| `code_prepare` | `apply: true` mutates; omitted/`false` only plans |
-| `runtime_install` | `apply: true`; only `from: "self"`, no source/version overrides |
+| `code_prepare` | `apply: true` returns `cli_required`; omitted/`false` only plans |
+| `runtime_install` | always returns `cli_required`; only `from: "self"`, no source/version overrides |
 | `collab_prepare` | writes the prepared goal/claims from an explicit goal; generates no card |
 | `collab_start` | always returns `cli_required`; never launches from MCP |
 
@@ -53,7 +53,7 @@ declared card never authorized a launch. Callers supply actual capability eviden
 separately — observe the receiving session, derive a runtime card with
 `pappra collab capabilities derive`, check it with `pappra collab preflight`, then ask
 the user to launch through `pappra collab run --prepared <file> --capabilities <file>
---controller <controller> --confirm`. Agent-supplied `confirm:true` is not user approval;
+--controller <controller>`. Agent-supplied `confirm:true` is not user approval;
 the MCP tool cannot launch. Tarball and registry runtime installs also require the CLI.
 Declared, stale or mismatched evidence is still
 refused by admission. This is metadata support only: live controllers remain
@@ -138,7 +138,7 @@ starts a model. Other hosts probe the version against the pinned matrix.
 
 ## Version drift
 
-`pappra doctor` and `pappra onboard` compare the installed version with the pinned matrix:
-exact match → verified, same minor → unverified, different minor → unsupported with the safe
-fallback. Release evidence is recorded in `docs/host-plugin-validation.md` and
-`docs/pi-rpc.md`.
+`pappra onboard` compares the installed version with the pinned matrix: in the
+admitted observed-version set → verified, undetectable → unverified, unlisted →
+unsupported with the safe fallback. Release evidence is recorded in
+`docs/host-plugin-validation.md` and `docs/pi-rpc.md`.

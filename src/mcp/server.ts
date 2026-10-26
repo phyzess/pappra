@@ -562,7 +562,7 @@ export function createPappraMcpServer(
         ok: false,
         status: 'cli_required',
         message:
-          'MCP cannot authorize process launches. Ask the user to run pappra collab run --prepared <file> --capabilities <file> --controller <controller> --confirm in the CLI.',
+          'MCP cannot authorize process launches. Ask the user to run pappra collab run --prepared <file> --capabilities <file> --controller <controller> in the CLI.',
       })),
   );
 
