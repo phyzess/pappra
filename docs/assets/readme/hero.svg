@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">Pappra</title>
+  <desc id="desc">Pappra is a workspace manager for coding agents. Agent work belongs in files your workspace owns, not in one chat transcript. An excerpt of real pappra resume output shows the task is current, execution is not allowed, and the blocking reasons.</desc>
+
+  <rect width="1200" height="420" rx="24" fill="#F0F0EE"/>
+
+  <g id="title-block" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <rect x="57" y="49" width="410" height="34" rx="17" fill="none" stroke="#8F8E86" stroke-width="1.5" stroke-dasharray="5 4"/>
+    <text x="76" y="72" font-size="16" font-weight="600" letter-spacing="1.6" fill="#5A5957">WORKSPACE MANAGER · CODING AGENTS</text>
+    <text x="52" y="178" font-size="104" font-weight="800" letter-spacing="-3.5" fill="#1F1E1C">Pappra</text>
+    <g font-size="30" fill="#4A4946">
+      <text x="56" y="232">Agent work belongs in files</text>
+      <text x="56" y="272">your workspace owns —</text>
+      <text x="56" y="312">not in one chat transcript.</text>
+    </g>
+    <line x1="56" y1="352" x2="560" y2="352" stroke="#C0BFB7" stroke-width="1.5"/>
+    <text x="56" y="386" font-size="16" font-weight="600" letter-spacing="1.8" fill="#727270">@PHYZESS/PAPPRA · NODE 24+ · MIT</text>
+  </g>
+
+  <g id="project-proof">
+    <rect x="640" y="36" width="504" height="340" rx="24" fill="#1F1E1C"/>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="20">
+      <text x="672" y="86" fill="#F0F0EE"><tspan fill="#8F8E86">$</tspan> pappra resume demo --session demo</text>
+      <text x="672" y="120" fill="#A9A8A0">Task: demo</text>
+      <rect x="656" y="132" width="472" height="34" rx="9" fill="#2B2927"/>
+      <rect x="656" y="132" width="5" height="34" rx="2.5" fill="#F5572F"/>
+      <text x="672" y="156" font-weight="700" fill="#F5572F">Execution allowed: no</text>
+      <g fill="#A9A8A0">
+        <text x="672" y="190">Context: partial</text>
+        <text x="672" y="218">Code drift: unchanged</text>
+        <text x="672" y="246">Verification: current</text>
+        <text x="672" y="274">Objective: Try Pappra</text>
+      </g>
+      <g fill="#C0BFB7">
+        <text x="672" y="312">Blocked: live_writer_unverified: …</text>
+        <text x="672" y="340">Blocked: context_partial: …</text>
+      </g>
+      <rect x="672" y="352" width="12" height="2" fill="#F0F0EE" opacity="0"/>
+    </g>
+    <text x="1144" y="402" text-anchor="end" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="16" font-weight="600" letter-spacing="1.8" fill="#727270">EXCERPT · REAL PAPPRA RESUME OUTPUT</text>
+  </g>
+</svg>

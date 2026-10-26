@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="480" viewBox="0 0 1200 480" role="img" aria-labelledby="title desc">
+  <title id="title">How Pappra works</title>
+  <desc id="desc">Optional coding hosts such as Claude Code, Codex and Pi call Pappra through hooks, an MCP server or the command line. Pappra reads and writes files owned by the workspace: a shared, committed workspace configuration and a private, self-ignored local state. A resume reports state and never grants permission to execute.</desc>
+
+  <rect width="1200" height="480" rx="24" fill="#F0F0EE"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+    <text x="56" y="68" font-size="34" font-weight="800" letter-spacing="-0.6" fill="#1F1E1C">How Pappra works</text>
+    <text x="56" y="100" font-size="20" fill="#5A5957">hosts call Pappra · Pappra keeps state in two places · hollow dot = private</text>
+
+    <g font-size="16" font-weight="600" letter-spacing="1.8" fill="#727270">
+      <text x="56" y="150">HOSTS · OPTIONAL</text>
+      <text x="440" y="150">PAPPRA</text>
+      <text x="836" y="150">YOUR WORKSPACE</text>
+    </g>
+
+    <!-- hosts -->
+    <g font-size="24" font-weight="600" fill="#1F1E1C">
+      <circle cx="68" cy="190" r="9" fill="#1F1E1C"/><text x="94" y="199">Claude Code</text>
+      <circle cx="68" cy="254" r="9" fill="#1F1E1C"/><text x="94" y="263">Codex</text>
+      <circle cx="68" cy="318" r="9" fill="#1F1E1C"/><text x="94" y="327">Pi</text>
+    </g>
+
+    <!-- hub -->
+    <rect x="440" y="168" width="320" height="190" rx="24" fill="#1F1E1C"/>
+    <g font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="22" fill="#F0F0EE">
+      <text x="472" y="212">checkpoint</text>
+      <text x="472" y="246">resume</text>
+      <text x="472" y="280">docs</text>
+      <text x="472" y="314">code</text>
+    </g>
+    <text x="472" y="344" font-size="16" font-weight="600" letter-spacing="1.4" fill="#A9A8A0">HOOKS · MCP · CLI</text>
+
+    <!-- workspace -->
+    <circle cx="848" cy="204" r="9" fill="#1F1E1C"/>
+    <text x="874" y="204" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="21" font-weight="700" fill="#1F1E1C">.pappra/workspace.json</text>
+    <text x="874" y="234" font-size="20" fill="#5A5957">shared · committed</text>
+    <circle cx="848" cy="296" r="8" fill="#F0F0EE" stroke="#1F1E1C" stroke-width="3"/>
+    <text x="874" y="296" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="21" font-weight="700" fill="#1F1E1C">.pappra/local/</text>
+    <text x="874" y="326" font-size="20" fill="#5A5957">private · ignores itself</text>
+
+    <!-- hairlines -->
+    <g stroke="#8F8E86" stroke-width="1.5" fill="none">
+      <path d="M262 190 H440"/><path d="M262 254 H440"/><path d="M262 318 H440"/>
+      <path d="M760 204 H836"/><path d="M760 296 H836"/>
+    </g>
+
+    <!-- the one protagonist -->
+    <line x1="56" y1="392" x2="1144" y2="392" stroke="#C0BFB7" stroke-width="1.5"/>
+    <circle cx="68" cy="428" r="10" fill="#F5572F"/>
+    <text x="94" y="436" font-size="24" font-weight="700" fill="#1F1E1C">A resume reports state. It never grants permission to execute.</text>
+    <text x="1144" y="466" text-anchor="end" font-size="16" font-weight="600" letter-spacing="1.8" fill="#727270">SYSTEM MAP · HOSTS → PAPPRA → WORKSPACE FILES</text>
+  </g>
+</svg>
