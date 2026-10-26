@@ -55,6 +55,12 @@ fields are refused rather than ignored.
   attempt, the report message id being decided and a reason. It deliberately
   carries no plan or node id: both are resolved from the sealed work plan.
 
+A `bindings` entry may also name the coordinator. The sealed binding then holds
+exactly one coordinator entry (never a second one when the coordinator is also a
+declared participant). Without it dispatch refuses every ASSIGN with
+`binding_sender_missing`, because the notifier requires the sender to be described
+by the binding.
+
 A minimal prepare request with placeholders only — no real identity, path or
 observed evidence is implied:
 
@@ -180,7 +186,10 @@ is refused, never truncated. Derived `.git/index` and `.git/HEAD` resources stay
 claim-only and are not part of the sealed declaration.
 
 Reviewer assignments are sealed but neither registered nor claimed: their ASSIGN
-and read claims stay deferred until accepted writers release.
+and read claims stay deferred until accepted writers release. A reviewer cannot
+declare a `write` resource: deferred assignments are sealed without real resource
+epochs, so such a request is refused at plan time. Use a writer-role assignment
+when the assignee must write a review file.
 
 ## What apply validates first
 
@@ -218,6 +227,25 @@ Each attempt gets one durable intent under `workflow/intents/`. A second dispatc
 sees the intent and reports `dispatch_already_attempted`; a possibly delivered
 notification is never replayed. Delivery status is reported as recorded, and
 never implies consumption, execution or acceptance.
+
+A refusal that is provably pre-effect also records a typed
+`dispatch-<subtask>-<attempt>.outcome.json` with `effect: "none"` beside the
+intent. Provably pre-effect means a binding or message validation failure such as
+`binding_sender_missing`, an unavailable Herdr caller or agent list before any
+delivery reservation, a final-authority refusal, or a recognized refusal such as
+`agent_not_found`; an absent effect signal always counts as possible. After the
+cause is corrected, a later dispatch of the same attempt may proceed and reports
+the earlier refusal as a warning. The intent is never deleted and keeps its
+original evidence fields (card source, digest, state, timestamp); the attempt
+identity must still match. An unknown, ambiguous, submitted, post-reservation,
+missing, corrupt or self-contradictory outcome keeps `dispatch_already_attempted`.
+
+A Pi capability card is derived from a settled saved-session snapshot. While the
+assignee is mid-turn, for example already working on another assignment,
+derivation can be unavailable (`capability_derivation_unavailable`); dispatch once
+it is idle. Observations are accepted for at most 30 minutes, so an idle assignee
+needs fresh native evidence, such as one more settled turn, before a later
+dispatch.
 
 `activate_deferred` registers and claims sealed reviewer assignments only after
 the sealed work plan evaluates every other node as `accepted`, re-derived from

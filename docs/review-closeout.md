@@ -4,7 +4,7 @@ This page is the maintained public record of the two review rounds that produced
 the beta.20 hardening work. It replaces the earlier private process logs.
 Each identifier is stable: it names one original finding, not a ticket to close.
 
-**84 identifiers: Limitation: 17 · Needs verification: 5 · Implemented: 61 · Superseded by user decision: 1.**
+**84 identifiers: Limitation: 21 · Needs verification: 0 · Implemented: 62 · Superseded by user decision: 1.**
 
 A status describes what the current source shows, not what a test run proved:
 
@@ -61,9 +61,9 @@ boundaries. No entry infers a native host load or provider result.
 
 **R1-11 — Implemented.** Runtime removal inspects cross-workspace references and fails closed unless unknown coverage is explicitly accepted (src/install/runtime.ts:1488-1495, :1626-1631).
 
-**R1-12 — Needs verification.** Private state is self-ignoring, and a stale plan is an identity check between plan and apply, not a proven copy detector. Reset-local supplies an explicit archival exit; old-beta migration stays excluded by user decision.
+**R1-12 — Limitation.** Private state is self-ignoring, and a stale plan is an identity check between plan and apply, not a copy detector. Reset-local supplies an explicit archival exit; old-beta migration stays excluded by user decision. A beta.21 observation with the real CLI copied and moved a workspace together with its private state: doctor reports `machine_workspace_mismatch` for both (src/workspace/config.ts:93-108), resume reports the code checkout as relocated, code state fails closed with `registration_identity_changed` (src/code/service.ts:191-216), and collaboration task records refuse identity guessing. A reviewed docs plan still applies across roots because only its byte digest is pinned. Two limits remain: a copied collab binding pointer stays usable against the source record, and `binding-malformed` after a move names no relocation cause.
 
-  - Nested concerns: sub: generated private ignore rule implemented; sub: migration superseded by user decision; sub: copy behaviour still unproven.
+  - Nested concerns: sub: generated private ignore rule implemented; sub: migration superseded by user decision; sub: copy and move detected on machine, resume and code axes, observed once on macOS APFS; sub: copied binding pointer silently targets the source record; sub: binding-malformed after a move carries no relocation hint.
 
 **R1-13 — Implemented.** Replacement writes use the managed apply journal and report a locked status (src/app/init.ts:2933-2946).
 
@@ -151,13 +151,15 @@ boundaries. No entry infers a native host load or provider result.
 
   - Nested concerns: sub: no terminal noop success; sub: short retry window no longer decides give-up.
 
-**R2-10 — Needs verification.** A pre-existing dispatch intent still maps to reconciliation-required (src/app/collab-work-execution.ts:909-914); whether a no-effect refusal releases the node needs a flow observation.
+**R2-10 — Limitation.** A pre-existing dispatch intent maps to reconciliation-required (src/app/collab-work-execution.ts:909-914). A beta.21 fixture observation with the real `collab work-run --apply` confirmed that this refusal changes nothing: the attempt stays assigned, its write claim stays active and every file in the isolated domain is byte-identical. That hold is the documented unknown-effect fence (docs/collaboration-work-execution.md), not a defect. The gap was guidance: the node reported `next_action: null`; it now carries the documented reconciliation steps without any state change. `workflow dispatch` had a related gap: a refusal that provably happened before any delivery (for example `binding_sender_missing`) permanently consumed the attempt. It now records a typed `effect: "none"` outcome beside the intent and permits a retry after correction, while unknown, submitted, post-reservation, missing, corrupt or self-contradictory outcomes stay fenced. The work-run engine itself keeps its fence; it has no no-effect retry path.
+
+  - Nested concerns: sub: work-run reconciliation hold is intentional and now explains the recovery flow; sub: workflow dispatch retries only from a validated provably no-effect outcome; sub: work-run has no automatic release for a no-effect refusal.
 
 **R2-11 — Limitation.** The state table forbids assigned->unknown and every set is validated; the launcher still appends a same-state X->X transition event (src/collab/lifecycle.ts:45-53, :145; src/collab/admission.ts:903-913).
 
-**R2-12 — Needs verification.** Retirement reads the transcript at 64 MiB and continuity retains 8 MiB bounds; the cited fixed 45s successor wait no longer exists as a constant. Freeze ordering needs a transition observation.
+**R2-12 — Implemented.** Retirement reads the transcript at 64 MiB and continuity artifacts are captured and verified at 8 MiB; the cited fixed 45s successor wait no longer exists as a constant. A beta.21 fixture observation ran the real transition orchestration: the source is frozen before successor bootstrap (src/app/collab-session-transition.ts:659-684), an outcome lost after admission returns `bootstrap_outcome_unknown` with the source freeze and claims retained, and resumption is idempotent. A transcript of exactly 64 MiB is retained and archived, one byte more is refused before the runtime is stopped; an 8 MiB artifact is accepted, one byte more is refused or marked unreadable with unknown integrity. This is orchestration and byte-bound evidence, not live Pi quiescence or external-writer exclusion.
 
-  - Nested concerns: sub: SDK-check/freeze ordering unproven; sub: transcript bound aligned.
+  - Nested concerns: sub: freeze ordering observed in fixtures only; sub: transcript and artifact bounds observed at the boundary.
 
 ## 宿主集成
 
@@ -199,9 +201,9 @@ boundaries. No entry infers a native host load or provider result.
 
 **R2-25 — Implemented.** resume exits 0 with executionAllowed false and advisory blocking reasons; only stale verification exits nonzero (tests/continuity/cli.test.ts:188-197, :225).
 
-**R2-26 — Needs verification.** Entry and depth limits now emit explicit diagnostics (src/workspace/documents.ts:298-311, :340-349); the per-document scan cost was not re-measured.
+**R2-26 — Limitation.** Entry and depth limits emit explicit diagnostics (src/workspace/documents.ts:298-311, :340-349). A beta.21 measurement ran 48 fresh-state `docs scan` runs over eight synthetic tree shapes in repo-less workspaces: discovery cost is linear at about 0.13 ms and 4-6 KB of resident memory per document on top of a fixed 0.3 s start, and each run registers at most 300 documents (src/knowledge/scan.ts:161), so large trees converge over repeated applies. Defaults are depth 64 and 10,000 documents, directories and entries per directory. Two boundary limits remain: a `docs` source is traversed twice per scan (src/workspace/documents.ts:501), duplicating limit diagnostics, and at exactly 10,000 documents the second traversal reports "scan coverage is incomplete" although no coverage was lost. Workspaces with git repositories, where the ignore filter also runs, were not measured.
 
-  - Nested concerns: sub: cap accounting not re-derived; sub: depth limit reported, not silent.
+  - Nested concerns: sub: cap accounting derived from source and measured; sub: depth limit reported, not silent; sub: double traversal duplicates diagnostics; sub: false incomplete-coverage report at exactly 10,000 documents.
 
 **R2-27 — Implemented.** Private locks resolve owner identity, treat PID-only locks as unknown and reclaim only proven death (src/infra/private-lock.ts:55-66, :95-117, :142-150).
 
@@ -265,7 +267,7 @@ boundaries. No entry infers a native host load or provider result.
 
 **R2-49 — Implemented.** Dependency materialization hoists and reuses exact resolved copies while retaining necessary version-conflict nesting (src/install/dependencies.ts). The frozen published beta.20 closure measured 101 copied placements, 66 reused slots, 3,687 files and 17,459,066 logical bytes, with a maximum of two node_modules segments. These measure existing beta.20 behavior, not beta.21 savings or total runtime size. The historical 76 MB/depth-14 tree was not reconstructed. See the [measured development decisions](distribution-plan.md#measured-beta21-development-decisions) for the rejected copy optimization and isolation checks.
 
-**R2-50 — Needs verification.** No NFD normalization exists in src; Linux lookup behaviour needs reproduction.
+**R2-50 — Limitation.** No Unicode normalization exists in src; every path join, catalog key, comparison and digest is byte-level (src/schemas/paths.ts:18-28, src/knowledge/catalog.ts:80-84). A beta.21 observation reproduced Linux lookup in a container on a normalization-preserving filesystem: NFC and NFD names are two distinct files and register as two documents, a cross-form reference is rejected by the content-digest check (src/knowledge/relocate.ts:121-125) or fails with a clean missing-file error, and a rescan is stable. On macOS APFS the filesystem folds lookups and a diverging catalog form self-heals on the next scan with the same document id. The two forms being separate identities on Linux is by design and carries no warning.
 
 **R2-51 — Implemented.** The dependency-direction rule covers core layers including continuity importing collab (scripts/check-source-policy.ts:22-40).
 
@@ -308,13 +310,35 @@ These came from beta.20 dogfooding and do not add identifiers to the original
   Retry requires an unconsumed assignment with no possible native delivery;
   unknown or submitted delivery remains a no-replay boundary.
 
+## Beta.21 observation follow-ups
+
+These came from the beta.21 verification of the five open identifiers, ran through
+visible Pappra collaboration with independent review, and do not add identifiers:
+
+- `workflow prepare` accepted bindings only for declared participants, so a coordinator
+  that was not also a participant had no binding entry and every dispatch was refused
+  with `binding_sender_missing`. A binding may now name the coordinator and the sealed
+  binding holds exactly one entry; requests that do not bind it are byte-identical.
+- A reviewer assignment declaring a write resource could never be activated. It is now
+  refused at plan time with guidance to use a writer-role assignment for a review file.
+- A dispatch refused before any delivery permanently consumed its attempt. Provably
+  no-effect refusals now allow a retry from a validated outcome record. Independent
+  review reproduced one fail-open (a self-contradictory `effect: none` plus `submitted`
+  outcome was accepted); it is now rejected and covered by a regression test that was
+  confirmed to fail without the guard. The targeted set passed 97 checks in a private
+  build; no live Herdr delivery was exercised.
+- Two behaviours stay intentional and are now documented: a Pi capability card needs a
+  settled session snapshot, and an observation is accepted for at most 30 minutes.
+
 ## What this ledger does not claim
 
 - Targeted verification used a private TypeScript emit and 47 existing checks, plus four
   synthetic packaged-hook invocations; it ran no full suite or model.
 - A status of Implemented means the reviewed code path changed; it does not mean every
   platform, host version or provider path was exercised.
-- Needs verification entries are tracked follow-ups, not silent passes. Each one names the
-  observation that would settle it.
+- No identifier is open for verification after the beta.21 observations. Each entry
+  names the observation that settled it and the boundary it did not cover: fixtures
+  rather than a live Pi process for R2-12, repo-less workspaces for R2-26, a container
+  filesystem rather than raw ext4 for R2-50, and one macOS APFS machine for R1-12.
 - Older beta state is not migrated. Archival reset is the supported exit, and no
   compatibility promise covers earlier beta builds.
