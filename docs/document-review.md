@@ -17,8 +17,8 @@ Applying a review changes exactly two fields of one record:
 `location`, `kind`, `maturity`, `owner`, `taskId`, `lifecycle`, `visibility`,
 `sources`, `supersededBy`, the schema and every other registration are
 preserved. The update runs through the existing knowledge lock, journal and
-catalog writer, so interrupted writes remain recoverable and are never applied
-partially.
+catalog writer. Interrupted writes remain recoverable; a failure after the
+catalog commit is reported as `partial`.
 
 ## Plan, then apply
 
@@ -85,8 +85,7 @@ before reviewing either record.
 - bytes that changed after the plan, and a pinned digest that does not match the
   current bytes (`document_proposal_stale`, `document_file_changed`);
 - a missing file, a symlink, a directory, a FIFO or any other non-regular file;
-- paths that escape the workspace/repository root, a nested workspace, or a
-  read-only external checkout;
+- paths that escape the workspace/repository root or a nested workspace;
 - an ambiguous scope, a scope mismatch, or a `documentId` present in both
   catalogs;
 - concurrent drift — another operation that changed the record, its metadata,

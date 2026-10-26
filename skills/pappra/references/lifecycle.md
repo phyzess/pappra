@@ -11,6 +11,9 @@ Pappra distinguishes four local lifecycle intents:
 | `compact`            | `session_before_compact`     | unsupported in observed 0.163.0 hook keys  | `PostCompact`                              |
 | `checkpoint-request` | explicit Pappra command/hook | unsupported automatic event                | unsupported automatic event                |
 
+`SessionStart` with no `source` or with source `clear` also maps to `startup`; source
+`compact` maps to `resume`.
+
 The matrix is version-specific. A host version outside the observed support
 range is `unsupported`/`unknown`, not a fallback to name similarity.
 

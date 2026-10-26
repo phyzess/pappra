@@ -73,7 +73,7 @@ A global install and an `npx` invocation are not equivalent:
 
 - `npx` materialises the package in a disposable cache directory. Anything long-lived
   (host hooks, service shims) must not point into that cache.
-- `init --apply` and `onboard --apply` install and bind a durable runtime copy under the
+- `init --apply` and `onboard --yes` install and bind a durable runtime copy under the
   Pappra data directory, which is what makes an `npx` bootstrap survive cache eviction.
 - A checkout run uses the checkout's own build. It does not need a runtime copy, and it
   does not prove the published package behaves the same way.

@@ -26,7 +26,7 @@
   `knowledge.sources` are existing documents registered later by
   `docs scan --apply`, while `knowledge.newDocuments` is only the destination
   for future authored documents and is not created by init.
-- `pappra runtime <install|status|verify|remove>` manages the durable runtime
+- `pappra runtime <install|status|verify|remove|gc|archive>` manages the durable runtime
   copy. `install --apply` defaults to `--from self`; writes require `--apply`.
 - `pappra repair` previews interrupted install journals; `--apply` explicitly recovers
   proven workspace effects or a selected `--runtime-version`. Live/unknown owners and
@@ -35,11 +35,11 @@
   state. `runtime verify` is the active runtime check.
 - `pappra checkpoint` writes a task checkpoint; `pappra resume` reads a stored
   snapshot and reports whether execution is allowed.
-- `pappra docs <list|check|archive|scan>` manages the knowledge catalog.
+- `pappra docs <list|check|review|archive|scan|relocate|forget>` manages the knowledge catalog.
   `scan --apply` registers documents found under the configured sources.
 - `pappra code` operates on an explicitly selected repository and keeps index
   mutations behind an explicit `--apply`.
-- `pappra host <detect|describe|plan|install|verify|bundle>` wires an optional
+- `pappra host <detect|describe|probe|plan|install|uninstall|verify|bundle|mcp>` wires an optional
   host. Codex 0.163.0 loads hooks only from `$CODEX_HOME/hooks.json`, so use
   `install --host codex --scope user`; `bundle --marketplace` exports a plugin
   directory without registering it, and `install --mode plugin` fails closed.
@@ -51,8 +51,9 @@
   Preparation maps `pi`/`codex`/`claude` to `pi-cli`/`codex-exec`/`claude-cli`;
   real controllers remain `fixture|pi-rpc` with `pi-rpc` only for Pi. `collab_start`
   returns `cli_required` and never launches, even with `confirm:true`. The user must
-  launch through the CLI with runtime evidence. MCP `runtime_install` only copies the
-  running package; tarball and registry sources require the CLI.
+  launch through the CLI with runtime evidence. MCP `runtime_install` only returns CLI
+  guidance and never installs or executes package code; tarball and registry sources
+  require the CLI.
 - `pappra collab message <send|list|read|notify> --task-root <dir>` persists
   protocol messages, reads them back, and sends one explicit pointer-only Herdr
   notification. `send` and `notify` are plan-only without `--apply`; notification

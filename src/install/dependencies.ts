@@ -211,9 +211,9 @@ function isPayloadPath(sourceRoot: string, candidate: string): boolean {
 }
 
 /**
- * Copies a regular package payload without nested dependency trees. Published
- * runtime manifests forbid links, so reject them before publication rather than
- * copying a store/absolute target or silently producing an unusable runtime.
+ * Copies a regular package payload without nested dependency trees. Reject links
+ * before publication rather than copying a store/absolute target or silently
+ * producing an unusable runtime.
  */
 async function copyPackagePayload(
   sourceRoot: string,

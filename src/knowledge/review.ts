@@ -249,7 +249,7 @@ type ReviewedBytesOutcome =
 /**
  * Re-reads the registered path and requires the exact reviewed bytes. It runs
  * for every apply, including a repeated plan whose effect is already present,
- * so a removed, replaced, symlinked or edited file never reports success.
+ * so a removed, symlinked or digest-mismatched file never reports success.
  */
 async function verifyReviewedBytes(
   context: KnowledgeContext,

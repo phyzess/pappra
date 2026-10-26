@@ -36,9 +36,10 @@ views report a redacted conflict; `--include-private` exposes details explicitly
 Archiving preserves history but releases the location for an explicit new
 registration. Scanning does not automatically recreate an archived registration.
 
-`docs scan --apply` acquires one lock and loads one context/catalog snapshot per
-batch. Up to 300 **new** documents are registered at a time; existing records do
-not consume that budget. Rerun after a partial batch to reach later candidates.
+`docs scan --apply` acquires one lock per batch and revalidates with a fresh
+context/catalog snapshot under that lock. Up to 300 **new** documents are
+registered at a time; existing records do not consume that budget. Rerun after a
+partial batch to reach later candidates.
 Configured directories are traversed to a bounded depth of 64; directory, entry,
 depth and candidate limits report incomplete coverage instead of silent success.
 Batch journals record preparation, completion or failure. An interrupted shared

@@ -156,7 +156,8 @@ extension. Review and install it explicitly.
   imported owners require an explicit stop-all-writers assertion, and the evidence is quarantined
   with a receipt rather than deleted.
 - Copied or moved project hooks with relative expressions can be verified and reinstalled after
-  the move; a manifest pinned to an absolute expression needs `--migrate`.
+  the move; a non-Pi manifest pinned to an absolute expression is rejected when the selected
+  target identity differs. The CLI has no `--migrate` option.
 - `doctor` reports host wiring, bundle presence and locks, and still reports native
   trust/reload/callability as unverified.
 - No hook-trust bypass flag is used in any recorded acceptance, and none should be added to a
