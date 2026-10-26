@@ -11,14 +11,14 @@ current CLI and release workflow.
 | package | `@phyzess/pappra` |
 | binary | `pappra` |
 | Node floor | `>=24` |
-| release tags | `beta` (moving) and exact versions such as `0.1.0-beta.22` |
+| release tags | `beta` (moving) and exact versions such as `0.1.0-beta.23` |
 | registry | public npm, via GitHub Actions trusted publishing (OIDC) |
 
 Pre-release versions are never republished. Pin either `@beta` or an exact version.
 The repository stores no npm token; the publish job exchanges a short-lived OIDC
 identity for publish rights.
 
-This checkout is beta.22. A version bump in source is not a publication: verify
+This checkout is beta.23. A version bump in source is not a publication: verify
 the registry version and the trusted publishing workflow separately. The frozen
 beta.20 public tarball used for the measurements below was checked against the
 reviewed candidate, including every shipped file, after trusted publication.

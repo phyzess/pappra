@@ -156,7 +156,7 @@ Claude Code、Codex 或 Pi 里的首次确认由你完成。
 
 ## 状态
 
-Pappra 是 beta 软件（`0.1.0-beta.22`），以 `@phyzess/pappra` 发布，使用 `beta` dist-tag。请固定到
+Pappra 是 beta 软件（`0.1.0-beta.23`），以 `@phyzess/pappra` 发布，使用 `beta` dist-tag。请固定到
 `beta` 或某个确切版本，因为预发布版本绝不会被重新发布。哪些是受支持的、测试没有证明什么，见
 [支持范围与限制](docs/support.md)；已记录的发现见[评审收尾](docs/review-closeout.md)。
 
