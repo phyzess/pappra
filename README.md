@@ -1,4 +1,8 @@
 <p align="center">
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+</p>
+
+<p align="center">
   <img src="docs/assets/readme/hero.svg" width="100%" alt="Pappra, a workspace manager for coding agents: agent work belongs in files your workspace owns, not in one chat transcript. An excerpt of real pappra resume output shows the task is current, execution is not allowed, and the blocking reasons.">
 </p>
 
