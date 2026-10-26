@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  writeFileSync,
+} from 'node:fs';
+import { delimiter, join } from 'node:path';
 import test from 'node:test';
 import { CheckpointService } from '../../src/continuity/index.js';
 import type { CliOutput } from '../../src/cli/output.js';
@@ -324,11 +330,53 @@ test('code reports a workspace without repositories and exits 1', async () => {
   }
 });
 
+interface FakeCodeGraphEngine {
+  /** Restores the PATH this fixture replaced; always call it from a finally block. */
+  readonly restorePath: () => void;
+}
+
+/**
+ * Puts a deterministic `codegraph` first on PATH. The indexing confirmation is
+ * only asked for a plan that mutates, which needs an observable engine that
+ * reports no index yet; a machine without CodeGraph installed would otherwise
+ * plan nothing and ask nothing.
+ */
+function fakeCodeGraphOnPath(root: string): FakeCodeGraphEngine {
+  const bin = join(root, 'fake-codegraph-bin');
+  mkdirSync(bin, { recursive: true });
+  const executable = join(bin, 'codegraph');
+  writeFileSync(
+    executable,
+    `#!/usr/bin/env node
+const command = process.argv[2];
+if (command === '--version') {
+  process.stdout.write('1.4.1\\n');
+} else if (command === 'status') {
+  process.stdout.write(
+    JSON.stringify({ initialized: false, version: '1.4.1' }),
+  );
+} else {
+  process.exit(2);
+}
+`,
+  );
+  chmodSync(executable, 0o755);
+  const previous = process.env['PATH'];
+  process.env['PATH'] = `${bin}${delimiter}${previous ?? ''}`;
+  return {
+    restorePath: () => {
+      if (previous === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = previous;
+    },
+  };
+}
+
 test('code prepare asks before indexing and applies nothing on no', async () => {
   const root = makeWorkspace('interactive-code-prepare', {
     repositories: [{ id: 'app', path: '.', access: 'write' }],
     code: { graph: 'codegraph', symbols: 'none', prepare: 'on-demand' },
   });
+  const engine = fakeCodeGraphOnPath(root);
   try {
     createRepository(root);
     const captured = capture();
@@ -346,6 +394,7 @@ test('code prepare asks before indexing and applies nothing on no', async () => 
     assert.match(captured.read().stdout, /Nothing was applied\.\n/);
     assert.equal(existsSync(join(root, '.codegraph')), false);
   } finally {
+    engine.restorePath();
     cleanup(root);
   }
 });

@@ -100,6 +100,7 @@ if child == 0:
         fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack('HHHH', config['rows'], config['columns'], 0, 0))
         os.chdir(config['cwd'])
         child_env = os.environ.copy()
+        child_env.pop('CI', None)
         child_env.pop('PAPPRA_TTY_EVIDENCE_DIR', None)
         child_env.update(config['env'])
         os.execvpe(config['command'][0], config['command'], child_env)
@@ -180,6 +181,18 @@ const ptySkip =
     ? 'POSIX Python PTY facilities are unavailable on this platform.'
     : false;
 
+/**
+ * Environment for the PTY driver process. These scenarios assert wizard
+ * behaviour, so the driver must not inherit a CI marker that makes Pappra turn
+ * prompts off; a scenario that wants CI behaviour can still pass it explicitly
+ * through its step environment.
+ */
+function ptyDriverEnvironment(): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env };
+  delete environment['CI'];
+  return environment;
+}
+
 function runRealTty(
   workspace: string,
   dataHome: string,
@@ -211,6 +224,7 @@ function runRealTty(
     ],
     {
       cwd: workspace,
+      env: ptyDriverEnvironment(),
       encoding: 'utf8',
       shell: false,
       timeout: 120_000,
