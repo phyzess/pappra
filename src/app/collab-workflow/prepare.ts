@@ -112,7 +112,7 @@ function bindingFor(
 }
 
 /**
- * Derive the whole cohort without touching the filesystem.
+ * Derive the whole cohort without writing to the filesystem.
  *
  * `attempt` is derived (always 1 for a fresh cohort): the request declares subtasks, never
  * attempts, so an attempt number can only come from the record.
@@ -526,12 +526,11 @@ export function planPrepare(
 }
 
 /**
- * One canonical digest for a sealed assignment.
+ * Declaration and wire digests for a sealed assignment.
  *
  * `resource_epoch` is real claim state stamped at seal time, so it cannot be known during a
- * read-only plan. Digests therefore cover the declared document and ignore the stamped
- * epoch, and every comparison normalises the same way: plan vs sealed, manifest, ASSIGN
- * message and activation all agree without inventing an epoch.
+ * read-only plan. The declaration digest ignores it for plan/sealed/rerun identity; the
+ * separate wire pin covers the exact sealed bytes for the manifest, ASSIGN and admission.
  */
 export function normalizeAssignmentDocument(value: unknown): unknown {
   const document = value as { resources?: unknown };

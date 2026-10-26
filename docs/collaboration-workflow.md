@@ -46,7 +46,7 @@ fields are refused rather than ignored.
   filter, `activate_deferred` and a `max_age_minutes` bound that may only tighten
   the shared 30-minute default. A target is either an explicit
   `capabilities_file` or `template_file` plus the observed native source
-  (`session_file` for pi, `events_file` for codex), which is derived into a
+  (`session_file` for pi, or `events_file` plus `execution_file` for codex or claude), which is derived into a
   fresh card at dispatch time.
 - `pappra/collab-workflow-participant-request/1` — action (`ack`, `report`,
   `release`), caller, subtask, attempt and either a report declaration or a
@@ -132,7 +132,7 @@ with the identities and paths of your own cohort.
   assignment input.
 - `workflow/work-plan.json` — the sealed `pappra/collab-work-plan/1` projection
   derived from the assignments. It is the only source of node identity,
-  dependencies and acceptance.
+  dependencies used for acceptance evaluation.
 - `workflow/assignments/<subtask>.json` — the sealed
   `harness-collab/assignment/1` document, created once with `wx`. Resources carry
   the `resource_epoch` actually held by the claim. A rerun whose derived
@@ -275,7 +275,7 @@ coordinator, refuses the assignee (self-review), refuses a stale owner epoch and
 refuses any report that is not `completed`.
 
 Acceptance first resolves the node from the sealed plan and refuses an unknown
-node, a stale plan epoch or a report that is not the completed applied result.
+node, a stale plan epoch or a report whose body status is not `completed`; the work-plan evaluator separately requires the completed applied result.
 The emitted `ANSWER` envelope then carries exactly what the work-plan evaluator
 re-derives: the plan's `plan_id` and node's `node_id` (never caller-supplied),
 `assignment_id`, `attempt`, `input_revision`, the digest of the accepted report

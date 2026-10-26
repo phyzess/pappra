@@ -41,7 +41,7 @@ const result = await executeRecovery(
   exclusively (`O_EXCL`) and updated only through an `O_NOFOLLOW` descriptor whose inode must still match
   the pinned file. A pre-created or swapped `.recovery`/reservation symlink — even one installed during a
   retry backoff — is refused, so a write can never escape the task root or overwrite an outside path. The
-  complete reservation/cause/journal/final schema is parsed; malformed or truncated data stays a
+  reservation, cause, journal and final fields are validated before use; malformed JSON and failed field checks stay a
   conservative unknown. Persistence failures become structured blocked/unknown outcomes and never throw out
   of the host callback, and a final receipt is never written through an unsafe path. The initial task
   namespace anchor is retained and re-verified across the whole operation. No OS atomic fence or
@@ -74,7 +74,7 @@ The injected `controller` is the only live-host touch. `herdrRecoveryController`
 `createHerdrRecoveryController` list the live Herdr participants and verify the target agent **exactly**:
 the live participant's parsed session identity (via `reportedSessionIdentity`, not a substring) must equal
 the expected session, its cwd (required when an expected cwd is pinned) and pane must match, and — when a
-task binding is supplied — its live participant and a recomputed `recoveryBindingDigest` must match the
+task binding is supplied — its live participant and a recomputed `binding_digest` must match the
 admitted binding. Task authority is re-checked through `confirmAuthority` after the awaited live lookup and
 immediately before the prompt (closing the lookup-to-send gap). A missing, foreign or mismatched live
 target, or revoked authority, is refused without fallback. They never spawn a process.

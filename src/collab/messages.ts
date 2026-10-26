@@ -30,7 +30,7 @@ import { nowIso, transact } from './store.js';
 // resources on its own.
 
 // An ANSWER to a clarification is a reply, not a dispatch: it must already correlate with
-// a stored BLOCK, so it carries no owner_epoch of its own.
+// a stored ASK or BLOCK, so it carries no owner_epoch of its own.
 const DISPATCH_TYPES = new Set(['ASSIGN', 'HANDOFF', 'CANCEL', 'CANCELLED']);
 
 function alreadyApplied(record: TaskRecord, message: Message) {

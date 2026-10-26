@@ -538,7 +538,7 @@ function isCause(value: unknown): value is RecoveryCause {
   );
 }
 
-/** Parse the complete reservation/cause/journal/final schema; malformed/truncated data stays unknown. */
+/** Validate reservation, cause, journal and final fields before use; malformed JSON and failed field checks stay unknown. */
 function parseReservation(raw: string): ReservationFile | null {
   let parsed: unknown;
   try {
@@ -693,7 +693,7 @@ function safeUpdate(
   }
 }
 
-/** Read and fully validate a reservation through a bounded no-follow regular-file read. */
+/** Read and validate a reservation through a bounded regular-file read after an lstat check. */
 function readReservation(
   file: string,
   anchor: SidecarAnchor,

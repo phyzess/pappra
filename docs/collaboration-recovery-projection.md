@@ -7,7 +7,7 @@ acknowledges, claims, reserves, notifies, starts a model, mutates a file or gran
 
 It is the first (R1) component of interrupted-workflow recovery. Durable per-action reservation and one-shot
 execution (R2) and an opt-in supported host startup/settled/manual continuation surface (R3) are separate,
-later modules. Public CLI/router and host-export registration are handled by the integrator; this module
+modules. Public CLI/router and host-export registration are handled by the integrator; this module
 exposes only a programmatic API.
 
 ## API
@@ -60,7 +60,7 @@ reserves on), a `kind`, the `subtask_id`/`attempt`, `prerequisites`, `evidence` 
 | --- | --- | --- |
 | `resume_work` | a running attempt owned by `self` with no admissible corrective answer | `pending` |
 | `answer_supersedes_wait` | a registered coordinator ANSWER, digest-verified and correlated to this exact task/subtask/attempt/input/epoch, supersedes an obsolete wait | `pending` |
-| `progress_report_to_review` | the current coordinator has a registered `applied` owner report for the latest attempt/input awaiting review dispatch | `pending` / `observed` |
+| `progress_report_to_review` | the current coordinator has a registered `applied` owner report for the latest attempt/input awaiting review dispatch | `pending` |
 | `report_unadmitted` | an awaiting node whose report is late/superseded/withheld/unregistered or digest-unverifiable | `unknown` |
 | `blocked_awaiting_gate` | an approval, cancellation or revoked-claim gate holds the attempt | `blocked` |
 | `ambiguous_effect` | an unresolved persisted uncertainty is an unknown external effect; it blocks conflicting continuation/review | `unknown` |

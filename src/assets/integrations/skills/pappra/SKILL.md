@@ -142,7 +142,7 @@ Use `pappra collab work-run --request <abs-request.json>` for a read-only plan a
 
 Use `pappra collab recovery-run --request <abs-request.json>` to inspect one guarded recovery action; add `--apply` only with exact current session/cwd/harness/pane and a digest-pinned task-local binding. Recovery is a bounded single wake, not generic outage recovery: there is no reconnect trigger, hidden worker, approval automation, or replay after an unknown effect.
 
-For an explicitly selected Pi package, `pappra host bundle --host pi --out <new-private-dir> --recovery-config <abs-private-config.json>` exports the recovery extension and its private sibling config. Add `--transition-extension` to export the separate `/collab-transition` command extension. Exports do not install, trust, enable, load, launch, or transfer anything; review and install packages explicitly. Native quiescence and interactive Pi session takeover remain unsupported, and task retirement is not native session archive.
+For an explicitly selected Pi package, `pappra host bundle --host pi --out <new-private-dir> --recovery-config <abs-private-config.json>` exports the recovery extension and its private sibling config. Add `--transition-extension` to export the separate `/collab-transition` command extension. Exports do not install, trust, enable, load, launch, or transfer anything; review and install packages explicitly. Interactive-Pi native quiescence and interactive Pi session takeover remain unsupported; the pinned managed-SDK runtime has a separate scoped quiescence-proof path. Task retirement is not native session archive.
 
 ## Boundaries
 

@@ -99,7 +99,7 @@ pappra collab message send --task-root <abs-task-root> \
 pappra collab message read --task-root <abs-task-root> \
   --message-id <id> --json
 
-# List the most recent applied messages (read-only, bounded by --limit 1-100).
+# List the most recent registered messages, including both `applied` and `recorded` entries (read-only, bounded by --limit 1-100).
 pappra collab message list --task-root <abs-task-root> --limit 20 --json
 
 # Validate task, message, binding and recipient without querying Herdr.
@@ -227,8 +227,8 @@ Neither command launches a model, claims resources or creates an assignment.
 reads authoritative state with no effects; `--apply` handles one bounded event
 tick, reserves before dispatch and never infers acceptance; `--watch` requires
 `--apply`. Repeated or ambiguous effects are reconciled, and rejected work needs an
-authorized repair attempt. It notifies registered participants only and creates no
-session, assignment or claim of its own.
+authorized repair attempt. It notifies registered participants only and, outside an
+explicitly approved repair, creates no session, assignment or claim of its own.
 
 Which roles exist, and how many writers or reviewers run, is the host agent's
 judgment of the actual objective and change surface, not a product default.
@@ -306,8 +306,8 @@ with full counts and actual `omitted`/`truncated` metadata.
 Resource requests use `pappra/collaboration-resource-request/1` with an exact
 action, explicit holder agent/session, canonical resource kinds and `access:
 read|write`; release names one `claim_id`. Files are bounded at 1 MiB and read
-with the special-file-safe loader. Plan without `--apply` validates only the
-strict request and task namespace; it reserves nothing. Apply revalidates and
+with the special-file-safe loader. Plan without `--apply` validates the
+strict request, task namespace and, for a claim, current holder participation; it reserves nothing. Apply revalidates and
 calls exactly the existing claim/release primitive. This is cooperative record
 mutation, not OS fencing.
 
@@ -621,13 +621,13 @@ silently rerouted.
 | Status                    | Meaning                                                                                                                                                                                                 |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `planned`                 | Task, message, binding and recipient validated; nothing sent.                                                                                                                                           |
-| `submitted`               | One `herdr agent prompt` was accepted. Consumption is still unknown.                                                                                                                                    |
+| `submitted`               | One prompt or owned native `deliver` request was accepted. Consumption is still unknown.                                                                                                                |
 | `blocked`                 | Herdr reported `agent_blocked`; a blocked native UI is never answered.                                                                                                                                  |
 | `refused`                 | Herdr rejected the prompt with an explicit recognized pre-submission refusal (`agent_not_found`).                                                                                                       |
 | `unknown`                 | The prompt may have been submitted (timeout, stalled, signal, nonzero exit without a recognized result, an unrecognized error code, or transport error after the reservation). Never resend implicitly. |
-| `failed`                  | The transport failed without a possible submission (for example an unresolvable delivery directory).                                                                                                    |
+| `failed`                  | The transport failed without a possible submission (for example a Herdr agent-list failure or a spawn failure after the reservation).                                                                   |
 | `herdr_unavailable`       | Not inside Herdr, or the CLI is not callable. The message stays persisted.                                                                                                                              |
-| `herdr_caller_unverified` | The caller pane could not be resolved or the environment caller IDs are stale. Nothing was inspected or sent.                                                                                           |
+| `herdr_caller_unverified` | The caller pane could not be resolved or the environment caller IDs are stale. No delivery reservation or prompt is sent.                                                                               |
 | `already_recorded`        | Delivery metadata already exists for this message id; no new wakeup was sent.                                                                                                                           |
 | `in_flight_unknown`       | A delivery reservation is still in flight or its outcome is unknown; it is never resent or reclaimed by age.                                                                                            |
 | `retry_limit`             | Explicit retry attempts are exhausted (3).                                                                                                                                                              |

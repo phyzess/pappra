@@ -148,8 +148,8 @@ With explicit operator/agent authorization it writes the private task record and
 prepared files, claims the listed resources, and registers the initial
 `ASSIGN`. Do not run it expecting a dry run, and do not treat the message-level
 `send`/`notify` plan behavior as applying to preparation. Resource, message,
-binding, handoff, and recovery commands are the ones with plan/apply modes; see
-`references/collaboration.md`.
+binding, handoff, recovery, work-run, bootstrap, transition and workflow commands
+have plan/apply modes; see `references/collaboration.md`.
 
 ```sh
 # Mutates task/prepared state and claims. Requires explicit authorization.

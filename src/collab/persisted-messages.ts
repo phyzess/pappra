@@ -833,7 +833,7 @@ export interface MessageListResult {
   readonly writes: false;
 }
 
-/** Lists the most recent applied messages from the authoritative record. */
+/** Lists the most recent registered messages (applied or recorded) from the authoritative record. */
 export async function listMessagesForTaskRoot(
   taskRootInput: string,
   options: { readonly limit?: number } = {},

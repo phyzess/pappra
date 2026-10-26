@@ -483,7 +483,7 @@ export async function applyParticipant(
     const resolved = resolveOutputs(declaration.outputs, claims);
     blockers.push(...resolved.blockers);
     if (blockers.length === 0) {
-      // A report id is deterministic per content, not per attempt: an honest resend is a
+      // A report id is deterministic per attempt and report content: an honest resend is a
       // duplicate, while a legitimately different later report gets its own id instead of a
       // content conflict against the first one.
       const reportKey = digestText(

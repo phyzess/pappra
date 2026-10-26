@@ -539,7 +539,7 @@ function resolveCardTarget(
 /**
  * Authoritative acceptance state for a cohort.
  *
- * The work plan is the only source of node identity, dependencies and acceptance. Activation
+ * The work plan is the only source of node identity and dependencies used for acceptance evaluation. Activation
  * re-derives its evaluation from the sealed plan, the current record and the registered
  * decision envelopes, so a finished report or a released claim never unlocks dependent work.
  */

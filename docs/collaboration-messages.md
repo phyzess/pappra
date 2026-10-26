@@ -43,8 +43,9 @@ Five facts stay distinct and are never collapsed:
 4. **reported** — the recipient's `REPORT` message and stored result.
 5. **accepted** — the coordinator's explicit decision, outside this surface.
 
-Every JSON result carries `consumed: false` and `taskAccepted: false` for the
-message operations; `send` also returns `delivery: "persisted-not-notified"`.
+Successful `notify` JSON results carry `consumed: false` and `taskAccepted: false`.
+Successful `send` results return `delivery: "persisted-not-notified"`, `notified: false`
+and `taskAccepted: false`.
 
 ## Task-root validation
 
@@ -79,8 +80,8 @@ that exact pending handoff without changing the source writer's attempt. Handoff
 the corresponding coordinator or writer. An `ANSWER` must correlate with the recorded question,
 its intended recipient and the current assignee; a worker cannot unblock another attempt by
 creating and answering its own question. Coordinator `ANSWER` decisions replying to assignments or
-reports are recorded as evidence for downstream validation and cannot resolve a clarification. Rejected senders do not mutate attempts, uncertainty or
-resource ownership. Stale `REPORT` messages remain evidence rather than authority over current work.
+reports are recorded as evidence for downstream validation and cannot resolve a clarification. Rejected sender-role checks do not mutate attempts, uncertainty or
+resource ownership; stale-epoch refusals are recorded as uncertainty. Stale `REPORT` messages remain evidence rather than authority over current work.
 
 These are protocol consistency checks within a cooperative, same-user environment. Envelope fields
 are not independently authenticated credentials; copying another participant's complete known identity
@@ -117,9 +118,10 @@ is outside the identity guarantees of this CLI.
   the native identity; a different session in an ancestor directory is a
   mismatch. When Herdr reports no session value the result records
   `native_session: "unknown"` rather than a match.
-- Runs `herdr agent prompt <name> <text>` with argv only, **no `--wait`**, no
-  shell interpolation, no pane creation, no focus changes, and no blocked-agent
-  answering.
+- For ordinary Herdr targets, runs `herdr agent prompt <name> <text>`; for a verified
+  owned Pi SDK target, calls the owned controller's `deliver` operation instead. In both
+  cases it uses no `--wait`, no shell interpolation, no pane creation, no focus changes and
+  no blocked-agent answering.
 - The task namespace and registered bytes are revalidated after awaited transport
   work and immediately before any delivery mutation or prompt; a root renamed,
   replaced or redirected in the meantime fails closed without creating state
@@ -136,7 +138,7 @@ is outside the identity guarantees of this CLI.
   as `in_flight_unknown` and is never retried or reclaimed by age; an operator
   must inspect the delivery evidence. Concurrent retries serialize on a
   task-private lock: one reserves, the other is refused without a wakeup.
-- Spawn failure before a process exists is `unavailable` (nothing submitted).
+- Spawn failure before a process exists is `failed` (nothing submitted).
   `agent_blocked` is `blocked`; only the explicit recognized pre-submission
   refusal set (`agent_not_found`) is `refused`; `timeout`/`agent_prompt_stalled`
   are `unknown`. Any other error envelope — including an unrecognized code from a
@@ -147,7 +149,7 @@ is outside the identity guarantees of this CLI.
 
 ## Native capability evidence
 
-`pappra collab capabilities derive --harness <pi|codex|claude> --assignment <abs assignment.json> --template <abs card.declared.json> --execution <abs execution.json> [--session <abs pi-session.jsonl> | --events <abs events.jsonl>] [--json]`
+`pappra collab capabilities derive --harness <pi|codex|claude> --assignment <abs assignment.json> --template <abs card.declared.json> [--execution <abs execution.json> | --live] [--session <abs pi-session.jsonl> | --events <abs events.jsonl>] [--json]`
 derives a runtime capability card from saved native evidence using the maintained
 Pi, Codex and Claude adapter semantics. It is read-only: deriving writes no file,
 launches no process, spends no model turn, authenticates nothing and dispatches
@@ -155,6 +157,10 @@ nothing. Pi requires `--session`; Codex and Claude require `--events`; other hos
 options, duplicate flags and unknown flags are rejected. Exit codes are `0`
 derived, `1` needs_input, `2` invalid request/configuration. JSON results use
 `pappra/collaboration-capabilities/1`.
+
+For an interactive Pi session, `--live` replaces `--execution` and derives a settled
+saved-session snapshot without a process-exit receipt. Pending tool results, a trailing
+user message or a later model change are refused.
 
 Configuration files are bounded at 1 MiB and each native evidence file at 16 MiB.
 All paths must be absolute; final symlinks, FIFOs and other special files are
@@ -257,8 +263,8 @@ same-user CLI has no trusted caller identity and cannot distinguish an actor
 that deliberately copies another known agent/session identity. A duplicate
 self-declared actor field would not establish that identity.
 Request JSON is bounded at 1 MiB and read through the special-file-safe
-loader. Without `--apply`, a plan validates only the strict request and the task
-namespace: it creates no reservation, lock, transaction or claim. With `--apply`,
+loader. Without `--apply`, a plan validates the strict request, task namespace and,
+for a claim, current holder participation: it creates no reservation, lock, transaction or claim. With `--apply`,
 the namespace is revalidated and exactly the existing `claimResources` or
 `releaseClaim` primitive runs. This is cooperative record mutation, not OS
 fencing or proof that another process stopped.

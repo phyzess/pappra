@@ -4,11 +4,9 @@ Pappra exposes bounded collaboration planning, work notification and recovery AP
 
 ## Public consumer APIs
 
-The package root includes namespaced APIs for `collabWorkPlan`,
-`collabWorkPlanInspection`, `collabWorkExecution`, `collabRecovery`,
-`collabRecoveryProjection`, `collabRecoveryExecutor` and `collabSessionTransition`.
-Beta 0.1.0 publishes no per-surface subpaths for them; take each namespace from the
-curated experimental barrel:
+These namespaces are exported only by the `@phyzess/pappra/experimental` subpath, not
+by the package root or `@phyzess/pappra/collab`. Beta 0.1.0 publishes no per-surface
+subpaths for them; take each namespace from the curated experimental barrel:
 
 ```ts
 import * as collab from '@phyzess/pappra/collab';

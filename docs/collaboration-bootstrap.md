@@ -81,6 +81,7 @@ For `target.choice: "reuse"`, the task-local binding, live Herdr occupant, exact
 - `applied`: one-shot effect path completed and message submission was confirmed.
 - `already_recorded`: the same request/message was already completed; no effect was repeated.
 - `needs_input` / `invalid`: a required identity, pin or current-state fact is missing or conflicts.
+- `failed`: a definite start or effect failure; inspect the recorded reservation and any cleanup outcome before creating a new request.
 - `unknown` / `reconcile_required`: an effect or notification outcome is ambiguous. Inspect the recorded reservation and original Herdr/message state before creating a new request.
 
 This slice does not prove extension registration from a report, synthesize successor capabilities, transfer task authority, stop/quiesce the old writer, remove production routing, prove first work, archive a native session, or set automatic rollover thresholds. The accepted gate remains the authority and denies writes until its recorded transfer conditions are satisfied. Herdr pane/session metadata is routing evidence, not authentication or OS-level process affiliation. Shell readiness is bounded local polling, not an event or worker-completion guarantee.
