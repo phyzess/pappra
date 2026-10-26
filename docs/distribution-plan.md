@@ -18,9 +18,10 @@ Pre-release versions are never republished. Pin either `@beta` or an exact versi
 The repository stores no npm token; the publish job exchanges a short-lived OIDC
 identity for publish rights.
 
-The published release is beta.20. This checkout is beta.21 development; a version
-bump in source is not a publication. The beta.20 public tarball was checked against
-the reviewed candidate, including every shipped file, after trusted publication.
+This checkout is beta.21. A version bump in source is not a publication: verify
+the registry version and the trusted publishing workflow separately. The frozen
+beta.20 public tarball used for the measurements below was checked against the
+reviewed candidate, including every shipped file, after trusted publication.
 
 ## Measured beta.21 development decisions
 
