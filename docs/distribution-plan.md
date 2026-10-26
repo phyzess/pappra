@@ -18,6 +18,42 @@ Pre-release versions are never republished. Pin either `@beta` or an exact versi
 The repository stores no npm token; the publish job exchanges a short-lived OIDC
 identity for publish rights.
 
+The published release is beta.20. This checkout is beta.21 development; a version
+bump in source is not a publication. The beta.20 public tarball was checked against
+the reviewed candidate, including every shipped file, after trusted publication.
+
+## Measured beta.21 development decisions
+
+The October 26, 2026 measurements used the frozen, installed public beta.20
+package on macOS arm64, Node 24.20.0 and esbuild 0.28.2. Independent native Pappra
+tasks produced the implementation and measurements; a separate participant
+reviewed their exact output pins and independently reproduced the build result.
+The observations below are local measurements,
+not platform-wide guarantees.
+
+| experiment | baseline | candidate | decision |
+| --- | --- | --- | --- |
+| Host asset script, nine interleaved samples per variant | 257.53 ms median | 224.97 ms median | Run the five independent builds concurrently with shared options. |
+| Dependency copy, first three pairs | 2,183.61 ms median | 2,281.20 ms median with `COPYFILE_FICLONE` | No reproducible gain. |
+| Dependency copy, five confirmation pairs | 2,286.01 ms median | 2,138.19 ms median with `COPYFILE_FICLONE` | Direction reversed; retain the existing copier. |
+
+The host timing covers execution of the asset script, including process startup,
+asset copying and CLI chmod. It excludes TypeScript compilation, tests and the
+rest of `pnpm build`. The paired median saving was 30.89 ms. All nine candidate
+samples emitted exactly the same five standalone bundles as the baseline and
+published beta.20, byte for byte: 3,198,573 bytes in total. Shared chunks and Zod
+externalization were not introduced; duplicate Zod payloads remain a limitation.
+
+Dependency timings cover direct materialization, including manifest resolution
+and payload filtering; inventory hashing and cleanup are outside the timed
+region. The clone probe won four of eight pairs, with overlapping ranges and
+uncontrolled filesystem cache/background load. It changed only the probe
+process's copy mode, not the production copier. Successful copies do not prove
+that the filesystem cloned extents or that fallback on another filesystem was
+observed. Logical bytes are not physical allocation. Regression checks require
+independent source/destination inodes, bidirectional mutation isolation and
+preservation of an already-existing destination.
+
 ## Three ways to run it
 
 ```sh

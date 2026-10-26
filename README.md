@@ -208,8 +208,9 @@ provider acceptance is a separate, explicitly selected run.
 
 ## Status and limits
 
-Pappra is development software (`0.1.0-beta.20`) published as `@phyzess/pappra` under the
-`beta` dist-tag. Releases are published from GitHub Actions with npm trusted publishing
+Pappra is development software (`0.1.0-beta.21` in this checkout;
+`0.1.0-beta.20` published). The package is `@phyzess/pappra` with the `beta`
+dist-tag. Releases are published from GitHub Actions with npm trusted publishing
 (OIDC); no npm token is stored here. Pin either the moving `beta` tag or an exact version,
 because pre-release versions are never republished.
 

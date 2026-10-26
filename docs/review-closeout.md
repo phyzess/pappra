@@ -27,7 +27,7 @@ boundaries. No entry infers a native host load or provider result.
 
 **R1-02 — Limitation.** Commit granularity improved but a single commit still lands 9,259 insertions (26 files).
 
-**R1-03 — Limitation.** The beta.20 candidate is 1,676,693 compressed bytes and 7,944,653 unpacked bytes across 548 files, measured with npm pack --dry-run --ignore-scripts. Five minified bundles total 3,198,573 bytes; duplicate payloads remain. These are local candidate measurements, not a published-artifact receipt.
+**R1-03 — Limitation.** The published beta.20 archive is byte-identical to the reviewed candidate: 1,676,693 compressed bytes and 7,944,653 unpacked bytes across 548 files. Five minified bundles total 3,198,573 bytes; duplicate payloads remain. Public tarball integrity and all 548 shipped file hashes were checked after [publication](https://github.com/phyzess/pappra/actions/runs/40245964918). The beta.21 build scheduling change preserves the five bundle bytes; it does not reduce their size.
 
 ## P0：建议先修
 
@@ -263,7 +263,7 @@ boundaries. No entry infers a native host load or provider result.
 
 **R2-48 — Limitation.** All five candidate bundles contain ZodError runtime signatures; the builder externalizes Pi-provided packages, while Zod remains bundled (scripts/build-assets.ts). Signature presence confirms inclusion, not the exact number of bytes attributable to duplicate Zod code.
 
-**R2-49 — Implemented.** Dependency materialization reuses the installed closure without nested node_modules and hoists shared exact versions once (src/install/runtime.ts:381-391).
+**R2-49 — Implemented.** Dependency materialization hoists and reuses exact resolved copies while retaining necessary version-conflict nesting (src/install/dependencies.ts). The frozen published beta.20 closure measured 101 copied placements, 66 reused slots, 3,687 files and 17,459,066 logical bytes, with a maximum of two node_modules segments. These measure existing beta.20 behavior, not beta.21 savings or total runtime size. The historical 76 MB/depth-14 tree was not reconstructed. See the [measured development decisions](distribution-plan.md#measured-beta21-development-decisions) for the rejected copy optimization and isolation checks.
 
 **R2-50 — Needs verification.** No NFD normalization exists in src; Linux lookup behaviour needs reproduction.
 

@@ -1,6 +1,6 @@
 {
   "name": "@phyzess/pappra",
-  "version": "0.1.0-beta.20",
+  "version": "0.1.0-beta.21",
   "description": "Portable coding-agent workspaces with knowledge, continuity, code navigation and optional collaboration.",
   "publishConfig": {
     "access": "public"

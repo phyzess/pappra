@@ -179,6 +179,60 @@ test('materialization never copies a nested node_modules subtree', async () => {
   }
 });
 
+test('materialized payloads have independent inodes and mutations in both directions', async () => {
+  const root = makeTempDir('install-dependency-isolation');
+  try {
+    const tree = createInstalledTree(root);
+    const result = await materializeInstalledDependencies({
+      sourceRoot: tree.app,
+      targetRoot: tree.target,
+    });
+    assert.equal(result.ok, true, JSON.stringify(result.problems));
+    const source = join(tree.app, 'node_modules/left/payload.txt');
+    const installed = join(tree.target, 'node_modules/left/payload.txt');
+    const sourceStat = lstatSync(source);
+    const installedStat = lstatSync(installed);
+    assert(sourceStat.isFile() && installedStat.isFile());
+    assert.notDeepEqual(
+      [installedStat.dev, installedStat.ino],
+      [sourceStat.dev, sourceStat.ino],
+      'Payload copies must never be hardlinks to the installed source',
+    );
+    assert.equal(readFileSync(installed, 'utf8'), 'payload\n');
+    writeFileSync(source, 'source changed\n');
+    assert.equal(readFileSync(installed, 'utf8'), 'payload\n');
+    writeFileSync(installed, 'installed changed\n');
+    assert.equal(readFileSync(source, 'utf8'), 'source changed\n');
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('materialization refuses an existing destination and preserves its payload', async () => {
+  const root = makeTempDir('install-dependency-existing');
+  try {
+    const tree = createInstalledTree(root);
+    const destination = join(tree.target, 'node_modules/left');
+    writePackage(destination, { name: 'left', version: 'foreign' });
+    writePayload(destination, 'payload.txt', 'existing user payload\n');
+    const manifest = readFileSync(join(destination, 'package.json'));
+    const result = await materializeInstalledDependencies({
+      sourceRoot: tree.app,
+      targetRoot: tree.target,
+    });
+    assert.equal(result.ok, false);
+    assert(result.problems.includes('dependency_copy_failed:left'));
+    assert.equal(result.copied.includes(destination), false);
+    assert.deepEqual(readFileSync(join(destination, 'package.json')), manifest);
+    assert.equal(
+      readFileSync(join(destination, 'payload.txt'), 'utf8'),
+      'existing user payload\n',
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
 test('a later nested dependency cannot shadow an ancestor consumer that reused the root version', async () => {
   const root = makeTempDir('install-dependencies-shadow');
   try {
