@@ -201,9 +201,9 @@ boundaries. No entry infers a native host load or provider result.
 
 **R2-25 — Implemented.** resume exits 0 with executionAllowed false and advisory blocking reasons; only stale verification exits nonzero (tests/continuity/cli.test.ts:188-197, :225).
 
-**R2-26 — Limitation.** Entry and depth limits emit explicit diagnostics (src/workspace/documents.ts:298-311, :340-349). A beta.21 measurement ran 48 fresh-state `docs scan` runs over eight synthetic tree shapes in repo-less workspaces: discovery cost is linear at about 0.13 ms and 4-6 KB of resident memory per document on top of a fixed 0.3 s start, and each run registers at most 300 documents (src/knowledge/scan.ts:161), so large trees converge over repeated applies. Defaults are depth 64 and 10,000 documents, directories and entries per directory. Two boundary limits remain: a `docs` source is traversed twice per scan (src/workspace/documents.ts:501), duplicating limit diagnostics, and at exactly 10,000 documents the second traversal reports "scan coverage is incomplete" although no coverage was lost. Workspaces with git repositories, where the ignore filter also runs, were not measured.
+**R2-26 — Limitation.** Entry and depth limits emit explicit diagnostics (src/workspace/documents.ts:298-311, :340-349). A beta.21 measurement ran 48 fresh-state `docs scan` runs over eight synthetic tree shapes in repo-less workspaces: discovery cost is linear at about 0.13 ms and 4-6 KB of resident memory per document on top of a fixed 0.3 s start, and each run registers at most 300 documents (src/knowledge/scan.ts:161), so large trees converge over repeated applies. Defaults are depth 64 and 10,000 documents, directories and entries per directory. Two boundary defects found by the observation are fixed: a `docs` source was traversed twice (once as a configured source, once as the well-known root), duplicating limit diagnostics and counting each directory twice against the directory bound, and at exactly the document bound a probe of a missing well-known file reported "scan coverage is incomplete" although no coverage was lost. Directories are now entered once per remaining depth budget, and truncation is reported only when a genuinely new document is dropped. Workspaces with git repositories, where the ignore filter also runs, were not measured.
 
-  - Nested concerns: sub: cap accounting derived from source and measured; sub: depth limit reported, not silent; sub: double traversal duplicates diagnostics; sub: false incomplete-coverage report at exactly 10,000 documents.
+  - Nested concerns: sub: cap accounting derived from source and measured; sub: depth limit reported, not silent; sub: double traversal and the false incomplete-coverage report at the exact document bound are fixed; sub: the 300-document batch cap and the hard bounds remain by design.
 
 **R2-27 — Implemented.** Private locks resolve owner identity, treat PID-only locks as unknown and reclaim only proven death (src/infra/private-lock.ts:55-66, :95-117, :142-150).
 
@@ -327,6 +327,10 @@ visible Pappra collaboration with independent review, and do not add identifiers
   outcome was accepted); it is now rejected and covered by a regression test that was
   confirmed to fail without the guard. The targeted set passed 97 checks in a private
   build; no live Herdr delivery was exercised.
+- `docs scan` traversed a `docs` knowledge source twice and, at exactly the document
+  bound, reported incomplete coverage that was not lost. Directories are now entered once
+  and the truncation diagnostic requires a genuinely dropped document; three regression
+  tests fail on the old code and pass on the fix.
 - Two behaviours stay intentional and are now documented: a Pi capability card needs a
   settled session snapshot, and an observation is accepted for at most 30 minutes.
 
