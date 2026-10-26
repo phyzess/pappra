@@ -193,6 +193,19 @@ export function deriveCohort(
         'assignment_invalid',
         `Assignment ${declaration.subtask_id} names ${declaration.assignee}, which is not a declared participant.`,
       );
+    // A deferred reviewer is sealed without real resource epochs, so a write footprint could
+    // never be activated later; refuse it here, before any effect, instead of at dispatch.
+    if (declaration.role === 'reviewer') {
+      const writes = declaration.resources
+        .filter((resource) => resource.access === 'write')
+        .map((resource) => resource.path);
+      if (writes.length > 0)
+        return workflowFailure(
+          'reviewer_write_footprint',
+          `Reviewer ${declaration.subtask_id} declares write resources (${writes.join(', ')}); a deferred reviewer seals without real resource epochs and could never be activated.`,
+          'Declare the reviewer read-only, or use a writer-role assignment for an assignee that must write a review file.',
+        );
+    }
     const deferred = declaration.role === 'reviewer';
     const messageId = `assign-${declaration.subtask_id}`;
     const assignment: Assignment = {
@@ -1064,6 +1077,34 @@ export async function applyPrepare(
     });
   }
 
+  const coordinatorBinding = bindingFor(request, request.coordinator.agent_id);
+  const bindingParticipants = request.participants.map((item) => {
+    const binding = bindingFor(request, item.agent_id);
+    return {
+      agent_id: item.agent_id,
+      harness: item.harness,
+      cwd: item.cwd,
+      herdr_agent: item.agent_id,
+      pane_id: binding?.pane_id ?? null,
+      native_session_id: item.session_id,
+    };
+  });
+  // A coordinator that is not also a declared participant has no participant entry, so its
+  // explicit binding is the only routing record for the sender side of coordinator messages;
+  // dispatch refuses a sender the sealed binding does not describe. A coordinator that is
+  // also a participant keeps exactly one entry: the mapping above, never two.
+  if (coordinatorBinding !== null) {
+    const declared = participantFor(request, request.coordinator.agent_id);
+    if (declared === null)
+      bindingParticipants.push({
+        agent_id: request.coordinator.agent_id,
+        harness: request.coordinator.harness,
+        cwd: request.coordinator.cwd,
+        herdr_agent: request.coordinator.agent_id,
+        pane_id: coordinatorBinding.pane_id,
+        native_session_id: request.coordinator.session_id,
+      });
+  }
   const bindingWrite =
     request.bindings.length === 0
       ? null
@@ -1075,17 +1116,7 @@ export async function applyPrepare(
             task_id: request.task_id,
             task_root: cohort.taskRoot,
             channel: 'herdr',
-            participants: request.participants.map((item) => {
-              const binding = bindingFor(request, item.agent_id);
-              return {
-                agent_id: item.agent_id,
-                harness: item.harness,
-                cwd: item.cwd,
-                herdr_agent: item.agent_id,
-                pane_id: binding?.pane_id ?? null,
-                native_session_id: item.session_id,
-              };
-            }),
+            participants: bindingParticipants,
           },
         );
   if (bindingWrite !== null && bindingWrite.status === 'conflict')

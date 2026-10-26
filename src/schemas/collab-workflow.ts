@@ -219,11 +219,14 @@ export const workflowPrepareRequestSchema = z
         message: 'a participant is declared twice',
       });
     for (const binding of value.bindings) {
-      if (!participants.has(binding.agent_id))
+      if (
+        !participants.has(binding.agent_id) &&
+        binding.agent_id !== value.coordinator.agent_id
+      )
         context.addIssue({
           code: 'custom',
           path: ['bindings'],
-          message: `binding names ${binding.agent_id}, which is not a declared participant`,
+          message: `binding names ${binding.agent_id}, which is neither a declared participant nor the coordinator`,
         });
     }
     const seenBindings = new Set<string>();
@@ -250,6 +253,19 @@ export const workflowPrepareRequestSchema = z
           path: ['assignments'],
           message: `assignment ${assignment.subtask_id} names an undeclared assignee`,
         });
+      // A deferred reviewer is sealed without real resource epochs, so a write footprint
+      // could never be activated later; refuse it at request validation, not at dispatch.
+      if (assignment.role === 'reviewer') {
+        const writes = assignment.resources
+          .filter((resource) => resource.access === 'write')
+          .map((resource) => resource.path);
+        if (writes.length > 0)
+          context.addIssue({
+            code: 'custom',
+            path: ['assignments'],
+            message: `reviewer ${assignment.subtask_id} declares write resources (${writes.join(', ')}); declare the reviewer read-only, or use a writer role for an assignee that must write`,
+          });
+      }
       for (const dependency of assignment.depends_on ?? []) {
         if (dependency === assignment.subtask_id || !subtasks.has(dependency))
           context.addIssue({
