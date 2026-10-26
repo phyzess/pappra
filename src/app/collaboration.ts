@@ -1795,7 +1795,7 @@ export async function driveRun(
             'cancel',
             command.request_id,
             'cancel-intent-failed',
-            'P01 cancellation intent was not recorded',
+            'The collaboration cancellation intent was not recorded',
             {
               intent: false,
               native: {

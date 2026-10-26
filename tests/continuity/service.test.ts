@@ -18,6 +18,7 @@ import {
   CONTINUITY_PAYLOAD_MAX_BYTES,
 } from '../../src/continuity/paths.js';
 import * as store from '../../src/collab/store.js';
+import { diagnosticCodes } from '../../src/schemas/errors.js';
 import { sha256Digest } from '../../src/infra/fs.js';
 import {
   checkpointSchema,
@@ -1460,6 +1461,17 @@ test('reads a valid P01 authority but still requires live writer proof', async (
       resumed.packet?.blockingReasons.some(
         (entry) => entry.code === 'live_writer_unverified',
       ),
+    );
+    assert(
+      resumed.diagnostics.some(
+        (entry) => entry.code === diagnosticCodes.resume_execution_blocked,
+      ),
+    );
+    assert.equal(
+      resumed.diagnostics.some(
+        (entry) => entry.code === diagnosticCodes.document_proposal_stale,
+      ),
+      false,
     );
   } finally {
     cleanup(root);

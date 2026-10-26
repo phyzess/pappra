@@ -182,6 +182,7 @@ export const diagnosticCodes = {
   host_hook_unsupported: 'host_hook_unsupported',
   host_hook_timeout: 'host_hook_timeout',
   host_hook_failed: 'host_hook_failed',
+  resume_execution_blocked: 'resume_execution_blocked',
 } as const;
 
 export type DiagnosticCode =

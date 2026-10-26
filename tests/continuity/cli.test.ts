@@ -200,6 +200,49 @@ test('checkpoint and resume CLI share a single JSON contract without private pat
   }
 });
 
+test('human resume does not repeat a blocked reason as a warning', () => {
+  const root = makeTempDir('continuity-cli-human');
+  const home = mkdtempSync(join(tmpdir(), 'continuity-cli-home-'));
+  try {
+    writeWorkspaceConfig(root, baseWorkspaceConfig());
+    writeMachineConfig(root, baseMachineConfig(root));
+    const saved = invoke(
+      [
+        'checkpoint',
+        '--task',
+        'task-human',
+        '--objective',
+        'Human resume output',
+        '--acceptance',
+        'Keep the blocked reason visible',
+      ],
+      root,
+      home,
+    );
+    assert.equal(saved.status, 0, saved.stderr);
+
+    const resumed = invoke(['resume', 'task-human'], root, home);
+    assert.equal(resumed.status, 0, resumed.stderr);
+    assert.match(
+      resumed.stdout,
+      /Blocked: live_writer_unverified: A stored checkpoint cannot prove/,
+    );
+    assert.equal(
+      resumed.stderr.includes('live_writer_unverified'),
+      false,
+      resumed.stderr,
+    );
+    assert.equal(
+      resumed.stderr.includes('A stored checkpoint cannot prove'),
+      false,
+      resumed.stderr,
+    );
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('checkpoint and resume reject invalid argument combinations', async () => {
   const root = makeTempDir('continuity-cli-invalid');
   const home = mkdtempSync(join(tmpdir(), 'continuity-cli-home-'));

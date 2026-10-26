@@ -1,5 +1,6 @@
 import type { Diagnostic } from '../../schemas/diagnostics.js';
 import { formatDiagnostic } from '../../schemas/diagnostics.js';
+import { diagnosticCodes } from '../../schemas/errors.js';
 import {
   CheckpointService,
   type SaveCheckpointInput,
@@ -220,7 +221,13 @@ export async function runResumeCommand(
         `Observation: ${observation.harness}/${observation.sessionId ?? 'unknown'} stored-snapshot live=${observation.liveStatus}\n`,
       );
     }
-    printDiagnostics(output, result.diagnostics);
+    printDiagnostics(
+      output,
+      result.diagnostics.filter(
+        (diagnostic) =>
+          diagnostic.code !== diagnosticCodes.resume_execution_blocked,
+      ),
+    );
   } else {
     printDiagnostics(output, result.diagnostics);
   }

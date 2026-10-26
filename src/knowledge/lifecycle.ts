@@ -771,7 +771,7 @@ async function inspectDelete(
   if (record.taskId !== null) {
     blockers.push({
       code: diagnosticCodes.document_task_state_unknown,
-      message: `Document is linked to task ${record.taskId}; execution state is unknown without P07/P10 evidence.`,
+      message: `Document is linked to task ${record.taskId}; execution state is unknown without checkpoint or collaboration evidence.`,
     });
   }
   const recordLocation = await resolveKnowledgeLocation(

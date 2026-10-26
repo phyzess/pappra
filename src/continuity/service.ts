@@ -1769,12 +1769,12 @@ export class CheckpointService {
     };
     pushBlock(
       'live_writer_unverified',
-      'P07 cannot establish live writer/stop ownership from a stored session string; execution remains blocked.',
+      'A stored checkpoint cannot prove which session is still writing or has stopped; execution remains blocked.',
     );
     if (collaborationObservation.status === 'unsupported') {
       pushBlock(
         'collaboration_authority_invalid',
-        'The referenced collaboration record is not a supported authoritative P01 task record.',
+        'The referenced record is not a supported authoritative collaboration task record.',
       );
     }
     for (const code of collaborationObservation.authority.blockerCodes) {
@@ -1955,7 +1955,7 @@ export class CheckpointService {
     const nowDiagnostics = [...diagnostics];
     for (const reason of blockingReasons) {
       nowDiagnostics.push({
-        code: diagnosticCodes.document_proposal_stale,
+        code: diagnosticCodes.resume_execution_blocked,
         severity: 'warning',
         message: reason.message,
         source: continuityTaskPaths(workspace.root, input.taskId).latestPath,

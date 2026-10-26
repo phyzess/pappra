@@ -912,7 +912,7 @@ async function updateMachineRuntimeAt(
       diagnostics: [
         diagnostic(
           diagnosticCodes.initApplyUnsupported,
-          'machine.json is not owned by a P04 installation manifest.',
+          'machine.json is not owned by a Pappra-managed install manifest.',
           'Use a managed init/apply or configure flow; Pappra does not adopt unowned files.',
           workspaceInstallPaths(root).manifestPath,
         ),
@@ -953,7 +953,7 @@ async function updateMachineRuntimeAt(
         diagnostic(
           diagnosticCodes.initApplyUnsupported,
           'machine.json has no managed ownership entry.',
-          'Create it through a P04 managed apply before installing a runtime.',
+          'Create it through a Pappra-managed apply before installing a runtime.',
           workspaceInstallPaths(root).manifestPath,
         ),
       ],

@@ -255,7 +255,7 @@ async function inspectInstallState(
   } else if (!manifest.exists) {
     escalate('unknown');
     problems.push(
-      'workspace has no P04 installation manifest; existing files are unmanaged',
+      'workspace has no Pappra-managed install manifest; existing files are unmanaged',
     );
     actions.push(
       'Use an explicit managed init/apply before expecting rollback or uninstall ownership.',
@@ -352,7 +352,7 @@ async function inspectInstallState(
     title: 'Managed workspace installation state',
     summary:
       problems.length === 0
-        ? 'No unresolved P04 managed-install state was found.'
+        ? 'No unresolved Pappra-managed install state was found.'
         : problems.join('; '),
     source: paths.manifestPath,
     observedAt,
@@ -990,7 +990,7 @@ function hostChecks(
         evidence: host.evidence,
         nextActions: selected
           ? [
-              'Install or select a supported host explicitly; P09 integration/callability is not verified.',
+              'Install or select a supported host explicitly; host integration and callability are not verified.',
             ]
           : [],
       });
@@ -1003,13 +1003,13 @@ function hostChecks(
       status: 'unsupported',
       severity: 'info',
       title: `Host ${host.host}`,
-      summary: `Executable discovered${host.configured ? '; a host config path exists' : ''}. Callability, trust, and P09 integration are not verified; config presence is not Pappra wiring.`,
+      summary: `Executable discovered${host.configured ? '; a host config path exists' : ''}. Callability, trust, and host integration are not verified; config presence is not Pappra wiring.`,
       source: host.executablePath ?? host.host,
       observedAt,
       coverage: 'path/config existence only',
       evidence: host.evidence,
       nextActions: [
-        'P09 host integration and runtime probes are not implemented; no host or model was started.',
+        'doctor does not verify host integration or run runtime probes; no host or model was started.',
       ],
     });
   });
@@ -1081,13 +1081,13 @@ function toolCheck(
     status: 'unsupported',
     severity: 'info',
     title: `Tool ${name}`,
-    summary: `${name} was discovered at ${tool.executablePath}, but callability/index health is not verified by P05.`,
+    summary: `${name} was discovered at ${tool.executablePath}, but callability and index health are not verified.`,
     source: tool.executablePath ?? name,
     observedAt,
     coverage: 'path presence only',
     evidence: [fileEvidence(tool.executablePath ?? name, observedAt, null)],
     nextActions: [
-      'P08 code intelligence/index verification is not implemented; no index was prepared.',
+      'doctor does not verify code intelligence or indexes; no index was prepared.',
     ],
   });
 }
@@ -1600,7 +1600,7 @@ export async function runDoctor(
       summary:
         installedHostBundle === null
           ? 'No host bundle manifest was observed under the known host roots; no host, session, or model was started.'
-          : `P09 host bundle manifest exists at ${installedHostBundle}; native trust, reload and callability remain unverified and no host was started.`,
+          : `A host bundle manifest exists at ${installedHostBundle}; native trust, reload and callability remain unverified and no host was started.`,
       source: installedHostBundle ?? root ?? homeDir,
       observedAt,
       coverage:
@@ -1622,8 +1622,8 @@ export async function runDoctor(
       title: 'Skill/bundle freshness',
       summary:
         installedHostSkill === null
-          ? 'No packaged P09 host skill was observed under the selected host roots; no stale-copy claim is made.'
-          : `Packaged P09 skill exists at ${installedHostSkill}; native loader/trust freshness remains unverified.`,
+          ? 'No packaged host skill was observed under the selected host roots; no stale-copy claim is made.'
+          : `A packaged host skill exists at ${installedHostSkill}; native loader/trust freshness remains unverified.`,
       source: installedHostSkill ?? root ?? homeDir,
       observedAt,
       coverage: installedHostSkill === null ? 'unsupported' : 'file-copy-only',
@@ -1652,12 +1652,12 @@ export async function runDoctor(
       severity: 'info',
       title: 'Code index',
       summary:
-        'P08 code-index preparation/health is not implemented; doctor did not build or query an index.',
+        'doctor does not prepare or check code indexes; it did not build or query an index.',
       source: root ?? dataDir,
       observedAt,
       coverage: 'unsupported',
       nextActions: [
-        'Use P08 capabilities when available; doctor never builds an index.',
+        'Use pappra code status and pappra code prepare; doctor never builds an index.',
       ],
     }),
   );

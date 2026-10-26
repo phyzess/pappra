@@ -205,7 +205,7 @@ function eventCapability(
       reason:
         event === 'compact'
           ? 'The Pappra adapter does not implement a compact mapping for this surface.'
-          : 'Automatic checkpoint requests are not an implemented native event; use the manual P07 command.',
+          : 'Automatic checkpoint requests are not an implemented native event; use the manual pappra checkpoint command.',
       evidence: baseEvidence,
     };
   }
