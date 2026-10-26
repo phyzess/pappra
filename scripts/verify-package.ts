@@ -135,7 +135,7 @@ try {
   assert(files.includes('skills/pappra/references/operations.md'));
   assert(
     files.every((file) =>
-      /^(?:dist\/|assets\/|skills\/|package\.json$|README\.md$|LICENSE$|THIRD_PARTY_NOTICES\.md$)/.test(
+      /^(?:dist\/|assets\/|skills\/|package\.json$|README(?:\.zh-CN)?\.md$|LICENSE$|THIRD_PARTY_NOTICES\.md$)/.test(
         file,
       ),
     ),
