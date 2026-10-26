@@ -37,7 +37,7 @@ selections still exits nonzero, but it returns the discovery candidates and the 
 npx @phyzess/pappra@beta runtime install --apply --json   # default --from self
 npx @phyzess/pappra@beta runtime status --json            # read-only passive state
 npx @phyzess/pappra@beta runtime verify --json            # content and smoke verification
-npx @phyzess/pappra@beta runtime remove --apply --json    # refuses a bound runtime without --force
+npx @phyzess/pappra@beta runtime remove --apply --json    # refuses actively referenced runtimes; --force only accepts unknown references
 ```
 
 An existing valid `.pappra/workspace.json` is never rewritten silently. `--reconfigure` is
@@ -135,7 +135,7 @@ the checkout, then invoke `dist/cli/main.js` by absolute path from the target
 workspace.
 
 ```sh
-cd /absolute/path/to/pappra-public
+cd /absolute/path/to/pappra
 pnpm install --frozen-lockfile
 pnpm build
 export CHECKOUT="$PWD"

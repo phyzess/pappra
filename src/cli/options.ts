@@ -220,8 +220,8 @@ export function parseOptions(args: readonly string[]) {
     };
   }
   if (command === 'collab') {
-    // `collab message <action>` is the only two-level form; the action string carries
-    // both segments so callers keep one parsed field.
+    // Two-level collab forms such as `message <action>` carry both segments in
+    // the action string so callers keep one parsed field.
     if (
       positionals.length > 3 ||
       (positionals.length === 3 &&

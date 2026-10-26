@@ -50,9 +50,10 @@ the recovery configuration contract is
 `src/hosts/integration/recovery-config.ts`, which bundle export inside `hosts` and
 the recovery adapter both read, and which imports no application module.
 
-`pnpm source:check` enforces this direction: core/schema modules may not import
-`app`, `hosts`, `collab` or `adapters`; host modules may not import `app` or
-`adapters`; and infrastructure may import only `infra` and `schemas`.
+`pnpm source:check` enforces this direction: `workspace`, `knowledge`, `continuity`,
+`code` and `schemas` modules may not import `app`, `hosts`, `collab` or `adapters`;
+host modules may not import `app` or `adapters`; and infrastructure may import only
+`infra` and `schemas`.
 
 ## Experimental surface
 

@@ -98,6 +98,7 @@ export async function routeCollaboration(
   if (handleMessagesOutcome !== null) return handleMessagesOutcome;
   const handleDirectRunOutcome = await handleDirectRun(context);
   if (handleDirectRunOutcome !== null) return handleDirectRunOutcome;
-  // Unreachable: handleDirectRun always reports an unknown action, so the chain cannot fall through.
+  // Unreachable: handleDirectRun always returns an exit code (the command's result for
+  // prepare/run/query, 2 for an unknown action), so the chain cannot fall through.
   return 2;
 }

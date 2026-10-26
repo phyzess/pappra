@@ -19,7 +19,7 @@ import type { CliOutput } from '../output.js';
  *
  * This family parses its own argv. Workflow requests are documents with a declared schema,
  * so the family does not add flags to the global parser and does not re-validate a document
- * through 95 unrelated global options. The route is installed before `parseOptions`, exactly
+ * through the global parser's unrelated options. The route is installed before `parseOptions`, exactly
  * like the `docs review` route.
  */
 
