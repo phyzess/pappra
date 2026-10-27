@@ -4,6 +4,7 @@ import {
   applyHandoffRequest,
   loadHandoffRequest,
   planHandoffRequest,
+  readCoordinatorHandoffCheck,
   readHandoffInventory,
   type HandoffAction,
 } from '../../app/collab-handoff.js';
@@ -12,6 +13,7 @@ import type { CliOutput } from '../output.js';
 
 export const collaborationHandoffUsage =
   'pappra collab handoff inventory --task-root <abs> [--subtask-id <id>] [--attempt <positive integer>] [--json]\n' +
+  'pappra collab handoff check --task-root <abs> [--json]\n' +
   'pappra collab handoff <begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> --task-root <abs> --request <abs request.json> [--apply] [--json]\n\n' +
   'Recorded ownership handoff over the existing store/lifecycle primitives. Plan is\n' +
   'namespace/request validation only; --apply performs a cooperative record\n' +
@@ -19,7 +21,7 @@ export const collaborationHandoffUsage =
   'requires an accepted/recorded, explicitly correlated receiver message.';
 
 export interface CollaborationHandoffOptions {
-  readonly action: HandoffAction | 'inventory' | null;
+  readonly action: HandoffAction | 'inventory' | 'check' | null;
   readonly taskRoot: string | null;
   readonly requestFile: string | null;
   readonly subtaskId: string | null;
@@ -55,13 +57,19 @@ function failure(
   options: CollaborationHandoffOptions,
   value: TaskStoreFailure,
   exitCode: number,
+  unreadableStatus = false,
 ): number {
   if (options.json) {
     output.stdout(
       `${JSON.stringify({
         schema: COLLAB_HANDOFF_SCHEMA,
         ok: false,
-        status: exitCode === 2 ? 'invalid' : 'needs_input',
+        status:
+          exitCode === 2
+            ? 'invalid'
+            : unreadableStatus
+              ? 'unreadable'
+              : 'needs_input',
         action: options.action,
         code: value.code,
         message: value.message,
@@ -69,7 +77,11 @@ function failure(
       })}\n`,
     );
   } else {
-    output.stdout(`Handoff needs input: ${value.message}\n`);
+    output.stdout(
+      unreadableStatus
+        ? `Handoff check could not read the task: ${value.message}\n`
+        : `Handoff needs input: ${value.message}\n`,
+    );
     if (value.nextAction) output.stdout(`  ${value.nextAction}\n`);
   }
   return exitCode;
@@ -85,6 +97,31 @@ function emitInventory(
   );
   if (value.truncated === true)
     output.stdout('  Some inventory rows are omitted (bounded summary).\n');
+}
+
+function emitCheck(value: Record<string, unknown>, output: CliOutput): void {
+  const findings = (key: string) =>
+    value[key] as { code: string; detail: string; next_action: string }[];
+  output.stdout(
+    `Coordinator handoff check: ${String(value.status)} (${String(value.task_id)}${value.workflow_driven === true ? ', workflow-driven' : ''}).\n`,
+  );
+  for (const item of findings('blockers'))
+    output.stdout(
+      `  blocker ${item.code}: ${item.detail}\n    next: ${item.next_action}\n`,
+    );
+  for (const item of findings('warnings'))
+    output.stdout(
+      `  note ${item.code}: ${item.detail}\n    next: ${item.next_action}\n`,
+    );
+  const steps = value.next_steps as string[];
+  if (steps.length > 0) {
+    output.stdout('  next steps, in order:\n');
+    for (const step of steps) output.stdout(`    - ${step}\n`);
+  }
+  output.stdout(
+    '  fence: protocol only; the outgoing session is neither stopped nor observed.\n',
+  );
+  output.stdout(`  limits: ${(value.limits as string[]).join(', ')}\n`);
 }
 
 function emitHuman(
@@ -111,6 +148,14 @@ export async function runCollaborationHandoffCommand(
     return invalid(output, options, ['--task-root is required.']);
   if (!path.isAbsolute(options.taskRoot))
     return invalid(output, options, ['--task-root must be absolute.']);
+
+  if (options.action === 'check') {
+    const result = await readCoordinatorHandoffCheck(options.taskRoot);
+    if (!result.ok) return failure(output, options, result, 1, true);
+    if (options.json) output.stdout(`${JSON.stringify(result.value)}\n`);
+    else emitCheck(result.value, output);
+    return result.value.ok === true ? 0 : 1;
+  }
 
   if (options.action === 'inventory') {
     let attempt: number | null = null;

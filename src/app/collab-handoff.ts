@@ -1,3 +1,4 @@
+import { lstatSync } from 'node:fs';
 import path from 'node:path';
 import {
   collaborationHandoffRequestSchema,
@@ -6,6 +7,8 @@ import {
 import { contentDigest } from '../collab/envelope.js';
 import {
   abortHandoff,
+  coordinatorHandoffReadiness,
+  type HandoffReadinessFinding,
   beginHandoff,
   completeHandoff,
   confirmReceiver,
@@ -17,6 +20,11 @@ import {
   releaseDispatchFreeze,
 } from '../collab/handoff.js';
 import { checkOwnerEpoch } from '../collab/lifecycle.js';
+import {
+  workflowManifestPath,
+  workflowWorkPlanPath,
+} from '../schemas/collab-workflow.js';
+import { evaluateCohortPlan } from './collab-workflow/dispatch.js';
 import { transact } from '../collab/store.js';
 import type { Identity, Message, TaskRecord } from '../collab/types.js';
 import {
@@ -637,6 +645,102 @@ export async function readHandoffInventory(
         results.truncated ||
         handoffs.truncated,
       limits: ['stored_state_only', 'no_native_query', 'no_message_bodies'],
+    },
+  };
+}
+
+/**
+ * Read-only boundary check for a coordinator handoff. It reads stored state only and never
+ * queries the native session, so it can say the task is at a boundary but never that the
+ * outgoing session has stopped.
+ */
+export async function readCoordinatorHandoffCheck(
+  taskRoot: string,
+): Promise<TaskStoreResult<Record<string, unknown>>> {
+  const opened = await openTaskStore(taskRoot);
+  if (!opened.ok) return opened;
+  const record = opened.value.record;
+  // A task is workflow-driven when a sealed plan OR manifest exists. Presence is judged with
+  // lstat so a dangling or redirected link still counts; the authoritative read below then
+  // refuses it. A missing artifact never downgrades the task to "not workflow-driven".
+  const present = (file: string) => {
+    try {
+      lstatSync(file);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== 'ENOENT';
+    }
+  };
+  const workflowDriven =
+    present(workflowWorkPlanPath(opened.value.taskRoot)) ||
+    present(workflowManifestPath(opened.value.taskRoot));
+  const readiness = coordinatorHandoffReadiness(record);
+  const blockers: HandoffReadinessFinding[] = [...readiness.blockers];
+  if (workflowDriven) {
+    // Reuse the dispatch evaluator: acceptance is the sealed plan's decision over verified
+    // envelopes, not a message id. Every node must be accepted for the cohort to be finished.
+    const cohort = evaluateCohortPlan(opened.value.taskRoot, record);
+    if (cohort.evaluation === null)
+      for (const item of cohort.blockers)
+        blockers.push({
+          code: item.code,
+          detail: item.detail,
+          next_action:
+            item.next_action ??
+            'Reconcile the cohort; an unverifiable cohort is never treated as finished.',
+        });
+    else {
+      const open = cohort.evaluation.nodes.filter(
+        (node) => node.status !== 'accepted',
+      );
+      if (open.length > 0)
+        blockers.push({
+          code: 'cohort_node_not_accepted',
+          detail: `Not accepted by the sealed work plan: ${open.map((node) => `${node.node_id} (${node.status})`).join(', ')}.`,
+          next_action:
+            'Finish, accept or dispatch each node first; a successor cannot accept work registered under the old epoch.',
+        });
+    }
+  }
+  const ready = blockers.length === 0;
+  const coordinator = record.coordinator ?? null;
+  return {
+    ok: true,
+    value: {
+      schema: COLLAB_HANDOFF_SCHEMA,
+      ok: ready,
+      action: 'check',
+      status: ready ? 'ready' : 'blocked',
+      task_root: opened.value.taskRoot,
+      task_id: record.task_id,
+      coordinator:
+        coordinator === null
+          ? null
+          : {
+              agent_id: coordinator.agent_id,
+              session_id: coordinator.session_id,
+              harness: coordinator.harness ?? null,
+              owner_epoch: coordinator.owner_epoch,
+            },
+      workflow_driven: workflowDriven,
+      blockers,
+      warnings: readiness.warnings,
+      fence: {
+        kind: 'protocol_fenced',
+        process_quiescence: 'unavailable',
+        detail:
+          'The handoff raises owner_epoch so the old coordinator is refused; it does not stop or observe the old session.',
+      },
+      next_steps: ready
+        ? [
+            'collab handoff begin (kind coordinator, current owner_epoch)',
+            'collab handoff transfer (stored inventory)',
+            'collab handoff confirm (successor ACK or HANDOFF message)',
+            'collab handoff complete',
+            'collab handoff release-dispatch (by the successor, new epoch)',
+          ]
+        : [],
+      limits: ['stored_state_only', 'no_native_query', 'read_only'],
     },
   };
 }

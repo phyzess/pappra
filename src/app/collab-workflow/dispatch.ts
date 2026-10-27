@@ -548,7 +548,7 @@ function resolveCardTarget(
  * re-derives its evaluation from the sealed plan, the current record and the registered
  * decision envelopes, so a finished report or a released claim never unlocks dependent work.
  */
-function evaluateCohortPlan(
+export function evaluateCohortPlan(
   taskRoot: string,
   record: TaskRecord,
 ): { evaluation: WorkPlanEvaluation | null; blockers: WorkflowBlocker[] } {

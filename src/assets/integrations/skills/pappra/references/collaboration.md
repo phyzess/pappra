@@ -322,6 +322,7 @@ claims.
 
 ```sh
 pappra collab handoff inventory --task-root <abs> [--subtask-id <id>] [--attempt <n>] [--json]
+pappra collab handoff check --task-root <abs> [--json]
 pappra collab handoff <begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> \
   --task-root <abs> --request <abs> [--apply] [--json]
 ```
@@ -333,6 +334,11 @@ authentication. Plan without `--apply` validates request/namespace only and writ
 nothing; apply revalidates and checks the epoch inside the guarded transaction,
 preserving refusal rollback. This records cooperative ownership transfer; it is
 not OS fencing, stop proof or a launch mechanism.
+
+Run `handoff check` before a coordinator handoff. It is read-only and blocks while
+work is in flight, reports are unaccepted, claims are held or uncertainty is open,
+because a successor cannot accept work registered under the old epoch. A passing
+check never means the outgoing session stopped.
 
 Confirmation is a registered message that is already present in the authoritative
 record as an accepted/recorded ACK or HANDOFF entry. It must match its stored

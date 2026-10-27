@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
@@ -22,6 +29,8 @@ import {
   parseWorkflowPrepareRequest,
   workflowAssignmentPath,
 } from '../../src/schemas/collab-workflow.js';
+import { readCoordinatorHandoffCheck } from '../../src/app/collab-handoff.js';
+import { transact } from '../../src/collab/store.js';
 import { buildMessage } from '../../src/collab/envelope.js';
 import { submitMessage } from '../../src/collab/messages.js';
 import { claimResources } from '../../src/collab/resources.js';
@@ -1171,6 +1180,172 @@ test('workflow dispatch refuses a missing, declared or stale capability card', a
     });
     assert.equal(plannedOnly.status, 'blocked');
     assert.equal(plannedOnly.messages.length, 0);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+async function handoffCheck(taskRoot: string) {
+  const result = await readCoordinatorHandoffCheck(taskRoot);
+  assert.ok(result.ok);
+  const value = result.value as {
+    status: string;
+    workflow_driven: boolean;
+    blockers: { code: string }[];
+  };
+  return { value, codes: value.blockers.map((item) => item.code) };
+}
+
+test('handoff check on a real cohort is ready only when the sealed plan accepts every node', async () => {
+  const { fixture, taskRoot, reportIds, batch } = await batchFixture(
+    'workflow-handoff-check',
+  );
+  try {
+    const before = await handoffCheck(taskRoot);
+    assert.equal(before.value.workflow_driven, true);
+    assert.equal(before.value.status, 'blocked');
+    assert.ok(before.codes.includes('cohort_node_not_accepted'));
+
+    // A registered applied ANSWER that merely carries the accept id, with no readable
+    // envelope behind it, must not count as acceptance.
+    const forged = transact(taskRoot, {
+      actor: 'fixture',
+      purpose: 'forge-acceptance-name',
+      apply: (record) => {
+        record.messages = [
+          ...(record.messages ?? []),
+          {
+            message_id: 'accept-writer-one-1',
+            type: 'ANSWER',
+            subtask_id: 'writer-one',
+            attempt: 1,
+            from: { ...COORDINATOR },
+            to: {
+              agent_id: WRITER_A.agent_id,
+              session_id: WRITER_A.session_id,
+              harness: WRITER_A.harness,
+            },
+            reply_to: reportIds['writer-one'] ?? null,
+            owner_epoch: 1,
+            content_digest: 'sha256:forged',
+            at: new Date().toISOString(),
+            applied_at: new Date().toISOString(),
+            state: 'applied',
+            detail: 'forged',
+            body_kind: null,
+          } as never,
+        ];
+        return { record, op: 'forge', summary: {}, result: { ok: true } };
+      },
+    });
+    assert.ok(forged.ok);
+    const afterForged = await handoffCheck(taskRoot);
+    assert.equal(afterForged.value.status, 'blocked');
+    assert.ok(afterForged.codes.includes('decision_envelope_missing'));
+    assert.ok(batch(COORDINATOR));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('handoff check treats a sealed manifest without a plan, or a redirected plan, as unreadable', async () => {
+  const fixture = makeTaskDomain('workflow-handoff-plan-missing', ['cohort'], {
+    initialize: [],
+  });
+  try {
+    const prepared = await applyPrepare(
+      prepareRequest(fixture.domainRoot, fixture.root, [
+        writerAssignment('writer-one', WRITER_A.agent_id, [
+          { path: join(fixture.root, 'a'), access: 'write' as const },
+        ]),
+      ]),
+    );
+    assert.equal(prepared.status, 'applied', JSON.stringify(prepared.blockers));
+    const taskRoot = join(fixture.domainRoot, 'tasks', 'cohort');
+    const plan = join(taskRoot, 'workflow', 'work-plan.json');
+    const parked = `${plan}.parked`;
+    renameSync(plan, parked);
+    const missing = await handoffCheck(taskRoot);
+    assert.equal(missing.value.workflow_driven, true, 'manifest alone counts');
+    assert.equal(missing.value.status, 'blocked');
+    assert.ok(missing.codes.includes('work_plan_missing'));
+
+    symlinkSync(join(fixture.root, 'does-not-exist'), plan);
+    const dangling = await handoffCheck(taskRoot);
+    assert.equal(dangling.value.workflow_driven, true);
+    assert.equal(dangling.value.status, 'blocked');
+    assert.ok(dangling.codes.includes('work_plan_missing'));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('handoff check turns ready once the cohort is reported, accepted and released', async () => {
+  const fixture = makeTaskDomain('workflow-handoff-ready', ['cohort'], {
+    initialize: [],
+  });
+  try {
+    const prepared = await applyPrepare(
+      prepareRequest(fixture.domainRoot, fixture.root, [
+        writerAssignment('writer-one', WRITER_A.agent_id, [
+          { path: join(fixture.root, 'a'), access: 'write' as const },
+        ]),
+      ]),
+    );
+    assert.equal(prepared.status, 'applied', JSON.stringify(prepared.blockers));
+    const taskRoot = join(fixture.domainRoot, 'tasks', 'cohort');
+    mkdirSync(join(fixture.root, 'a'), { recursive: true });
+    const output = join(fixture.root, 'a', 'output.txt');
+    writeFileSync(output, 'built\n');
+    const reported = await applyParticipant(
+      reportRequest(taskRoot, WRITER_A, 'writer-one', 1, [output]),
+      { notify: silentNotify },
+    );
+    assert.equal(reported.status, 'applied', JSON.stringify(reported.blockers));
+
+    const reportedOnly = await handoffCheck(taskRoot);
+    assert.ok(reportedOnly.codes.includes('cohort_node_not_accepted'));
+
+    const accepted = await applyAccept(
+      {
+        schema: 'pappra/collab-workflow-accept-request/1',
+        task_root: taskRoot,
+        caller: { ...COORDINATOR, cwd: fixture.root },
+        subtask_id: 'writer-one',
+        attempt: 1,
+        report_message_id: reported.messages[0]!.message_id,
+        caller_pane: null,
+        reason: 'ok',
+      },
+      { notify: silentNotify },
+    );
+    assert.equal(accepted.status, 'applied', JSON.stringify(accepted.blockers));
+    const heldAfterAccept = await handoffCheck(taskRoot);
+    assert.deepEqual(heldAfterAccept.codes, ['claims_unreleased']);
+
+    const released = await applyParticipant(
+      {
+        schema: 'pappra/collab-workflow-participant-request/1',
+        action: 'release',
+        task_root: taskRoot,
+        caller: { ...WRITER_A, cwd: fixture.root },
+        subtask_id: 'writer-one',
+        attempt: 1,
+        caller_pane: null,
+        report: null,
+        release: {
+          reason: 'Scope handed back.',
+          cancel_attempt: false,
+          correlates_to: accepted.messages[0]!.message_id,
+        },
+      },
+      { notify: silentNotify },
+    );
+    assert.equal(released.status, 'applied', JSON.stringify(released.blockers));
+    const done = await handoffCheck(taskRoot);
+    assert.deepEqual(done.codes, []);
+    assert.equal(done.value.status, 'ready');
+    assert.equal(done.value.workflow_driven, true);
   } finally {
     fixture.cleanup();
   }

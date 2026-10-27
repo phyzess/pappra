@@ -292,6 +292,8 @@ collaboration claims.
 pappra collab handoff inventory --task-root /abs/tasks/<task-id> \
   [--subtask-id <id>] [--attempt <positive>] [--json]
 
+pappra collab handoff check --task-root /abs/tasks/<task-id> [--json]
+
 pappra collab handoff <begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> \
   --task-root /abs/tasks/<task-id> --request /abs/request.json [--apply] [--json]
 ```
@@ -348,6 +350,122 @@ pending approvals, uncertainty, resources, results (output counts, not payloads)
 and handoffs. It never prints message bodies, stop artifact bodies or arbitrary
 inventory payloads, and never queries pane idle, kills a process or launches an
 agent.
+
+`handoff check` is also stored-state-only and read-only. It answers one question:
+is the task at a cohort boundary where the coordinator can change safely? A
+coordinator handoff raises `owner_epoch` and nothing re-stamps attempts or the
+sealed work plan afterwards, so a successor cannot accept work registered under
+the old epoch (`acceptance_stale`, `plan_epoch_stale`). From the task record it
+blocks on: `attempt_in_flight`, `attempt_needs_input`, `source_holds_claims` (the
+outgoing coordinator itself holds a claim; a protocol-only handoff does not stop
+that session), `claims_unreleased` (other holders), `uncertainty_open`,
+`handoff_open` and `no_coordinator`. An unresolved uncertainty on an attempt that
+already ended is a warning, not a blocker.
+
+A task is workflow-driven when a sealed `workflow/work-plan.json` or
+`workflow/manifest.json` exists, judged without following links, so a missing or
+redirected artifact never downgrades the answer. For such a task the check reuses
+the dispatch evaluator: the sealed plan, the record and the registered decision
+envelopes must show every node as `accepted`, otherwise `cohort_node_not_accepted`
+(a deferred reviewer that never started is such a node). An unreadable, invalid or
+epoch-stale plan, or a registered decision without a readable envelope, is a
+blocker with the evaluator's own code (`work_plan_missing`, `work_plan_invalid`,
+`decision_envelope_missing`, ...). Acceptance is never inferred from a message id.
+
+The result always states `fence: protocol_fenced, process_quiescence: unavailable`:
+a passing check means the stored state allows the handoff, never that the outgoing
+session has stopped. When ready it lists the ordered `begin`, `transfer`, `confirm`,
+`complete`, `release-dispatch` steps, in human output as well as JSON. Exit code 0
+means ready and 1 means blocked; an unreadable task reports `status: unreadable`.
+
+Exit codes are 0 for a successful read/plan/apply, 1 for state conflict,
+uncertainty or a core refusal, and 2 for invalid request/options. Tests and
+examples use fresh fixture domains; they never release or alter live
+collaboration claims.
+
+## Recorded ownership handoff
+
+```sh
+pappra collab handoff inventory --task-root /abs/tasks/<task-id> \
+  [--subtask-id <id>] [--attempt <positive>] [--json]
+
+pappra collab handoff check --task-root /abs/tasks/<task-id> [--json]
+
+pappra collab handoff <begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> \
+  --task-root /abs/tasks/<task-id> --request /abs/request.json [--apply] [--json]
+```
+
+Handoff requests use `pappra/collaboration-handoff-request/1`; the action must
+match the command. Every mutation carries an explicit actor identifier, a
+positive current `owner_epoch` and an optional `expect_revision` for the existing
+transaction revision check. These editable fields are protocol inputs, not
+caller authentication. Request JSON is bounded at 1 MiB and read through the
+shared special-file-safe loader. No clock override or inline confirmation
+envelope is accepted.
+
+A writer `begin` names `handoff_id`, `kind`, exact `from`/`to` identities,
+resource claim ids and the writer subtask/attempt. A coordinator `begin` uses
+`kind: "coordinator"` and moves coordinator ownership. Later actions map directly
+to the maintained primitives:
+
+- `stopped`: explicit observation and evidence ref; unknown stop refuses.
+- `rebind`: explicit receiver identity and evidence ref; refused after confirmation.
+- `transfer`: bounded inventory arrays recorded as data, not approval authority.
+- `confirm`: only a registered `confirmation_message_id`.
+- `complete`, `abort`: existing completion/abort behavior.
+- `release-dispatch`: explicit current epoch; completion never releases the freeze automatically.
+
+Plan without `--apply` validates the request and task namespace only; it writes
+nothing, acquires no lock and makes no ownership reservation. Apply revalidates
+the namespace/confirmation evidence, checks the request epoch inside the guarded
+transaction before the primitive, and uses the existing transaction/ledger path
+exactly once. A primitive refusal leaves the authoritative record unchanged; an
+in-memory partial mutation is never committed accidentally. This is cooperative
+record ownership transfer, not OS fencing, stop proof or a launch mechanism.
+
+Receiver confirmation is stricter than the core message note. The referenced
+message must be safely registered and present in the authoritative record as an
+accepted/recorded `ACK` or `HANDOFF` entry. It must match the stored content
+digest, come from the receiver identity to the current coordinator, carry the
+current owner epoch, and explicitly correlate via `body.handoff_id` or
+`reply_to` to this handoff without a conflicting body id. A `HANDOFF` confirmation
+must use a non-request phase; `confirmation` is the documented phase. Missing,
+unregistered, rejected/unapplied, wrong-recipient/session, wrong-epoch, replayed
+or unrelated messages cannot authorize a transfer; symlink and FIFO
+registrations are refused.
+
+Writer completion raises the affected claim resource epochs and transfers the
+recorded claim holder; coordinator completion raises `owner_epoch`, changes the
+coordinator and keeps `dispatch_frozen` until an explicit current-epoch
+`release-dispatch`. Existing overlapping-handoff, old-writer-stop,
+ownership-drift, holder, stale-epoch and rebound-receiver refusals remain in
+force.
+
+`handoff inventory` is stored-state-only and read-only. It reports bounded
+summaries with full counts and actual omission for inflight/closed attempts,
+pending approvals, uncertainty, resources, results (output counts, not payloads)
+and handoffs. It never prints message bodies, stop artifact bodies or arbitrary
+inventory payloads, and never queries pane idle, kills a process or launches an
+agent.
+
+`handoff check` is also stored-state-only and read-only. It answers one question:
+is the task at a cohort boundary where the coordinator can change safely? A
+coordinator handoff raises `owner_epoch` and nothing re-stamps attempts or the
+sealed work plan afterwards, so a successor cannot accept work registered under
+the old epoch (`acceptance_stale`, `plan_epoch_stale`). The check therefore blocks
+on: `attempt_in_flight`, `attempt_needs_input`, `report_unaccepted` (only for
+tasks that have a sealed workflow work plan), `assignment_not_started` (a
+sealed assignment, such as a deferred reviewer, has no attempt yet),
+`workflow_manifest_unreadable` (the cohort cannot be known, so it is not treated
+as finished), `source_holds_claims` (the outgoing
+coordinator itself holds a claim; a protocol-only handoff does not stop that
+session), `claims_unreleased` (other holders), `uncertainty_open`, `handoff_open`
+and `no_coordinator`. An unresolved uncertainty on an attempt that already ended
+is a warning, not a blocker. The result always states
+`fence: protocol_fenced, process_quiescence: unavailable`: a passing check means
+the stored state allows the handoff, never that the outgoing session has stopped.
+When ready it lists the ordered `begin`, `transfer`, `confirm`, `complete`,
+`release-dispatch` steps. Exit code 0 means ready and 1 means blocked.
 
 Exit codes are 0 for a successful read/plan/apply, 1 for a core refusal,
 conflict, stale epoch/revision or uncertainty, and 2 for invalid

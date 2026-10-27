@@ -3,6 +3,7 @@ import { text } from './validation.js';
 import { createNonce, nowIso } from './store.js';
 import {
   ACTIVE_STATES,
+  CLOSED_STATES,
   TERMINAL_STATES,
   findAttempt,
   openUncertainty,
@@ -730,4 +731,117 @@ export function handoffInventory(
 
 export function newHandoffId(prefix = 'handoff') {
   return `${prefix}-${createNonce()}`;
+}
+
+export interface HandoffReadinessFinding {
+  readonly code: string;
+  readonly detail: string;
+  readonly next_action: string;
+}
+
+export interface CoordinatorHandoffReadiness {
+  readonly ready: boolean;
+  readonly blockers: readonly HandoffReadinessFinding[];
+  readonly warnings: readonly HandoffReadinessFinding[];
+}
+
+/**
+ * Read-only: is the task at a cohort boundary where the coordinator can change safely?
+ *
+ * A coordinator handoff raises `owner_epoch`, and nothing re-stamps attempts or the sealed
+ * work plan afterwards, so a successor cannot accept work registered under the old epoch.
+ * Anything still in progress therefore blocks the handoff. This function judges the record
+ * only; for a task driven by the typed workflow the caller adds the authoritative plan
+ * evaluation, because acceptance is decided by the work plan and never by a message name.
+ */
+export function coordinatorHandoffReadiness(
+  record: TaskRecord,
+): CoordinatorHandoffReadiness {
+  const blockers: HandoffReadinessFinding[] = [];
+  const warnings: HandoffReadinessFinding[] = [];
+  const coordinator = record.coordinator ?? null;
+  if (coordinator === null)
+    blockers.push({
+      code: 'no_coordinator',
+      detail: 'The task record names no coordinator.',
+      next_action: 'Inspect the task record; there is nothing to hand off.',
+    });
+  const label = (item: { subtask_id: string; attempt: number }) =>
+    `${item.subtask_id}#${String(item.attempt)}`;
+  const open = (record.handoffs ?? []).filter(
+    (item) => !['completed', 'aborted'].includes(item.state),
+  );
+  if (open.length > 0)
+    blockers.push({
+      code: 'handoff_open',
+      detail: `Open handoff(s): ${open.map((item) => `${item.handoff_id} (${item.state})`).join(', ')}.`,
+      next_action: 'Complete or abort the open handoff first.',
+    });
+  const attempts = record.attempts ?? [];
+  const live = attempts.filter((item) => ACTIVE_STATES.includes(item.state));
+  if (live.length > 0)
+    blockers.push({
+      code: 'attempt_in_flight',
+      detail: `Still running or awaiting a result: ${live.map(label).join(', ')}.`,
+      next_action:
+        'Wait for each attempt to finish and be decided, or cancel it, before handing off.',
+    });
+  const blocked = attempts.filter((item) => item.state === 'needs_input');
+  if (blocked.length > 0)
+    blockers.push({
+      code: 'attempt_needs_input',
+      detail: `Waiting for input: ${blocked.map(label).join(', ')}.`,
+      next_action: 'Resolve or cancel the blocked attempt before handing off.',
+    });
+  const held = (record.claims ?? []).filter((item) => !item.released_at);
+  const heldBySource = held.filter(
+    (item) =>
+      coordinator !== null &&
+      item.holder?.agent_id === coordinator.agent_id &&
+      item.holder?.session_id === coordinator.session_id,
+  );
+  if (heldBySource.length > 0)
+    blockers.push({
+      code: 'source_holds_claims',
+      detail: `The current coordinator itself holds ${String(heldBySource.length)} unreleased claim(s).`,
+      next_action:
+        'Release them first; a protocol-only handoff does not stop the old session, so it must not keep write authority.',
+    });
+  const heldByOthers = held.length - heldBySource.length;
+  if (heldByOthers > 0)
+    blockers.push({
+      code: 'claims_unreleased',
+      detail: `${String(heldByOthers)} claim(s) held by other participants are not released.`,
+      next_action:
+        'Wait for the holders to release, or reconcile the claims, before handing off.',
+    });
+  for (const item of (record.uncertainty ?? []).filter(
+    (entry) => !entry.resolved_at,
+  )) {
+    const target =
+      item.subtask_id !== null && item.attempt !== null
+        ? findAttempt(record, item.subtask_id, item.attempt)
+        : null;
+    const finding = {
+      code:
+        target !== null && CLOSED_STATES.includes(target.state)
+          ? 'uncertainty_on_closed_attempt'
+          : 'uncertainty_open',
+      detail: `${item.uncertainty_id} (${item.kind})${
+        item.subtask_id === null
+          ? ''
+          : ` on ${item.subtask_id}#${String(item.attempt)}`
+      } is unresolved.`,
+      next_action: 'Reconcile the uncertainty with actual evidence.',
+    };
+    // An unresolved ledger entry on an attempt that already ended is residue, not live risk.
+    (finding.code === 'uncertainty_open' ? blockers : warnings).push(finding);
+  }
+  if (record.dispatch_frozen === true)
+    warnings.push({
+      code: 'dispatch_frozen',
+      detail: 'Dispatch is already frozen by an earlier handoff.',
+      next_action: 'The incoming coordinator must release it explicitly.',
+    });
+  return { ready: blockers.length === 0, blockers, warnings };
 }

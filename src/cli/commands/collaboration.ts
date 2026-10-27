@@ -41,7 +41,7 @@ export const collaborationUsage =
   '  capabilities derive --harness <pi|codex|claude> --assignment <file> --template <file> [--execution <file> | --live] [--session <file> | --events <file>] [--json]\n' +
   '  state <show|doctor|epoch-check> --task-root <dir> [options]\n' +
   '  resource <list|claim|release> --task-root <dir> [options]\n' +
-  '  handoff <inventory|begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> --task-root <dir> [options]\n' +
+  '  handoff <inventory|check|begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> --task-root <dir> [options]\n' +
   '  recovery <inspect|reconcile|lock-break> --task-root <dir> [options]\n' +
   '  recovery-run --request <abs recovery-run.json> [--apply] [--json]\n' +
   '    Apply requires exact session/cwd/harness/pane and a task-local digest-pinned binding.\n' +

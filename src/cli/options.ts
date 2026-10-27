@@ -243,7 +243,7 @@ export function parseOptions(args: readonly string[]) {
         ))
     ) {
       throw new Error(
-        'collab accepts prepare, run, work-run, workflow <prepare|dispatch|ack|report|accept|release|inspect>, query, preflight, plan, bootstrap, rollover <inspect|plan>, transition <plan|apply>, message <send|list|read|notify>, capabilities derive, state <show|doctor|epoch-check>, resource <list|claim|release>, handoff <inventory|begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch>, recovery <inspect|reconcile|lock-break>, recovery-run, or binding <list|resolve|bind|unbind>.',
+        'collab accepts prepare, run, work-run, workflow <prepare|dispatch|ack|report|accept|release|inspect>, query, preflight, plan, bootstrap, rollover <inspect|plan>, transition <plan|apply>, message <send|list|read|notify>, capabilities derive, state <show|doctor|epoch-check>, resource <list|claim|release>, handoff <inventory|check|begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch>, recovery <inspect|reconcile|lock-break>, recovery-run, or binding <list|resolve|bind|unbind>.',
       );
     }
     return {

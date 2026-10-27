@@ -13,6 +13,7 @@ export async function handleHandoff(
     const selected = collaborationAction.slice('handoff:'.length);
     const handoffAction =
       selected === 'inventory' ||
+      selected === 'check' ||
       selected === 'begin' ||
       selected === 'stopped' ||
       selected === 'rebind' ||
@@ -26,7 +27,9 @@ export async function handleHandoff(
     const duplicateFlags =
       handoffAction === 'inventory'
         ? ['--task-root', '--subtask-id', '--attempt']
-        : ['--task-root', '--request'];
+        : handoffAction === 'check'
+          ? ['--task-root']
+          : ['--task-root', '--request'];
     const duplicate = duplicateFlags.filter(
       (flag) =>
         args.filter((arg) => arg === flag || arg.startsWith(`${flag}=`))
@@ -37,7 +40,9 @@ export async function handleHandoff(
       'json',
       ...(handoffAction === 'inventory'
         ? ['subtask-id', 'attempt']
-        : ['request', 'apply']),
+        : handoffAction === 'check'
+          ? []
+          : ['request', 'apply']),
     ]);
     const extra = Object.entries(values)
       .filter(([, value]) => value !== undefined)
@@ -48,7 +53,7 @@ export async function handleHandoff(
         output,
         json,
         'invalid_arguments',
-        `collab handoff accepts only inventory or a handoff mutation action and their own options.${
+        `collab handoff accepts only inventory, check or a handoff mutation action and their own options.${
           duplicate.length ? ` Duplicate: ${duplicate.join(', ')}.` : ''
         }${extra.length ? ` Unexpected: ${extra.join(', ')}.` : ''}\n${collaborationHandoffUsage}`,
       );
