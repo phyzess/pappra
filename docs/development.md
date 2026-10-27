@@ -71,6 +71,15 @@ when a `dist/` build exists.
 | `code-index` | `pappra code status --repo <id>` reports an explicit `health.state` of `ready` |
 | `docs-registration` | `docs scan` reports no unregistered candidates and `docs check --include-private` reports a complete summary with nothing left for review, so private registered documents are included |
 
+## Automatic engagement in Claude Code
+
+A skill alone is only matched by description, so this repository also engages Pappra
+deterministically: `CLAUDE.md` imports `AGENTS.md` (Claude Code does not read `AGENTS.md`),
+`.claude/settings.json` registers a `SessionStart` hook that runs `scripts/session-context.ts`,
+and `.mcp.json` serves MCP from the repository build. The hook only injects context: it tells
+the agent to invoke the `pappra` skill, to use `node dist/cli/main.js`, and which `dev:check`
+items still need `pnpm dev:setup`. It writes nothing and never fails the session.
+
 `dev:check` only runs status queries and plans: `code status`, `docs scan`
 (plan) and `docs check --include-private`.
 

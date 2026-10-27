@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "pappra": {
-      "command": "pappra",
-      "args": ["mcp"]
+      "command": "node",
+      "args": ["dist/cli/main.js", "mcp"]
     }
   }
 }
