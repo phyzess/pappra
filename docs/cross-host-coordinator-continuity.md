@@ -5,16 +5,17 @@ Status: proposal, not implemented. Nothing here changes behaviour until a phase 
 ## Problem
 
 A coordinator accumulates context (reports, decisions, claims) over a long cohort. Today
-only a Pi session that Pappra owns through the managed SDK can hand that role to a
-successor automatically ([automatic handoff](automatic-handoff.md)). When Codex or Claude
-Code is the coordinator, the same capability is missing: the transition request accepts
-only `harness: 'pi'` (`src/app/collab-session-transition-request.ts`), the automatic
-handoff constructs only Pi identities (`src/app/collab-auto-handoff.ts`), and dispatch
-derives live evidence only for Pi.
+only a Pi session that Pappra owns through the managed SDK is handed over automatically
+([automatic handoff](automatic-handoff.md)). For Codex or Claude Code as coordinator the
+automation is missing: the session transition request accepts only `harness: 'pi'`
+(`src/app/collab-session-transition-request.ts`), the automatic handoff constructs only Pi
+identities (`src/app/collab-auto-handoff.ts`), and dispatch derives live evidence only for
+Pi. See the correction below: that Pi machinery turned out to be a writer rollover, not the
+coordinator path.
 
 The goal is that any supported harness can be the coordinator and still reach every
-continuity capability **that the host can honestly support**, with the report saying
-exactly which guarantee was and was not obtained.
+continuity capability **that the host can honestly support**, with reports saying exactly
+which guarantee was and was not obtained.
 
 Non-goals: a role daemon, hooks that start models or write checkpoints, treating
 idle/settled/`abort()` as proof that a process stopped
@@ -28,13 +29,12 @@ or inventing identities and capabilities from prose.
 | 1 | Signal | Observe live context use, decide when to hand off | native context percentage |
 | 2 | Capture | Preserve a lossy summary plus the lossless source | native compaction + retained JSONL |
 | 3 | Launch | Start a successor of the same harness with the checkpoint imported | managed bootstrap in a visible pane |
-| 4 | Fence | Make the old session unable to act as coordinator | scoped quiescence proof + epoch transfer |
+| 4 | Fence | Make the old session unable to act as coordinator | epoch transfer (writer rollover also uses a scoped quiescence proof) |
 | 5 | Verify | Successor proves first work before the source retires | correlated `handoff-first-work` REPORT |
 
-The state machine (journal first, then effect; epoch and claim re-validation; retirement
-is not archive) is already harness-neutral in intent. Only the identity check, the
-quiescence proof and the launch/observe adapters are Pi-specific. The design keeps the
-state machine and replaces those three with an adapter seam.
+The first draft planned an adapter seam over the Pi session-transition state machine. The
+correction below shows that machine is the writer path; the coordinator path is already
+harness-neutral in the protocol.
 
 ## Evidence by host
 
@@ -79,63 +79,96 @@ vendor docs and must be re-checked against the pinned version before use.
 
 Unchanged: Pappra owns the SDK runtime, which is why a scoped quiescence proof is possible.
 
-## Core decision: two fencing tiers, reported honestly
+## Correction: what the protocol already provides (read after phase 0)
 
-The expensive part of the Pi path is proving the source process stopped. That proof exists
-because the source may hold write claims and a stray writer would corrupt a successor's
-scope. For other hosts we cannot always get it, so we separate what each tier guarantees.
+The first draft of this proposal assumed a coordinator handoff needs a new protocol-level
+"fence" step and an adapter seam over the Pi session-transition state machine. Reading the
+protocol showed otherwise:
 
-**Tier S, process-fenced.** Pappra owns the runtime of the source (Pi SDK today; a
-Pappra-started Codex app-server thread; a Pappra-started `claude -p --input-format
-stream-json` child). Quiescence is proven with the existing scoped, fresh,
-inventory-digested receipt. Same guarantees as Pi.
+- The Pi session transition (quiescence proof, managed SDK, `rollover`) is a **writer**
+  rollover: it moves a worker's claims and attempt to a successor. It is not how a
+  coordinator is replaced and does not need generalising for this goal.
+- A **coordinator handoff** already exists in the protocol (`kind: 'coordinator'` in
+  `src/collab/handoff.ts`, driven by `pappra collab handoff begin|transfer|confirm|complete|
+  release-dispatch`). It is harness-agnostic and tested
+  (`tests/collab/task-handoff-cli.test.ts`). By design it requires **no stop proof**: "a
+  coordinator handoff has no writer process to stop: the freeze plus the captured inventory is
+  the barrier". The fence is the owner epoch: `complete` replaces `record.coordinator`, raises
+  `owner_epoch`, records `previous`, and freezes dispatch until the new coordinator releases
+  it. Old-epoch commands are refused by the epoch checks.
+- So the "protocol-fenced" tier is simply what a coordinator handoff is. What matters is that
+  Pappra never reports it as process quiescence. The CLI already states
+  `limits: cooperative_record_mutation_only, no_native_control`.
 
-**Tier P, protocol-fenced.** The source is an interactive session Pappra does not own
-(a user-started Claude Code or Codex TUI). Nothing external can stop it. The fence is the
-existing owner epoch: after the epoch transfers, the old coordinator is refused by
-`accept`, `dispatch`, `reclaim`, `release` correlation and every `transact` epoch check
-(`accept_not_coordinator`, `acceptance_stale`). The report states
-`fence: protocol_fenced_only` and `process_quiescence: unavailable`; it never claims the
-process stopped.
+The accepted decision 1 therefore needs no new reducer step. It remains the rule for what a
+guided workflow may claim.
 
-Tier P is safe only for a source that **coordinates but does not write under a claim**.
-It is admitted only when all hold, re-checked at each effect boundary:
+## The real gap: a mid-cohort handoff strands the cohort
 
-1. the source holds no unreleased `write` claim and has no active attempt as assignee;
-2. the source is not a participant with a sealed write scope in the cohort;
-3. the successor binding and live pane identity match (as for Pi);
-4. the user's task authorization covers a protocol-fenced handoff.
+Verified with a throwaway test (deleted afterwards): prepare a cohort, let a writer report,
+then simulate what `completeHandoff` does to the record (new coordinator identity, epoch + 1).
+The new coordinator's `workflow accept` is refused with `acceptance_stale` and
+`plan_epoch_stale`.
 
-If any fails, the transition refuses with a concrete reason instead of downgrading
-silently. A source that is also a writer must finish or release first, or be a Tier S host.
+Cause: nothing re-stamps state after the epoch moves.
 
-## Adapter seam
+- `attempt.owner_epoch` stays at the epoch the attempt was registered under; acceptance
+  requires it to equal the current epoch (`acceptance.ts`).
+- The sealed `work-plan.json` carries `owner_epoch`, and the work-plan evaluator requires the
+  plan, the accept envelope and the report envelopes to agree on one epoch
+  (`work-plan.ts`).
+- `workflow prepare` cannot be re-run: the sealed manifest names the old coordinator.
 
-Replace the `harness !== 'pi'` assertions with a typed adapter chosen by the observed
-harness, never by name similarity:
+This is independent of the harness. It means a coordinator handoff is safe today only at a
+**cohort boundary** (no non-terminal attempt, no completed-but-unaccepted attempt, no open
+uncertainty). Mid-cohort, the successor cannot finish the work.
+
+## Revised design
+
+Two levels, in this order.
+
+**Level 0, boundary handoff (needs no protocol change).** At a cohort boundary the successor
+can take over with the existing `pappra checkpoint` / `pappra resume`, or with the
+`collab handoff` coordinator flow, and start the next cohort under its own epoch. A guided
+command should make this the safe default and refuse a handoff that the inventory shows is
+mid-cohort, with the exact blocker (non-terminal attempts, unaccepted reports, open
+uncertainty, or write claims held by the source). This is a read-and-check layer over
+`handoffInventory`; it changes no persisted state.
+
+**Level 1, mid-cohort succession (protocol change).** Needs an explicit, auditable
+adoption step after a completed coordinator handoff, run by the new coordinator, that
+re-establishes authority over the existing cohort:
+
+- re-derive the work plan under the new epoch from the sealed assignments, bound to the
+  handoff id and the transfer inventory digest, never by editing the sealed original;
+- re-stamp the epoch of attempts that are still live, with the earlier epoch kept as
+  evidence;
+- decide explicitly what happens to reports and decisions already registered under the old
+  epoch (valid evidence for the new plan, or re-confirmed by the worker).
+
+This touches authorization, persisted state and recovery, so it needs its own written
+specification and an independent review before any code. Do not start it from this document.
+
+## Where Claude and Codex fit
+
+The handoff protocol is the same for every harness. What differs, per host, is only how the
+coordinator learns it should hand off, how a successor is started, and how it imports the
+checkpoint. The Pi-specific quiescence machinery is irrelevant to this path.
 
 ```ts
-interface ContinuityAdapter {
+interface CoordinatorHostSupport {
   readonly harness: 'pi' | 'codex' | 'claude';
-  readonly tier: 'process-fenced' | 'protocol-fenced';
-  observeUsage(source): UsageObservation | 'unavailable';   // capability 1
-  captureCheckpoint(source): CheckpointCapture;             // capability 2
-  launchSuccessor(plan): SuccessorLaunch;                   // capability 3
-  fence(source): FenceReceipt;                              // capability 4
-  observeFirstWork(successor): FirstWorkEvidence | 'unknown'; // capability 5
+  observeUsage(source): UsageObservation | 'unavailable'; // signal
+  launchSuccessor(plan): SuccessorLaunch;                 // visible pane + seed
+  importCheckpoint(successor, checkpoint): ImportReceipt; // resume
 }
 ```
 
-- The Pi adapter wraps existing code; phase 1 must leave every Pi test green and every Pi
-  report byte-identical.
-- Unsupported capabilities return `unavailable`; the report carries the exact blocker. The
-  journal and effect receipts are unchanged.
-- The report gains `fence_kind` and keeps `process_quiescence` as its own field so a Tier P
-  report can never read as a Tier S one.
+It is small, harness-keyed and additive; it is not a seam through the Pi state machine.
 
 ## Per-host adapters
 
-### Claude Code (Tier P by default)
+### Claude Code
 
 - **Signal.** An opt-in Pappra status-line wrapper writes a bounded, private usage
   observation (`used_percentage`, `context_window_size`, session id, timestamp) and then
@@ -151,12 +184,11 @@ interface ContinuityAdapter {
 - **Launch.** A visible sibling pane (Herdr) starts `claude "<seed prompt>"`, and a
   `SessionStart` hook injects the digest-verified checkpoint reference as context. Before
   any task preparation the existing one-time read-only identity handshake applies.
-- **Fence.** Tier P. Tier S needs an owned stream-json child, which is not visible and so
-  conflicts with the visible-peers default. It is out of scope for the first phases.
+- **Fence.** The protocol coordinator handoff; no process stop is claimed or needed.
 - Do not use `PreCompact` blocking to defer compaction: it makes a safety property depend on
   an undocumented interaction.
 
-### Codex (Tier S where owned, Tier P otherwise)
+### Codex
 
 - **Signal.** `thread/tokenUsage/updated` from the app-server the adapter is connected to.
 - **Capture.** `thread/compact/start` for a native summary, plus `thread/read` to retain the
@@ -164,11 +196,10 @@ interface ContinuityAdapter {
 - **Launch.** `thread/start` (or `thread/fork`) then `thread/inject_items` with the
   digest-verified checkpoint, then `turn/start` with the next action; visible via a Herdr
   pane running the TUI against the same app-server when that is supported.
-- **Fence.** Tier S for a thread on a Pappra-owned app-server: `turn/interrupt`, a settled
-  `thread/status/changed`, and `thread/unsubscribe`, wrapped in the same scoped receipt.
-  Tier P for a user-started TUI that is not on that server, exactly as Claude.
-- Phase 0 removed the gate: interactive sessions are on the shared daemon, so Tier P
-  observation and compaction requests work without owning the runtime.
+- **Fence.** The protocol coordinator handoff, as for Claude. Nothing observed proves a TUI
+  process stopped, and none is needed for a coordinator.
+- Phase 0 removed the gate: interactive sessions are on the shared daemon, so observation
+  and compaction requests work without owning the runtime.
 
 ## Trigger policy
 
@@ -191,19 +222,21 @@ context for every harness without any handoff:
 
 | Phase | Content | Exit criteria |
 | --- | --- | --- |
-| 0 | Probes on pinned versions (done for Claude 2.1.308 and Codex 0.164.0; remaining probes listed above) | evidence recorded here; host validation matrix updated when a version is declared supported |
-| 1 | Adapter seam, Pi adapter only | no behaviour change; Pi suites green; independent review |
-| 2 | Claude Tier P: usage beacon, advisory hook, checkpoint/launch path, claim-free precondition | real-session acceptance; independent review |
-| 3 | Codex adapter per phase-0 outcome (Tier S, then Tier P) | real-session acceptance; independent review |
-| 4 | Digest projection and report bounds | context reduction measured on a real cohort |
+| 0 | Probes on pinned versions (done for Claude 2.1.308 and Codex 0.164.0; remaining probes listed below) | evidence recorded here; host validation matrix updated when a version is declared supported |
+| 1 | Level 0: guided boundary handoff, read-only inventory check with exact blockers (mid-cohort, unaccepted reports, open uncertainty, source write claims); documentation of the checkpoint/resume and `collab handoff` path | no persisted-state change; tests for each blocker; independent review (it gates an ownership transfer) |
+| 2 | Signals and advisories: Codex sidecar observer, Claude status-line beacon (opt-in, chained), advisory hook | real-session acceptance; no hook starts a model or writes a checkpoint |
+| 3 | Successor launch and checkpoint import per host (visible pane, seed, `SessionStart` injection) | real-session acceptance; independent review |
+| 4 | Level 1: mid-cohort succession (adoption step). Specification first, then implementation | written spec reviewed independently before any code |
+| 5 | Digest projection and report bounds | context reduction measured on a real cohort |
 
-Every phase touching fencing, ownership, persisted state or recovery requires an
-independent review by an observed native participant before it is complete.
+Every phase touching ownership, persisted state or recovery requires an independent review
+by an observed native participant before it is complete.
 
 ## Decisions (recorded 2026-10-27)
 
-1. A protocol-fenced handoff (`process_quiescence: unavailable`) is accepted for a
-   claim-free coordinator. It is the only option for interactive Claude and Codex sessions.
+1. A protocol-fenced handoff (no process-stop claim) is accepted for a claim-free
+   coordinator. It is the only option for interactive Claude and Codex sessions, and it is
+   what the existing coordinator handoff already is.
 2. Pappra may ship an opt-in status-line wrapper that chains the user's existing command and
    never replaces or edits it without explicit consent.
 3. An explicit CLI command may archive `transcript_path` as an opaque, digested artifact.
@@ -260,8 +293,8 @@ probe's scratch directory in the user's own configuration.
 - Codex signal needs no Pappra-owned runtime: a sidecar WebSocket client on the shared
   daemon observes any interactive Codex session. It must tolerate "no rollout yet" and
   treat a stale or missing observation as `unavailable`.
-- Codex fencing is still Tier P for a user-started TUI: an external client can observe and
-  request compaction, but nothing observed proves the TUI process stopped.
+- Codex needs no process-stop proof for a coordinator handoff; an external client can
+  observe and request compaction, which is all the signal and capture steps need.
 - Claude's only usage signal is the status line, at 1% granularity, so thresholds must be
   coarse and the observation must carry its timestamp.
 
