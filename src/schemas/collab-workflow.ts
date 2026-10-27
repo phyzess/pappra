@@ -16,6 +16,8 @@ export const WORKFLOW_DISPATCH_REQUEST_SCHEMA =
   'pappra/collab-workflow-dispatch-request/1';
 export const WORKFLOW_PARTICIPANT_REQUEST_SCHEMA =
   'pappra/collab-workflow-participant-request/1';
+export const WORKFLOW_RECLAIM_REQUEST_SCHEMA =
+  'pappra/collab-workflow-reclaim-request/1';
 export const WORKFLOW_ACCEPT_REQUEST_SCHEMA =
   'pappra/collab-workflow-accept-request/1';
 export const WORKFLOW_MANIFEST_SCHEMA = 'pappra/collab-workflow-manifest/1';
@@ -441,6 +443,18 @@ export const workflowAcceptRequestSchema = z.strictObject({
   reason: boundedText(WORKFLOW_MAX_OBJECTIVE),
 });
 
+/**
+ * Coordinator-only sweep of Pappra-created panes that belong to accepted, released work.
+ * It names no pane: eligibility comes only from the task record and live pane identity.
+ */
+export const workflowReclaimRequestSchema = z.strictObject({
+  schema: z.literal(WORKFLOW_RECLAIM_REQUEST_SCHEMA),
+  task_root: absolutePath,
+  caller: workflowCallerSchema,
+  /** Observed coordinator pane; it is never closed. */
+  caller_pane: paneId.nullable().default(null),
+});
+
 export type WorkflowCaller = z.infer<typeof workflowCallerSchema>;
 export type WorkflowParticipant = z.infer<typeof workflowParticipantSchema>;
 export type WorkflowCoordinator = z.infer<typeof workflowCoordinatorSchema>;
@@ -476,6 +490,9 @@ export type WorkflowParticipantRequest = z.infer<
   typeof workflowParticipantRequestSchema
 >;
 export type WorkflowAcceptRequest = z.infer<typeof workflowAcceptRequestSchema>;
+export type WorkflowReclaimRequest = z.infer<
+  typeof workflowReclaimRequestSchema
+>;
 
 function invalid(
   message: string,
@@ -580,6 +597,12 @@ export function parseWorkflowAcceptRequest(
   input: unknown,
 ): WorkflowValid<WorkflowAcceptRequest> {
   return parseWith(workflowAcceptRequestSchema, input, 'accept request');
+}
+
+export function parseWorkflowReclaimRequest(
+  input: unknown,
+): WorkflowValid<WorkflowReclaimRequest> {
+  return parseWith(workflowReclaimRequestSchema, input, 'reclaim request');
 }
 
 function safePathSegment(value: string): string {

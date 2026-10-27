@@ -5,6 +5,11 @@ import {
 } from '../../collab/envelope.js';
 import { submitMessage } from '../../collab/messages.js';
 import { notifyRegisteredMessage } from '../collab-notify.js';
+import {
+  reclaimOwnedPanes,
+  type PaneReclaimEntry,
+  type PaneReclaimOptions,
+} from '../collab-pane-reclaim.js';
 import { workflowBindingPath } from '../../schemas/collab-workflow.js';
 import { validateWorkPlan } from '../../collab/work-plan.js';
 import { workflowWorkPlanPath } from '../../schemas/collab-workflow.js';
@@ -38,11 +43,20 @@ export async function applyAccept(
     readonly clock?: number;
     readonly apply?: boolean;
     readonly notify?: typeof notifyRegisteredMessage;
+    readonly reclaimOps?: PaneReclaimOptions['ops'];
   } = {},
 ): Promise<
-  WorkflowResult<{ report_message_id: string; report_digest: string }>
+  WorkflowResult<{
+    report_message_id: string;
+    report_digest: string;
+    pane_reclaim: readonly PaneReclaimEntry[];
+  }>
 > {
-  type Detail = { report_message_id: string; report_digest: string };
+  type Detail = {
+    report_message_id: string;
+    report_digest: string;
+    pane_reclaim: readonly PaneReclaimEntry[];
+  };
   const writing = options.apply !== false;
   const base = emptyResult<Detail>('accept', writing);
   const opened = await openWorkflowTask(request.task_root);
@@ -283,6 +297,21 @@ export async function applyAccept(
         `delivery_${delivered.value.status}: ${String(delivered.value.detail ?? '')}`,
       );
   } else if (writing && submitted.ok) delivery = 'already-recorded';
+  // A worker normally releases its claims after acceptance, so this usually keeps the pane;
+  // a later dispatch or reclaim closes it. Eligibility is re-derived, never assumed.
+  const paneReclaim =
+    writing && submitted.ok
+      ? await reclaimOwnedPanes({
+          taskRoot: task.taskRoot,
+          subtaskId: request.subtask_id,
+          attempt: request.attempt,
+          callerPane: request.caller_pane,
+          ...(options.clock === undefined ? {} : { clock: options.clock }),
+          ...(options.reclaimOps === undefined
+            ? {}
+            : { ops: options.reclaimOps }),
+        })
+      : [];
   const current = readRecord(task.taskRoot);
   if (!submitted.ok)
     blockers.push({
@@ -321,6 +350,7 @@ export async function applyAccept(
     detail: {
       report_message_id: report.message_id,
       report_digest: reportDigest,
+      pane_reclaim: paneReclaim,
     },
   };
 }

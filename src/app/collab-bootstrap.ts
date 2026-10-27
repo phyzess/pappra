@@ -3682,6 +3682,7 @@ async function applySibling(
       created_workspace_id: pane.workspaceId,
       created_terminal_id: pane.terminalId,
       created_tab_id: pane.tabId,
+      created_cwd: pane.cwd,
     },
   });
   if (!created.ok)
@@ -4227,6 +4228,7 @@ async function applySibling(
       created_pane_id: pane.paneId,
       created_workspace_id: pane.workspaceId,
       created_terminal_id: pane.terminalId,
+      created_cwd: pane.cwd,
       observed_session_id: nativeSessionId,
       ...(managedLaunch === null
         ? {}

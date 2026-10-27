@@ -26,7 +26,14 @@ export function workflowFailure(
 }
 
 export type WorkflowAction =
-  'prepare' | 'dispatch' | 'ack' | 'report' | 'accept' | 'release' | 'inspect';
+  | 'prepare'
+  | 'dispatch'
+  | 'ack'
+  | 'report'
+  | 'accept'
+  | 'release'
+  | 'reclaim'
+  | 'inspect';
 
 export type WorkflowStatus =
   | 'planned'

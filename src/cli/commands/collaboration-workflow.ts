@@ -8,6 +8,8 @@ import {
   loadDispatchRequest,
   loadParticipantRequest,
   loadPrepareRequest,
+  loadReclaimRequest,
+  applyReclaim,
   planPrepare,
   type WorkflowPlan,
   type WorkflowResult,
@@ -24,13 +26,14 @@ import type { CliOutput } from '../output.js';
  */
 
 export const collaborationWorkflowUsage =
-  'pappra collab workflow <prepare|dispatch|ack|report|accept|release|inspect> [options]\n' +
+  'pappra collab workflow <prepare|dispatch|ack|report|accept|release|reclaim|inspect> [options]\n' +
   '  prepare  --request <abs prepare.json> [--apply] [--json]\n' +
   '  dispatch --request <abs dispatch.json> [--apply] [--json]\n' +
   '  ack      --request <abs participant.json> [--apply] [--json]\n' +
   '  report   --request <abs participant.json> [--apply] [--json]\n' +
   '  release  --request <abs participant.json> [--apply] [--json]\n' +
   '  accept   --request <abs accept.json> [--apply] [--json]\n' +
+  '  reclaim  --request <abs reclaim.json> [--apply] [--json]\n' +
   '  inspect  --task-root <abs task root> [--json]\n\n' +
   'Without --apply every action is a zero-write, zero-notification plan. Prepare derives one\n' +
   'cohort from the declared goal, seals deterministic assignment documents and registers the\n' +
@@ -39,7 +42,9 @@ export const collaborationWorkflowUsage =
   'immediately before notifying, and records one durable intent per attempt so an unknown\n' +
   'delivery is reconciled instead of replayed. Ack, report and release are self-call only:\n' +
   'the caller must equal the registered attempt assignee. Accept is a separate coordinator\n' +
-  'decision and a writer can never accept its own report. Nothing here launches a session,\n' +
+  'decision and a writer can never accept its own report. Reclaim closes only panes Pappra\n' +
+  'created for accepted, released work after re-checking live pane identity; accept and\n' +
+  'dispatch run the same check automatically. Nothing here launches a session,\n' +
   'consumes a notification, or proves execution.';
 
 export const WORKFLOW_ACTIONS = [
@@ -49,6 +54,7 @@ export const WORKFLOW_ACTIONS = [
   'report',
   'accept',
   'release',
+  'reclaim',
   'inspect',
 ] as const;
 
@@ -278,6 +284,13 @@ export async function runCollaborationWorkflowCli(
     const request = loadAcceptRequest(options.requestFile);
     if (!request.ok) return invalid(output, options.json, [request.message]);
     const result = await applyAccept(request.value, { apply: options.apply });
+    return emitResult(output, options.json, result);
+  }
+
+  if (options.action === 'reclaim') {
+    const request = loadReclaimRequest(options.requestFile);
+    if (!request.ok) return invalid(output, options.json, [request.message]);
+    const result = await applyReclaim(request.value, { apply: options.apply });
     return emitResult(output, options.json, result);
   }
 

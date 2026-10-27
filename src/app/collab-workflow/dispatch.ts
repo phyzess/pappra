@@ -1,3 +1,8 @@
+import {
+  reclaimOwnedPanes,
+  type PaneReclaimEntry,
+  type PaneReclaimOptions,
+} from '../collab-pane-reclaim.js';
 import path from 'node:path';
 import fs, { lstatSync } from 'node:fs';
 import {
@@ -989,18 +994,21 @@ export async function applyDispatch(
      * tests pass a no-model adapter that must invoke the same callback.
      */
     readonly adapter?: WorkExecutionAdapter;
+    readonly reclaimOps?: PaneReclaimOptions['ops'];
   } = {},
 ): Promise<
   WorkflowResult<{
     notified: readonly string[];
     intents: readonly string[];
     activation_only: readonly string[];
+    pane_reclaim: readonly PaneReclaimEntry[];
   }>
 > {
   const type = {
     notified: [] as string[],
     intents: [] as string[],
     activation_only: [] as string[],
+    pane_reclaim: [] as readonly PaneReclaimEntry[],
   };
   const opened = await openWorkflowTask(request.task_root);
   if (!opened.ok) {
@@ -1754,6 +1762,14 @@ export async function applyDispatch(
     }
   }
 
+  // Dispatch runs after writers were accepted and released, which is the first coordinator
+  // action that can see their claims freed: reclaim the panes Pappra created for them now.
+  const paneReclaim = await reclaimOwnedPanes({
+    taskRoot: task.taskRoot,
+    callerPane: request.caller_pane,
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
+    ...(options.reclaimOps === undefined ? {} : { ops: options.reclaimOps }),
+  });
   const current = readRecord(task.taskRoot);
   const status =
     blockers.length === 0
@@ -1774,7 +1790,13 @@ export async function applyDispatch(
     native,
     blockers,
     warnings,
-    detail: { ...type, notified, intents, activation_only: activationOnly },
+    detail: {
+      ...type,
+      notified,
+      intents,
+      activation_only: activationOnly,
+      pane_reclaim: paneReclaim,
+    },
     // A real blocker keeps its own recovery guidance; the generic text never replaces it.
     next_action:
       blockers[0]?.next_action ??

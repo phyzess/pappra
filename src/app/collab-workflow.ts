@@ -3,14 +3,17 @@ import {
   parseWorkflowDispatchRequest,
   parseWorkflowParticipantRequest,
   parseWorkflowPrepareRequest,
+  parseWorkflowReclaimRequest,
   WORKFLOW_ACCEPT_REQUEST_SCHEMA,
   WORKFLOW_DISPATCH_REQUEST_SCHEMA,
   WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
   WORKFLOW_PREPARE_REQUEST_SCHEMA,
+  WORKFLOW_RECLAIM_REQUEST_SCHEMA,
   type WorkflowAcceptRequest,
   type WorkflowDispatchRequest,
   type WorkflowParticipantRequest,
   type WorkflowPrepareRequest,
+  type WorkflowReclaimRequest,
 } from '../schemas/collab-workflow.js';
 import { readBoundedJson } from './collab-workflow/context.js';
 import {
@@ -34,6 +37,7 @@ export {
 } from './collab-workflow/dispatch.js';
 export { applyParticipant } from './collab-workflow/participant.js';
 export { applyAccept } from './collab-workflow/acceptance.js';
+export { applyReclaim } from './collab-workflow/reclaim.js';
 export { inspectWorkflow } from './collab-workflow/inspect.js';
 export {
   workflowAssignmentPath,
@@ -46,6 +50,7 @@ export {
   WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
   WORKFLOW_PLAN_SCHEMA,
   WORKFLOW_PREPARE_REQUEST_SCHEMA,
+  WORKFLOW_RECLAIM_REQUEST_SCHEMA,
   WORKFLOW_RESULT_SCHEMA,
 } from '../schemas/collab-workflow.js';
 export type {
@@ -57,6 +62,7 @@ export type {
   WorkflowDispatchRequest,
   WorkflowParticipantRequest,
   WorkflowPrepareRequest,
+  WorkflowReclaimRequest,
   WorkflowReportDeclaration,
   WorkflowResourceDeclaration,
 } from '../schemas/collab-workflow.js';
@@ -138,5 +144,15 @@ export function loadAcceptRequest(
     file,
     WORKFLOW_ACCEPT_REQUEST_SCHEMA,
     parseWorkflowAcceptRequest,
+  );
+}
+
+export function loadReclaimRequest(
+  file: string,
+): WorkflowOutcome<WorkflowReclaimRequest> {
+  return loadDocument(
+    file,
+    WORKFLOW_RECLAIM_REQUEST_SCHEMA,
+    parseWorkflowReclaimRequest,
   );
 }

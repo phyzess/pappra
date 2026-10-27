@@ -282,6 +282,12 @@ re-derives: the plan's `plan_id` and node's `node_id` (never caller-supplied),
 and `decision: "accepted"`, addressed to the assignee and replying to the report. Dependent work is unlocked only when the
 work plan re-evaluates that decision.
 
+## Pane reclaim
+
+`reclaim --request <abs reclaim.json> [--apply]` (schema `pappra/collab-workflow-reclaim-request/1`, coordinator only) closes panes that Pappra's own bootstrap split for a worker whose work is finished. `accept` and `dispatch --apply` run the same sweep automatically; a worker normally releases its claims after acceptance, so the pane is usually closed by the next dispatch or reclaim, not instantly. There is no background daemon.
+
+A pane is closed only when all of these hold: the bootstrap reservation completed and recorded the created pane id/workspace/terminal/cwd; the attempt completed and the coordinator registered its acceptance; the assignee holds no unreleased claim and has no other active attempt; and the live pane still matches the recorded identity and cwd, hosts only the exact assignee session (or an available shell), is not working or blocked, and is not the caller's pane. Panes started by hand, reused panes and anything that fails a check are kept and reported in `detail.pane_reclaim` with a reason. The close intent is recorded first; an ambiguous close is reconciled, never replayed, while a definite failure stays retryable.
+
 ## Inspect
 
 `inspect` is read-only and reports what is actually present: the sealed manifest
