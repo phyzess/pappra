@@ -13,8 +13,25 @@ import { findAttempt } from '../../collab/lifecycle.js';
  * Missing observations stay missing: an absent manifest or binding is reported as absent
  * rather than reconstructed from the request that once produced it.
  */
+export interface InspectOptions {
+  /** Caps each projected list, keeping its last entries in record order. Omitted means unbounded. */
+  readonly limit?: number;
+}
+
+/** Keeps the last `limit` entries and reports what was dropped, never silently. */
+function bound<T>(
+  items: readonly T[],
+  limit: number | undefined,
+): { items: T[]; total: number; truncated: boolean } {
+  const total = items.length;
+  if (limit === undefined || total <= limit)
+    return { items: [...items], total, truncated: false };
+  return { items: items.slice(total - limit), total, truncated: true };
+}
+
 export async function inspectWorkflow(
   taskRoot: string,
+  options: InspectOptions = {},
 ): Promise<WorkflowResult<Record<string, unknown>>> {
   const opened = await openWorkflowTask(taskRoot);
   if (!opened.ok) {
@@ -61,6 +78,31 @@ export async function inspectWorkflow(
       });
     }
   }
+  const limit = options.limit;
+  const attempts = bound(record.attempts ?? [], limit);
+  const messages = bound(record.messages ?? [], limit);
+  const uncertainty = bound(
+    (record.uncertainty ?? []).filter((item) => item.resolved_at === null),
+    limit,
+  );
+  const deferredBounded = bound(deferred, limit);
+  const attemptStates: Record<string, number> = {};
+  for (const attempt of record.attempts ?? [])
+    attemptStates[attempt.state] = (attemptStates[attempt.state] ?? 0) + 1;
+  // The human output never prints `detail`, so a cut list is also said in a warning.
+  const truncationNotes = (
+    [
+      ['attempts', attempts],
+      ['messages', messages],
+      ['open_uncertainty', uncertainty],
+      ['deferred', deferredBounded],
+    ] as const
+  )
+    .filter(([, list]) => list.truncated)
+    .map(
+      ([name, list]) =>
+        `${name}: showing ${String(list.items.length)} of ${String(list.total)} (--limit ${String(limit)}); not the full list.`,
+    );
   const base = emptyResult<Record<string, unknown>>('inspect', false);
   // Inspect is a read-only projection: with no sealed manifest there is no cohort to
   // report, so the honest result is blocked (with the reason in warnings), not "applied".
@@ -76,9 +118,12 @@ export async function inspectWorkflow(
     next_action: sealed
       ? null
       : 'Seal the cohort with pappra collab workflow prepare --request <file> --apply, then inspect again.',
-    warnings: manifestRead.ok
-      ? []
-      : ['No sealed workflow manifest is present for this task.'],
+    warnings: [
+      ...(manifestRead.ok
+        ? []
+        : ['No sealed workflow manifest is present for this task.']),
+      ...truncationNotes,
+    ],
     detail: {
       manifest: manifestRead.ok
         ? { ref: manifestFile, digest: digestFile(manifestFile) }
@@ -88,7 +133,21 @@ export async function inspectWorkflow(
         : null,
       input_revision: record.input_revision,
       coordinator: record.coordinator,
-      attempts: (record.attempts ?? []).map((attempt) => ({
+      limit: limit ?? null,
+      totals: {
+        attempts: attempts.total,
+        messages: messages.total,
+        open_uncertainty: uncertainty.total,
+        deferred: deferredBounded.total,
+        attempt_states: attemptStates,
+      },
+      truncated: {
+        attempts: attempts.truncated,
+        messages: messages.truncated,
+        open_uncertainty: uncertainty.truncated,
+        deferred: deferredBounded.truncated,
+      },
+      attempts: attempts.items.map((attempt) => ({
         subtask_id: attempt.subtask_id,
         attempt: attempt.attempt,
         state: attempt.state,
@@ -110,16 +169,14 @@ export async function inspectWorkflow(
               item.classification === 'applied',
           )?.status ?? null,
       })),
-      deferred,
-      open_uncertainty: (record.uncertainty ?? [])
-        .filter((item) => item.resolved_at === null)
-        .map((item) => ({
-          uncertainty_id: item.uncertainty_id,
-          kind: item.kind,
-          subtask_id: item.subtask_id,
-          attempt: item.attempt,
-        })),
-      messages: (record.messages ?? []).map((message) => ({
+      deferred: deferredBounded.items,
+      open_uncertainty: uncertainty.items.map((item) => ({
+        uncertainty_id: item.uncertainty_id,
+        kind: item.kind,
+        subtask_id: item.subtask_id,
+        attempt: item.attempt,
+      })),
+      messages: messages.items.map((message) => ({
         message_id: message.message_id,
         type: message.type,
         state: message.state,

@@ -4,6 +4,9 @@ import {
   applyParticipant,
   applyPrepare,
   inspectWorkflow,
+  acceptRequestKind,
+  applyAcceptBatch,
+  loadAcceptBatchRequest,
   loadAcceptRequest,
   loadDispatchRequest,
   loadParticipantRequest,
@@ -32,9 +35,9 @@ export const collaborationWorkflowUsage =
   '  ack      --request <abs participant.json> [--apply] [--json]\n' +
   '  report   --request <abs participant.json> [--apply] [--json]\n' +
   '  release  --request <abs participant.json> [--apply] [--json]\n' +
-  '  accept   --request <abs accept.json> [--apply] [--json]\n' +
+  '  accept   --request <abs accept.json|accept-batch.json> [--apply] [--json]\n' +
   '  reclaim  --request <abs reclaim.json> [--apply] [--json]\n' +
-  '  inspect  --task-root <abs task root> [--json]\n\n' +
+  '  inspect  --task-root <abs task root> [--limit <1-500>] [--json]\n\n' +
   'Without --apply every action is a zero-write, zero-notification plan. Prepare derives one\n' +
   'cohort from the declared goal, seals deterministic assignment documents and registers the\n' +
   'derived ASSIGN messages and claims for writers only; reviewer ASSIGN and claims stay\n' +
@@ -64,6 +67,7 @@ export interface CollaborationWorkflowOptions {
   readonly action: WorkflowCliAction | null;
   readonly requestFile: string | null;
   readonly taskRoot: string | null;
+  readonly limit: number | null;
   readonly apply: boolean;
   readonly json: boolean;
   readonly help: boolean;
@@ -81,6 +85,7 @@ export function parseCollaborationWorkflowArgs(
   let action: WorkflowCliAction | null = null;
   let requestFile: string | null = null;
   let taskRoot: string | null = null;
+  let limit: number | null = null;
   let apply = false;
   let json = false;
   let help = false;
@@ -124,6 +129,22 @@ export function parseCollaborationWorkflowArgs(
       }
       continue;
     }
+    if (arg === '--limit') {
+      if (limit !== null) errors.push('--limit may be given only once.');
+      const value = argv[index + 1];
+      const parsedLimit = value === undefined ? NaN : Number(value);
+      if (
+        !Number.isInteger(parsedLimit) ||
+        parsedLimit < 1 ||
+        parsedLimit > 500
+      )
+        errors.push('--limit requires an integer from 1 to 500.');
+      else {
+        limit = parsedLimit;
+        index += 1;
+      }
+      continue;
+    }
     if (arg.startsWith('-')) {
       errors.push(`unknown option: ${arg}`);
       continue;
@@ -141,7 +162,7 @@ export function parseCollaborationWorkflowArgs(
     action = arg as WorkflowCliAction;
   }
   return {
-    options: { action, requestFile, taskRoot, apply, json, help },
+    options: { action, requestFile, taskRoot, limit, apply, json, help },
     errors,
   };
 }
@@ -248,10 +269,17 @@ export async function runCollaborationWorkflowCli(
       return invalid(output, options.json, [
         'inspect takes no --request; pass --task-root.',
       ]);
-    const result = await inspectWorkflow(options.taskRoot);
+    const result = await inspectWorkflow(
+      options.taskRoot,
+      options.limit === null ? {} : { limit: options.limit },
+    );
     return emitResult(output, options.json, result);
   }
 
+  if (options.limit !== null)
+    return invalid(output, options.json, [
+      '--limit is accepted only by inspect.',
+    ]);
   if (options.requestFile === null)
     return invalid(output, options.json, [
       `${options.action} requires --request <absolute request file>`,
@@ -281,6 +309,15 @@ export async function runCollaborationWorkflowCli(
   }
 
   if (options.action === 'accept') {
+    if (acceptRequestKind(options.requestFile) === 'batch') {
+      const batch = loadAcceptBatchRequest(options.requestFile);
+      if (!batch.ok) return invalid(output, options.json, [batch.message]);
+      return emitResult(
+        output,
+        options.json,
+        await applyAcceptBatch(batch.value, { apply: options.apply }),
+      );
+    }
     const request = loadAcceptRequest(options.requestFile);
     if (!request.ok) return invalid(output, options.json, [request.message]);
     const result = await applyAccept(request.value, { apply: options.apply });

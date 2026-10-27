@@ -18,7 +18,7 @@ pappra collab workflow ack      --request <abs participant.json>   [--apply] [--
 pappra collab workflow report   --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow release  --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow accept   --request <abs accept.json>        [--apply] [--json]
-pappra collab workflow inspect  --task-root <abs task root>        [--json]
+pappra collab workflow inspect  --task-root <abs task root> [--limit <n>] [--json]
 ```
 
 `--goal` is accepted as an alias for `--request` on `prepare`.
@@ -54,6 +54,10 @@ fields are refused rather than ignored.
 - `pappra/collab-workflow-accept-request/1` — coordinator caller, subtask,
   attempt, the report message id being decided and a reason. It deliberately
   carries no plan or node id: both are resolved from the sealed work plan.
+- `pappra/collab-workflow-accept-batch-request/1` — the same coordinator caller
+  with 1–32 `accepts` entries (subtask, attempt, report message id, reason),
+  each naming a distinct attempt. `accept --request` selects the document by its
+  `schema` field.
 
 A `bindings` entry may also name the coordinator. The sealed binding then holds
 exactly one coordinator entry (never a second one when the coordinator is also a
@@ -282,6 +286,18 @@ re-derives: the plan's `plan_id` and node's `node_id` (never caller-supplied),
 and `decision: "accepted"`, addressed to the assignee and replying to the report. Dependent work is unlocked only when the
 work plan re-evaluates that decision.
 
+An accept batch is N explicit decisions in one invocation, not a blanket
+approval. Each entry runs through the single-accept path in order: it is
+validated, written and notified on its own, and a refused entry neither blocks
+nor rewrites its neighbours. The aggregate result is `ok` only when every entry
+is; `detail.items` reports each entry's status, and each blocker is prefixed with
+its `subtask#attempt`; warnings are prefixed the same way. Re-running a batch with
+unchanged reasons is safe because an already-recorded decision is a protocol
+duplicate; a changed reason for a recorded decision is refused as a content
+conflict. An unexpected failure stops the batch: earlier decisions stay recorded,
+later entries are reported `not-attempted` and the aggregate is
+`needs-reconciliation`. An empty batch is refused.
+
 ## Pane reclaim
 
 `reclaim --request <abs reclaim.json> [--apply]` (schema `pappra/collab-workflow-reclaim-request/1`, coordinator only) closes panes that Pappra's own bootstrap split for a worker whose work is finished. `accept` and `dispatch --apply` run the same sweep automatically; a worker normally releases its claims after acceptance, so the pane is usually closed by the next dispatch or reclaim, not instantly. There is no background daemon.
@@ -295,6 +311,14 @@ and binding digests, attempts with their state, native observation, active claim
 count and applied result, deferred assignments, open uncertainty and registered
 messages. A missing manifest or binding is reported as absent, never
 reconstructed from the request that once produced it.
+
+`inspect --limit <1-500>` keeps only the last entries of each projected list
+(attempts, messages, open uncertainty, deferred) in record order — the newest for
+attempts and messages, declaration order for deferred reviewers so a long task cannot flood the
+coordinator's context. `detail.totals` always carries the full counts and a
+per-state attempt tally, and `detail.truncated` says which lists were cut; a
+truncated list is never presented as complete. Without `--limit` the output is
+unchanged apart from those two fields.
 
 ## Relationship to lower-level commands
 

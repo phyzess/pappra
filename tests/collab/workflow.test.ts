@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import {
   applyAccept,
+  applyAcceptBatch,
   applyDispatch,
   applyParticipant,
   applyPrepare,
@@ -17,6 +18,7 @@ import {
   type WorkflowPrepareRequest,
 } from '../../src/app/collab-workflow.js';
 import {
+  parseWorkflowAcceptBatchRequest,
   parseWorkflowPrepareRequest,
   workflowAssignmentPath,
 } from '../../src/schemas/collab-workflow.js';
@@ -611,6 +613,240 @@ test('workflow acceptance is separate, explicit and never self-review', async ()
     );
     assert.equal(accepted.status, 'applied');
     assert.equal(accepted.messages[0]?.duplicate, true);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+async function batchFixture(label: string) {
+  const fixture = makeTaskDomain(label, ['cohort'], { initialize: [] });
+  const prepared = await applyPrepare(
+    prepareRequest(
+      fixture.domainRoot,
+      fixture.root,
+      baseAssignments(fixture.root),
+    ),
+  );
+  assert.equal(prepared.status, 'applied', JSON.stringify(prepared.blockers));
+  const taskRoot = join(fixture.domainRoot, 'tasks', 'cohort');
+  const reportIds: Record<string, string> = {};
+  for (const [subtask, who, dir] of [
+    ['writer-one', WRITER_A, 'a'],
+    ['writer-two', WRITER_B, 'b'],
+  ] as const) {
+    mkdirSync(join(fixture.root, dir), { recursive: true });
+    const file = join(fixture.root, dir, 'output.txt');
+    writeFileSync(file, 'built\n');
+    const reported = await applyParticipant(
+      reportRequest(taskRoot, who, subtask, 1, [file]),
+      { notify: silentNotify },
+    );
+    assert.equal(reported.status, 'applied', JSON.stringify(reported.blockers));
+    reportIds[subtask] = reported.messages[0]!.message_id;
+  }
+  const batch = (
+    caller: { agent_id: string; session_id: string; harness: string },
+    second = reportIds['writer-two']!,
+  ) => {
+    const parsed = parseWorkflowAcceptBatchRequest({
+      schema: 'pappra/collab-workflow-accept-batch-request/1',
+      task_root: taskRoot,
+      caller: {
+        agent_id: caller.agent_id,
+        session_id: caller.session_id,
+        harness: caller.harness,
+        cwd: fixture.root,
+      },
+      accepts: [
+        {
+          subtask_id: 'writer-one',
+          attempt: 1,
+          report_message_id: reportIds['writer-one'],
+          reason: 'ok',
+        },
+        {
+          subtask_id: 'writer-two',
+          attempt: 1,
+          report_message_id: second,
+          reason: 'ok',
+        },
+      ],
+    });
+    assert.ok(parsed.ok);
+    return parsed.value;
+  };
+  return { fixture, taskRoot, reportIds, batch };
+}
+
+test('workflow accept batch decides each report independently', async () => {
+  const { fixture, taskRoot, batch } = await batchFixture(
+    'workflow-accept-batch',
+  );
+  try {
+    const refused = await applyAcceptBatch(batch(WRITER_A), {
+      notify: silentNotify,
+    });
+    assert.equal(refused.ok, false);
+    assert.ok(
+      refused.blockers.some((item) => item.code === 'accept_not_coordinator'),
+    );
+    assert.equal(refused.messages.length, 0, 'no decision is written');
+    assert.equal(refused.task_id, 'cohort');
+
+    // A delivery warning in a batch must be attributable to its own decision.
+    const failNotify = (async () => ({
+      ok: false as const,
+      code: 'delivery_down',
+      message: 'pane unreachable',
+    })) as unknown as typeof silentNotify;
+    const partial = await applyAcceptBatch(
+      batch(COORDINATOR, 'no-such-report'),
+      {
+        notify: failNotify,
+      },
+    );
+    assert.equal(partial.ok, false);
+    assert.equal(partial.status, 'blocked');
+    assert.deepEqual(
+      partial.detail?.items.map((item) => item.ok),
+      [true, false],
+      'a bad entry never blocks or rewrites its neighbour',
+    );
+    assert.ok(partial.blockers[0]?.detail.startsWith('writer-two#1:'));
+    assert.equal(partial.task_id, 'cohort');
+    assert.equal(partial.principal?.role, 'coordinator');
+    assert.ok(partial.next_action !== null);
+    assert.ok(
+      partial.warnings.every((item) => item.startsWith('writer-one#1:')),
+      JSON.stringify(partial.warnings),
+    );
+    assert.ok(partial.warnings.length > 0);
+
+    const messagesDir = join(taskRoot, 'messages');
+    assert.equal(
+      existsSync(join(messagesDir, 'accept-writer-two-1.json')),
+      false,
+    );
+    const planned = await applyAcceptBatch(batch(COORDINATOR), {
+      apply: false,
+      notify: failNotify,
+    });
+    assert.equal(planned.status, 'planned');
+    assert.equal(planned.messages[0]?.duplicate, false);
+    assert.equal(planned.messages[0]?.delivery, 'not-attempted');
+    assert.equal(
+      existsSync(join(messagesDir, 'accept-writer-two-1.json')),
+      false,
+      'a plan writes no decision',
+    );
+
+    const done = await applyAcceptBatch(batch(COORDINATOR), {
+      notify: silentNotify,
+    });
+    assert.equal(done.status, 'applied', JSON.stringify(done.blockers));
+    assert.equal(done.messages.length, 2);
+    assert.equal(
+      done.messages[0]?.duplicate,
+      true,
+      'the entry accepted by the partial run is a protocol duplicate',
+    );
+
+    const changed = batch(COORDINATOR);
+    const conflicting = await applyAcceptBatch(
+      {
+        ...changed,
+        accepts: changed.accepts.map((item) => ({
+          ...item,
+          reason: 'changed',
+        })),
+      },
+      { notify: silentNotify },
+    );
+    assert.equal(
+      conflicting.ok,
+      false,
+      'a changed reason is a content conflict',
+    );
+
+    const empty = await applyAcceptBatch(
+      { ...changed, accepts: [] },
+      { notify: silentNotify },
+    );
+    assert.equal(empty.ok, false);
+    assert.equal(empty.status, 'invalid');
+    assert.equal(empty.blockers[0]?.code, 'accept_batch_empty');
+
+    const duplicate = parseWorkflowAcceptBatchRequest({
+      schema: 'pappra/collab-workflow-accept-batch-request/1',
+      task_root: taskRoot,
+      caller: {
+        agent_id: COORDINATOR.agent_id,
+        session_id: COORDINATOR.session_id,
+        harness: COORDINATOR.harness,
+        cwd: fixture.root,
+      },
+      accepts: [changed.accepts[0], changed.accepts[0]],
+    });
+    assert.equal(duplicate.ok, false);
+
+    // Inspect keeps the last entries in record order and says so in a warning.
+    const full = await inspectWorkflow(taskRoot);
+    const bounded = await inspectWorkflow(taskRoot, { limit: 1 });
+    const fullDetail = full.detail as {
+      messages: { message_id: string }[];
+      attempts: { subtask_id: string }[];
+    };
+    const boundedDetail = bounded.detail as {
+      messages: { message_id: string }[];
+      attempts: { subtask_id: string }[];
+      truncated: { messages: boolean; attempts: boolean };
+    };
+    assert.equal(
+      boundedDetail.messages[0]?.message_id,
+      fullDetail.messages[fullDetail.messages.length - 1]?.message_id,
+    );
+    assert.equal(
+      boundedDetail.attempts[0]?.subtask_id,
+      fullDetail.attempts[fullDetail.attempts.length - 1]?.subtask_id,
+    );
+    assert.equal(boundedDetail.truncated.messages, true);
+    assert.ok(
+      bounded.warnings.some((item) => item.includes('not the full list')),
+    );
+    assert.deepEqual(full.warnings, []);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('workflow accept batch reports a throw without losing earlier decisions', async () => {
+  const { fixture, taskRoot, batch } = await batchFixture(
+    'workflow-accept-batch-throw',
+  );
+  try {
+    const throwing = (async () => {
+      throw new Error('disk full');
+    }) as unknown as typeof silentNotify;
+    const result = await applyAcceptBatch(batch(COORDINATOR), {
+      notify: throwing,
+    });
+    assert.equal(result.status, 'needs-reconciliation');
+    assert.equal(result.ok, false);
+    assert.deepEqual(
+      result.detail?.items.map((item) => item.status),
+      ['needs-reconciliation', 'not-attempted'],
+    );
+    assert.equal(result.blockers[0]?.code, 'accept_entry_threw');
+    assert.ok(result.blockers[0]?.detail.startsWith('writer-one#1:'));
+    assert.equal(
+      existsSync(join(taskRoot, 'messages', 'accept-writer-one-1.json')),
+      true,
+      'the decision recorded before the throw stays recorded',
+    );
+    assert.equal(
+      existsSync(join(taskRoot, 'messages', 'accept-writer-two-1.json')),
+      false,
+    );
   } finally {
     fixture.cleanup();
   }

@@ -1,14 +1,17 @@
 import {
+  parseWorkflowAcceptBatchRequest,
   parseWorkflowAcceptRequest,
   parseWorkflowDispatchRequest,
   parseWorkflowParticipantRequest,
   parseWorkflowPrepareRequest,
   parseWorkflowReclaimRequest,
+  WORKFLOW_ACCEPT_BATCH_REQUEST_SCHEMA,
   WORKFLOW_ACCEPT_REQUEST_SCHEMA,
   WORKFLOW_DISPATCH_REQUEST_SCHEMA,
   WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
   WORKFLOW_PREPARE_REQUEST_SCHEMA,
   WORKFLOW_RECLAIM_REQUEST_SCHEMA,
+  type WorkflowAcceptBatchRequest,
   type WorkflowAcceptRequest,
   type WorkflowDispatchRequest,
   type WorkflowParticipantRequest,
@@ -36,7 +39,7 @@ export {
   type DispatchPlanReport,
 } from './collab-workflow/dispatch.js';
 export { applyParticipant } from './collab-workflow/participant.js';
-export { applyAccept } from './collab-workflow/acceptance.js';
+export { applyAccept, applyAcceptBatch } from './collab-workflow/acceptance.js';
 export { applyReclaim } from './collab-workflow/reclaim.js';
 export { inspectWorkflow } from './collab-workflow/inspect.js';
 export {
@@ -44,6 +47,7 @@ export {
   workflowBindingPath,
   workflowIntentsDir,
   workflowManifestPath,
+  WORKFLOW_ACCEPT_BATCH_REQUEST_SCHEMA,
   WORKFLOW_ACCEPT_REQUEST_SCHEMA,
   WORKFLOW_DISPATCH_REQUEST_SCHEMA,
   WORKFLOW_MANIFEST_SCHEMA,
@@ -54,6 +58,7 @@ export {
   WORKFLOW_RESULT_SCHEMA,
 } from '../schemas/collab-workflow.js';
 export type {
+  WorkflowAcceptBatchRequest,
   WorkflowAcceptRequest,
   WorkflowAssignmentDeclaration,
   WorkflowBinding,
@@ -145,6 +150,25 @@ export function loadAcceptRequest(
     WORKFLOW_ACCEPT_REQUEST_SCHEMA,
     parseWorkflowAcceptRequest,
   );
+}
+
+export function loadAcceptBatchRequest(
+  file: string,
+): WorkflowOutcome<WorkflowAcceptBatchRequest> {
+  return loadDocument(
+    file,
+    WORKFLOW_ACCEPT_BATCH_REQUEST_SCHEMA,
+    parseWorkflowAcceptBatchRequest,
+  );
+}
+
+/** Which accept document a file holds; the schema field alone decides, nothing is guessed. */
+export function acceptRequestKind(file: string): 'single' | 'batch' | null {
+  const read = readBoundedJson(file, 'workflow request');
+  if (!read.ok) return null;
+  const schema = (read.value as { schema?: unknown } | null)?.schema;
+  if (schema === WORKFLOW_ACCEPT_BATCH_REQUEST_SCHEMA) return 'batch';
+  return schema === WORKFLOW_ACCEPT_REQUEST_SCHEMA ? 'single' : null;
 }
 
 export function loadReclaimRequest(

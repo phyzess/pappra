@@ -351,3 +351,163 @@ test('collab workflow accept is a plan until --apply is given', async () => {
     fixture.cleanup();
   }
 });
+
+test('collab workflow inspect --limit bounds lists and reports totals', async () => {
+  const fixture = makeTaskDomain('workflow-cli-limit', ['cohort'], {
+    initialize: [],
+  });
+  try {
+    const requestFile = join(fixture.root, 'prepare.json');
+    writeFileSync(
+      requestFile,
+      `${JSON.stringify(prepareDocument(fixture.domainRoot, fixture.root), null, 2)}\n`,
+    );
+    const applied = await cli([
+      'collab',
+      'workflow',
+      'prepare',
+      '--request',
+      requestFile,
+      '--apply',
+      '--json',
+    ]);
+    assert.equal(applied.code, 0, applied.stdout);
+    const taskRoot = join(fixture.domainRoot, 'tasks', 'cohort');
+    const bounded = await cli([
+      'collab',
+      'workflow',
+      'inspect',
+      '--task-root',
+      taskRoot,
+      '--limit',
+      '1',
+      '--json',
+    ]);
+    assert.equal(bounded.code, 0, bounded.stdout);
+    const detail = (
+      JSON.parse(bounded.stdout) as {
+        detail: {
+          limit: number;
+          attempts: unknown[];
+          messages: unknown[];
+          totals: { attempts: number; messages: number };
+          truncated: { attempts: boolean; messages: boolean };
+        };
+      }
+    ).detail;
+    assert.equal(detail.limit, 1);
+    assert.ok(detail.attempts.length <= 1);
+    assert.ok(detail.messages.length <= 1);
+    assert.equal(detail.truncated.attempts, detail.totals.attempts > 1);
+    assert.equal(detail.truncated.messages, detail.totals.messages > 1);
+
+    for (const bad of ['0', '501', 'x']) {
+      const rejected = await cli([
+        'collab',
+        'workflow',
+        'inspect',
+        '--task-root',
+        taskRoot,
+        '--limit',
+        bad,
+        '--json',
+      ]);
+      assert.equal(rejected.code, 2, `limit ${bad}`);
+    }
+    const misplaced = await cli([
+      'collab',
+      'workflow',
+      'prepare',
+      '--request',
+      requestFile,
+      '--limit',
+      '1',
+      '--json',
+    ]);
+    assert.equal(misplaced.code, 2, misplaced.stdout);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('collab workflow accept routes a batch document and honours plan mode', async () => {
+  const fixture = makeTaskDomain('workflow-cli-batch', ['cohort'], {
+    initialize: [],
+  });
+  try {
+    const requestFile = join(fixture.root, 'prepare.json');
+    writeFileSync(
+      requestFile,
+      `${JSON.stringify(prepareDocument(fixture.domainRoot, fixture.root), null, 2)}\n`,
+    );
+    const applied = await cli([
+      'collab',
+      'workflow',
+      'prepare',
+      '--request',
+      requestFile,
+      '--apply',
+      '--json',
+    ]);
+    assert.equal(applied.code, 0, applied.stdout);
+    const batchFile = join(fixture.root, 'accept-batch.json');
+    writeFileSync(
+      batchFile,
+      `${JSON.stringify({
+        schema: 'pappra/collab-workflow-accept-batch-request/1',
+        task_root: join(fixture.domainRoot, 'tasks', 'cohort'),
+        caller: {
+          agent_id: owner.agent_id,
+          session_id: owner.session_id,
+          harness: owner.harness,
+          cwd: fixture.root,
+        },
+        accepts: [
+          {
+            subtask_id: 'writer-one',
+            attempt: 1,
+            report_message_id: 'no-such-report',
+            reason: 'ok',
+          },
+          {
+            subtask_id: 'writer-one',
+            attempt: 2,
+            report_message_id: 'no-such-report',
+            reason: 'ok',
+          },
+        ],
+      })}\n`,
+    );
+    const planned = await cli([
+      'collab',
+      'workflow',
+      'accept',
+      '--request',
+      batchFile,
+      '--json',
+    ]);
+    assert.equal(planned.code, 1, planned.stdout);
+    const body = JSON.parse(planned.stdout) as {
+      action: string;
+      apply: boolean;
+      detail: { items: { subtask_id: string; ok: boolean }[] };
+    };
+    assert.equal(body.action, 'accept');
+    assert.equal(body.apply, false, 'no --apply means a plan');
+    assert.equal(body.detail.items.length, 2, 'the batch route ran');
+    assert.ok(body.detail.items.every((item) => !item.ok));
+
+    const human = await cli([
+      'collab',
+      'workflow',
+      'accept',
+      '--request',
+      batchFile,
+      '--apply',
+    ]);
+    assert.equal(human.code, 1);
+    assert.match(human.stdout, /blocker .*writer-one#1:/);
+  } finally {
+    fixture.cleanup();
+  }
+});

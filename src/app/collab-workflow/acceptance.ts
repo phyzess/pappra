@@ -354,3 +354,126 @@ export async function applyAccept(
     },
   };
 }
+
+/**
+ * Applies each entry of a batch through the single-accept path, in order. There is no batch
+ * authority: every entry is validated, written and notified on its own, a refused entry never
+ * blocks or rewrites its neighbours, and the aggregate is `ok` only when every entry is.
+ *
+ * An unexpected throw is not a refusal: decisions already recorded stay recorded, the
+ * remaining entries are reported as `not-attempted`, and the aggregate needs reconciliation
+ * instead of losing the per-entry account.
+ */
+export async function applyAcceptBatch(
+  request: import('../../schemas/collab-workflow.js').WorkflowAcceptBatchRequest,
+  options: Parameters<typeof applyAccept>[1] = {},
+): Promise<WorkflowResult<{ items: readonly AcceptBatchItem[] }>> {
+  const writing = options.apply !== false;
+  const base = emptyResult<{ items: readonly AcceptBatchItem[] }>(
+    'accept',
+    writing,
+  );
+  if (request.accepts.length === 0)
+    return {
+      ...base,
+      status: 'invalid',
+      blockers: [
+        {
+          code: 'accept_batch_empty',
+          detail: 'An accept batch must name at least one report.',
+          next_action: 'Name each report to decide; nothing is inferred.',
+        },
+      ],
+      next_action: 'Name each report to decide; nothing is inferred.',
+    };
+  const label = (entry: { subtask_id: string; attempt: number }) =>
+    `${entry.subtask_id}#${String(entry.attempt)}`;
+  const items: AcceptBatchItem[] = [];
+  const results: Awaited<ReturnType<typeof applyAccept>>[] = [];
+  const blockers: WorkflowBlocker[] = [];
+  const warnings: string[] = [];
+  let threw = false;
+  for (const entry of request.accepts) {
+    const item = {
+      subtask_id: entry.subtask_id,
+      attempt: entry.attempt,
+      report_message_id: entry.report_message_id,
+    };
+    if (threw) {
+      items.push({ ...item, status: 'not-attempted', ok: false });
+      continue;
+    }
+    // Only the four entry fields are taken from the entry; identity and root always come
+    // from the batch, so no entry can substitute a different caller.
+    let result: Awaited<ReturnType<typeof applyAccept>>;
+    try {
+      result = await applyAccept(
+        {
+          schema: 'pappra/collab-workflow-accept-request/1',
+          task_root: request.task_root,
+          caller: request.caller,
+          caller_pane: request.caller_pane,
+          subtask_id: entry.subtask_id,
+          attempt: entry.attempt,
+          report_message_id: entry.report_message_id,
+          reason: entry.reason,
+        },
+        options,
+      );
+    } catch (error) {
+      threw = true;
+      items.push({ ...item, status: 'needs-reconciliation', ok: false });
+      blockers.push({
+        code: 'accept_entry_threw',
+        detail: `${label(entry)}: ${error instanceof Error ? error.message : String(error)}`,
+        next_action:
+          'Inspect the task record; earlier entries may already be recorded and notified, and later entries were not attempted.',
+      });
+      continue;
+    }
+    results.push(result);
+    items.push({ ...item, status: result.status, ok: result.ok });
+    for (const blocker of result.blockers)
+      blockers.push({
+        ...blocker,
+        detail: `${label(entry)}: ${blocker.detail}`,
+      });
+    for (const warning of result.warnings)
+      warnings.push(`${label(entry)}: ${warning}`);
+  }
+  const first = results[0];
+  const last = results[results.length - 1];
+  const allOk = !threw && results.every((item) => item.ok);
+  return {
+    ...base,
+    status: threw
+      ? 'needs-reconciliation'
+      : allOk
+        ? writing
+          ? 'applied'
+          : 'planned'
+        : 'blocked',
+    ok: allOk,
+    task_id: last?.task_id ?? null,
+    task_root: last?.task_root ?? null,
+    domain_root: last?.domain_root ?? null,
+    state_revision: last?.state_revision ?? null,
+    principal: first?.principal ?? null,
+    messages: results.flatMap((item) => item.messages),
+    blockers,
+    warnings,
+    next_action:
+      blockers[0]?.next_action ??
+      results.find((item) => !item.ok)?.next_action ??
+      null,
+    detail: { items },
+  };
+}
+
+export interface AcceptBatchItem {
+  readonly subtask_id: string;
+  readonly attempt: number;
+  readonly report_message_id: string;
+  readonly status: string;
+  readonly ok: boolean;
+}

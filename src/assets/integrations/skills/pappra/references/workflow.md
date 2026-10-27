@@ -18,7 +18,7 @@ pappra collab workflow ack      --request <abs participant.json>   [--apply] [--
 pappra collab workflow report   --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow release  --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow accept   --request <abs accept.json>        [--apply] [--json]
-pappra collab workflow inspect  --task-root <abs task root>        [--json]
+pappra collab workflow inspect  --task-root <abs task root> [--limit <n>] [--json]
 ```
 
 `--goal` is accepted as an alias for `--request` on `prepare`.
@@ -54,6 +54,9 @@ fields are refused rather than ignored.
 - `pappra/collab-workflow-accept-request/1` — coordinator caller, subtask,
   attempt, the report message id being decided and a reason. It deliberately
   carries no plan or node id: both are resolved from the sealed work plan.
+- `pappra/collab-workflow-accept-batch-request/1` — the same coordinator caller
+  with 1–32 `accepts` entries, each a distinct attempt with its own report id and
+  reason. Every entry is decided independently through the single-accept path.
 
 A `bindings` entry may also name the coordinator. The sealed binding then holds
 exactly one coordinator entry (never a second one when the coordinator is also a

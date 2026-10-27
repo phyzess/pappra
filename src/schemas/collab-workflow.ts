@@ -20,6 +20,10 @@ export const WORKFLOW_RECLAIM_REQUEST_SCHEMA =
   'pappra/collab-workflow-reclaim-request/1';
 export const WORKFLOW_ACCEPT_REQUEST_SCHEMA =
   'pappra/collab-workflow-accept-request/1';
+export const WORKFLOW_ACCEPT_BATCH_REQUEST_SCHEMA =
+  'pappra/collab-workflow-accept-batch-request/1';
+/** A batch is N explicit decisions in one invocation, not a blanket approval. */
+export const WORKFLOW_MAX_ACCEPT_BATCH = 32;
 export const WORKFLOW_MANIFEST_SCHEMA = 'pappra/collab-workflow-manifest/1';
 export const WORKFLOW_PLAN_SCHEMA = 'pappra/collab-workflow-plan/1';
 export const WORKFLOW_RESULT_SCHEMA = 'pappra/collab-workflow-result/1';
@@ -444,6 +448,41 @@ export const workflowAcceptRequestSchema = z.strictObject({
 });
 
 /**
+ * Several acceptances in one invocation. Every entry names its own report and reason and is
+ * validated exactly like a single accept; nothing is inferred from a status or a count.
+ */
+export const workflowAcceptBatchRequestSchema = z
+  .strictObject({
+    schema: z.literal(WORKFLOW_ACCEPT_BATCH_REQUEST_SCHEMA),
+    task_root: absolutePath,
+    caller: workflowCallerSchema,
+    caller_pane: paneId.nullable().default(null),
+    accepts: z
+      .array(
+        z.strictObject({
+          subtask_id: safeId,
+          attempt: z.number().int().min(1).max(1000),
+          report_message_id: safeId,
+          reason: boundedText(WORKFLOW_MAX_OBJECTIVE),
+        }),
+      )
+      .min(1)
+      .max(WORKFLOW_MAX_ACCEPT_BATCH),
+  })
+  .superRefine((value, ctx) => {
+    const seen = new Set<string>();
+    for (const item of value.accepts) {
+      const key = `${item.subtask_id}#${item.attempt}`;
+      if (seen.has(key))
+        ctx.addIssue({
+          code: 'custom',
+          message: `${key} is accepted more than once in one batch`,
+        });
+      seen.add(key);
+    }
+  });
+
+/**
  * Coordinator-only sweep of Pappra-created panes that belong to accepted, released work.
  * It names no pane: eligibility comes only from the task record and live pane identity.
  */
@@ -490,6 +529,9 @@ export type WorkflowParticipantRequest = z.infer<
   typeof workflowParticipantRequestSchema
 >;
 export type WorkflowAcceptRequest = z.infer<typeof workflowAcceptRequestSchema>;
+export type WorkflowAcceptBatchRequest = z.infer<
+  typeof workflowAcceptBatchRequestSchema
+>;
 export type WorkflowReclaimRequest = z.infer<
   typeof workflowReclaimRequestSchema
 >;
@@ -597,6 +639,16 @@ export function parseWorkflowAcceptRequest(
   input: unknown,
 ): WorkflowValid<WorkflowAcceptRequest> {
   return parseWith(workflowAcceptRequestSchema, input, 'accept request');
+}
+
+export function parseWorkflowAcceptBatchRequest(
+  input: unknown,
+): WorkflowValid<WorkflowAcceptBatchRequest> {
+  return parseWith(
+    workflowAcceptBatchRequestSchema,
+    input,
+    'accept batch request',
+  );
 }
 
 export function parseWorkflowReclaimRequest(
