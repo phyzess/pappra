@@ -5,6 +5,13 @@ import {
 } from '../../schemas/collab-workflow.js';
 import { emptyResult, type WorkflowResult } from './types.js';
 import { findAttempt } from '../../collab/lifecycle.js';
+import { resolveUserDataDir } from '../../install/data-dir.js';
+import {
+  adviseHandoff,
+  readUsageObservation,
+  validSessionId,
+  type HandoffAdvice,
+} from '../../usage/observation.js';
 
 /**
  * Read-only workflow inspection.
@@ -16,6 +23,43 @@ import { findAttempt } from '../../collab/lifecycle.js';
 export interface InspectOptions {
   /** Caps each projected list, keeping its last entries in record order. Omitted means unbounded. */
   readonly limit?: number;
+  /** Where context-usage observations live; defaults to the user data directory. */
+  readonly usageDataDir?: string;
+  readonly now?: Date;
+}
+
+/**
+ * Advisory about the coordinator's own context, from a local observation only: no network,
+ * no native query. Claude is read from the status-line beacon's file; Codex needs a live
+ * read, so it is pointed at the explicit command instead of being queried here.
+ */
+function coordinatorAdvice(
+  coordinator: { harness?: string | null; session_id: string } | null,
+  options: InspectOptions,
+):
+  | HandoffAdvice
+  | { state: 'unavailable'; reason: string; next_action: string }
+  | null {
+  if (coordinator === null) return null;
+  if (
+    coordinator.harness === 'claude' &&
+    validSessionId(coordinator.session_id)
+  )
+    return adviseHandoff(
+      readUsageObservation(
+        options.usageDataDir ?? resolveUserDataDir(),
+        'claude',
+        coordinator.session_id,
+        options.now === undefined ? {} : { now: options.now },
+      ),
+    );
+  if (coordinator.harness === 'codex')
+    return {
+      state: 'unavailable',
+      reason: 'live_read_required',
+      next_action: `pappra context usage --host codex --session ${coordinator.session_id}`,
+    };
+  return null;
 }
 
 /** Keeps the last `limit` entries and reports what was dropped, never silently. */
@@ -103,6 +147,11 @@ export async function inspectWorkflow(
       ([name, list]) =>
         `${name}: showing ${String(list.items.length)} of ${String(list.total)} (--limit ${String(limit)}); not the full list.`,
     );
+  const advice = coordinatorAdvice(record.coordinator ?? null, options);
+  if (advice !== null && advice.state === 'advised')
+    truncationNotes.push(
+      `context: coordinator context is ${String(advice.used_percent)}% full (advisory at ${String(advice.threshold_percent)}%). ${advice.next_action ?? ''}`,
+    );
   const base = emptyResult<Record<string, unknown>>('inspect', false);
   // Inspect is a read-only projection: with no sealed manifest there is no cohort to
   // report, so the honest result is blocked (with the reason in warnings), not "applied".
@@ -134,6 +183,7 @@ export async function inspectWorkflow(
       input_revision: record.input_revision,
       coordinator: record.coordinator,
       limit: limit ?? null,
+      context_advisory: advice,
       totals: {
         attempts: attempts.total,
         messages: messages.total,

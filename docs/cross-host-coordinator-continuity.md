@@ -224,7 +224,7 @@ context for every harness without any handoff:
 | --- | --- | --- |
 | 0 | Probes on pinned versions (done for Claude 2.1.308 and Codex 0.164.0; remaining probes listed below) | evidence recorded here; host validation matrix updated when a version is declared supported |
 | 1 | Level 0 (`collab handoff check`, implemented): guided boundary handoff, read-only inventory check with exact blockers (mid-cohort, unaccepted reports, open uncertainty, source write claims); documentation of the checkpoint/resume and `collab handoff` path | no persisted-state change; tests for each blocker; independent review (it gates an ownership transfer) |
-| 2 | Signals and advisories: Codex sidecar observer, Claude status-line beacon (opt-in, chained), advisory hook | real-session acceptance; no hook starts a model or writes a checkpoint |
+| 2 | Signals and advisories (see [context usage](context-usage.md)): Codex live observer, Claude status-line beacon (opt-in, chained), advisory in `workflow inspect`; no advisory hook is needed because the coordinator already calls `inspect` at every step | real-session acceptance; no hook starts a model or writes a checkpoint |
 | 3 | Successor launch and checkpoint import per host (visible pane, seed, `SessionStart` injection) | real-session acceptance; independent review |
 | 4 | Level 1: mid-cohort succession (adoption step). Specification first, then implementation | written spec reviewed independently before any code |
 | 5 | Digest projection and report bounds | context reduction measured on a real cohort |

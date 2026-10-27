@@ -31,6 +31,7 @@ import type { CliOutput } from './output.js';
 import { parseOptions, failure, hasContinuityOptions } from './options.js';
 import { routeCollaboration } from './collaboration-router.js';
 import { runCollaborationWorkflowCli } from './commands/collaboration-workflow.js';
+import { runContextCli } from './commands/context.js';
 import { runDocsReviewCli } from './commands/docs-review.js';
 import { runHomeCommand } from './commands/home.js';
 import { isInteractiveTerminal } from './interactive.js';
@@ -54,6 +55,7 @@ const globalUsage =
   'pappra runtime <install|status|verify|remove|gc|archive> [options] [--json]\n' +
   'pappra session <plan|start|status|fence|stop> --config <abs managed-pi.json> [--json]\n' +
   'pappra collab workflow <prepare|dispatch|ack|report|accept|release|inspect> [options]\n' +
+  'pappra context <usage|statusline-plan> [options]\n' +
   `${collaborationCommandLine}`;
 
 export async function runCli(
@@ -167,6 +169,11 @@ export async function runCli(
   // option parser: those flags belong to the request schema, not to 95 global options.
   if (args[0] === 'collab' && args[1] === 'workflow') {
     return runCollaborationWorkflowCli(args.slice(2), output);
+  }
+  // The context family has its own flags (--session, --advise-percent); it is routed here for
+  // the same reason and never reaches the global parser.
+  if (args[0] === 'context') {
+    return runContextCli(args.slice(1), output);
   }
   let parsed: ReturnType<typeof parseOptions>;
   try {

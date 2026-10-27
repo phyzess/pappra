@@ -340,6 +340,10 @@ work is in flight, reports are unaccepted, claims are held or uncertainty is ope
 because a successor cannot accept work registered under the old epoch. A passing
 check never means the outgoing session stopped.
 
+`pappra context usage --host <claude|codex> --session <id>` reports how full a session's
+context is, as an advisory only. `workflow inspect` includes it for the coordinator and warns
+past 70%. An unavailable observation is never a low one, and nothing here starts a handoff.
+
 Confirmation is a registered message that is already present in the authoritative
 record as an accepted/recorded ACK or HANDOFF entry. It must match its stored
 content digest, come from the receiver to the current coordinator, carry the

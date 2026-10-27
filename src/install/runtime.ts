@@ -13,7 +13,7 @@ import {
 } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { getPackageInfo } from '../package-info.js';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
@@ -106,25 +106,9 @@ export interface RuntimePaths {
   readonly journalsDir: string;
 }
 
-export function resolveUserDataDir(
-  environment: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-  home: string = homedir(),
-): string {
-  if (environment['PAPPRA_DATA_HOME'] !== undefined) {
-    return resolve(environment['PAPPRA_DATA_HOME']);
-  }
-  if (platform === 'darwin') {
-    return join(home, 'Library', 'Application Support', 'Pappra');
-  }
-  if (platform === 'win32') {
-    return join(environment['LOCALAPPDATA'] ?? home, 'Pappra');
-  }
-  return join(
-    environment['XDG_DATA_HOME'] ?? join(home, '.local', 'share'),
-    'pappra',
-  );
-}
+import { resolveUserDataDir } from './data-dir.js';
+
+export { resolveUserDataDir };
 
 function validVersion(version: string): boolean {
   return /^[0-9A-Za-z][0-9A-Za-z0-9._+-]*$/.test(version);
