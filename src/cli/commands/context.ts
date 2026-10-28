@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { observeCodexUsage } from '../../hosts/codex/usage-observer.js';
 import { resolveUserDataDir } from '../../install/data-dir.js';
+import { shellQuote } from '../../infra/shell-quote.js';
 import { getPackageRoot } from '../../package-info.js';
 import {
   DEFAULT_ADVISE_PERCENT,
@@ -20,6 +21,7 @@ import {
 } from '../../usage/statusline-beacon.js';
 import type { CliOutput } from '../output.js';
 
+export { shellQuote };
 export const CONTEXT_RESULT_SCHEMA = 'pappra/context-usage-result/1';
 export const STATUSLINE_PLAN_SCHEMA = 'pappra/context-statusline-plan/1';
 
@@ -44,14 +46,6 @@ const readCodexLive: CodexUsageReader = async (threadId) => {
     ? result
     : { state: 'unavailable', reason: result.reason };
 };
-
-/**
- * POSIX single-quote a word so a shell passes it through verbatim. JSON.stringify is not a
- * substitute: double quotes still expand `$` and execute backticks.
- */
-export function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 export interface ContextCliDependencies {
   /** Beacon entry to point the plan at; defaults to this build's compiled entry. */

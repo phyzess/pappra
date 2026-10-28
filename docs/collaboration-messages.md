@@ -467,6 +467,70 @@ the stored state allows the handoff, never that the outgoing session has stopped
 When ready it lists the ordered `begin`, `transfer`, `confirm`, `complete`,
 `release-dispatch` steps. Exit code 0 means ready and 1 means blocked.
 
+### Coordinator successor launch and acknowledgement
+
+A coordinator handoff to a fresh Claude Code or Codex session of the same harness is driven by
+two more actions. The protocol fence is unchanged: nothing stops or observes the outgoing
+session, and the old coordinator is refused by the owner epoch after `complete`.
+
+```sh
+pappra collab handoff successor --request <abs successor.json> [--apply] [--json]
+pappra collab handoff ack --task-root <abs> --request <successor request id> [--apply] [--json]
+```
+
+`successor` takes a `pappra/collab-successor-request/1` document: a durable `request_id`, the
+`task_root`, an existing coordinator `handoff_id` in `requested` state whose receiver agent id is
+the planned Herdr `agent_name`, the `harness` (it must equal the coordinator's), the coordinator's
+`cwd` and Herdr `caller_pane`, and a `checkpoint` file with its pinned sha256 digest (at most
+24 KiB). Plan is read-only. It refuses unless `collab handoff check` is ready (the handoff being
+driven does not block itself), the pane's cwd matches, Herdr's session for the pane (when it
+reports one) is the recorded coordinator, the agent name is free, and the checkpoint matches its
+digest.
+
+Apply journals every native effect first in `<task_root>/successor/` (not in `task.json`): the
+request, the intent with the exact seed, and one step file per effect (`split`, `start`,
+`prompt`). A recorded outcome is returned as is; a step without an outcome is
+`reconcile_required` and nothing is repeated. After a definite failure use a new `request_id`.
+It then splits a sibling pane without changing focus, starts the agent, **waits until Herdr
+reports the session interactive** (a trust or approval dialog is reported and never answered or
+typed over), and delivers the seed with `herdr agent prompt`. The seed is a fixed template that
+only substitutes the task id, handoff id and one command; it is never passed as an argv because
+Herdr rejects newlines and rewrites single quotes there. The launcher confirms the turn started
+and otherwise warns without re-sending.
+
+Identity comes from observed evidence and is not authentication. Claude: the launcher pre-assigns
+`--session-id` (derived from the request id) and requires Herdr to report exactly that id
+before any seed is typed. Codex: exactly one thread loaded in the shared app-server daemon whose
+`cwd` equals the pane's and whose `preview` equals the delivered seed, created at or after the
+launch second;
+none or several is `identity_unavailable` and the handoff is left untouched. On success the
+launcher rebinds the observed identity into the handoff and records the transfer through the
+existing `rebind` and `transfer` actions; both are idempotent, so rerunning a request whose
+outcome is recorded finishes a bind that a crash interrupted, without launching again. A recorded
+`identity_unavailable` is reported as a failure (exit 1): the agent it started may still be
+running, Pappra never stops it, so close that pane and use a new `request_id`.
+
+`ack` is the **only** command the successor is asked to run. It verifies that the caller is the
+recorded successor, checks the checkpoint digest **before** registering anything, registers one
+`HANDOFF` confirmation message (`handoff-ack-<request id>`) from the recorded identity to the
+current coordinator, writes an ack marker, and prints the digest-pinned checkpoint as the
+briefing. The caller is the pane named by `HERDR_PANE_ID` for Claude. Codex runs tool commands in
+the shared daemon, whose `HERDR_PANE_ID` belongs to the daemon and says nothing about the
+session (observed: a different workspace), so a Codex successor is bound by `CODEX_THREAD_ID`,
+which must equal the thread the launcher recorded. A wrong caller is refused and registers
+nothing. The coordinator then explicitly runs `confirm` (confirmation message
+`handoff-ack-<request id>`) and `complete`; the successor runs `release-dispatch` at the new
+epoch. Neither action completes the handoff by itself.
+
+Limits: the outgoing session is neither stopped nor observed; for a Codex coordinator the
+launch precondition only checks the pane's cwd (Herdr reports no session for it) and warns, and
+the acknowledgement proves the command ran in the recorded pane or thread, not that the recorded
+session is still alive; a launched session runs under the
+user's own permission mode, so its one command may raise an approval prompt in its visible pane
+that only the user answers; the checkpoint text is coordinator-authored and digest-pinned but is
+printed to the successor model as briefing, so it must not contain instructions you would not
+give it.
+
 Exit codes are 0 for a successful read/plan/apply, 1 for a core refusal,
 conflict, stale epoch/revision or uncertainty, and 2 for invalid
 request/options.

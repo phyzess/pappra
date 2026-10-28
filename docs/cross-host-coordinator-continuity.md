@@ -225,12 +225,128 @@ context for every harness without any handoff:
 | 0 | Probes on pinned versions (done for Claude 2.1.308 and Codex 0.164.0; remaining probes listed below) | evidence recorded here; host validation matrix updated when a version is declared supported |
 | 1 | Level 0 (`collab handoff check`, implemented): guided boundary handoff, read-only inventory check with exact blockers (mid-cohort, unaccepted reports, open uncertainty, source write claims); documentation of the checkpoint/resume and `collab handoff` path | no persisted-state change; tests for each blocker; independent review (it gates an ownership transfer) |
 | 2 | Signals and advisories (see [context usage](context-usage.md)): Codex live observer, Claude status-line beacon (opt-in, chained), advisory in `workflow inspect`; no advisory hook is needed because the coordinator already calls `inspect` at every step | real-session acceptance; no hook starts a model or writes a checkpoint |
-| 3 | Successor launch and checkpoint import per host (visible pane, seed, `SessionStart` injection) | real-session acceptance; independent review |
+| 3 | Successor launch, identity evidence and checkpoint import per host (see "Phase 3 design"); implemented as `collab handoff successor` and `ack`, accepted in real Claude to Claude and Codex to Codex sessions | independent review |
 | 4 | Level 1: mid-cohort succession (adoption step). Specification first, then implementation | written spec reviewed independently before any code |
 | 5 | Digest projection and report bounds | context reduction measured on a real cohort |
 
 Every phase touching ownership, persisted state or recovery requires an independent review
 by an observed native participant before it is complete.
+
+## Phase 3 design (from probes, 2026-10-27)
+
+Probes ran against Claude Code 2.1.308 and Codex 0.164.0 in throwaway sessions started in
+sibling Herdr panes in a scratch directory.
+
+**Observed**
+
+- Seeding works the same way for both hosts:
+  `herdr agent start <name> --kind <claude|codex> --pane <pane> -- "<prompt>"` starts a visible
+  interactive session that processes the initial prompt immediately.
+- Claude: `--session-id <uuid>` pre-assigns the session id, and `herdr agent get` reports that
+  exact value as `agent_session` as soon as the session starts. The successor's identity can
+  therefore be known before it runs anything.
+- Codex: `herdr` reports `agent_session: null` and no thread-id variable was found in the
+  process environment. The daemon does know the thread: `thread/loaded/list` plus
+  `thread/read` return its `cwd`, `createdAt` and `preview`, and the preview is the seed
+  prompt. The TUI also loads a second, blank thread (empty preview) in the same directory, so
+  a match must be on cwd and the exact seed preview, and exactly one match is required.
+- Not needed for a fresh successor, so not probed: Claude `SessionStart` `source: resume|fork`,
+  Codex `thread/fork`, `thread/inject_items` and `turn/interrupt`.
+
+**Principles carried over.** The successor is a new, visible session in a sibling pane; focus
+is not changed; no existing pane is typed into; no approval is answered for anyone; a launch
+that may have happened is never repeated; identity comes from observed evidence (Herdr, the
+daemon), never from prose. Routing evidence is not authentication and the report says so.
+
+**Flow (as implemented).** Every step except the launch and the acknowledgement already existed.
+
+1. `collab handoff check` must report `ready`. The launcher re-runs it, ignoring only the handoff
+   it is driving, and refuses otherwise.
+2. `collab handoff begin` for `kind: coordinator` with a placeholder receiver whose agent id is
+   the planned Herdr agent name. The protocol already allows rebinding a receiver once its native
+   session is observed.
+3. **Launch.** `collab handoff successor <plan|apply>` splits one sibling pane in the
+   coordinator's cwd, starts the same harness there, waits until Herdr reports the session
+   interactive, and delivers a **fixed seed** with `herdr agent prompt` (addressed by the pane it
+   split, never by a reusable agent name). Every native effect is journalled first in a
+   task-local private directory, not in `task.json`; a repeat returns the recorded result or
+   `reconcile_required`, and an unknown outcome is never replayed.
+4. The launcher records identity evidence, then rebinds the observed identity into the handoff
+   and records the transfer through the existing `rebind` and `transfer` actions. These are
+   idempotent, so a run interrupted after the outcome was recorded finishes the bind on the next
+   run without launching again.
+5. **Acknowledgement.** The seed asks the successor to run one command, `collab handoff ack`. It
+   verifies the caller, checks the digest-pinned checkpoint before registering anything,
+   registers one `HANDOFF` confirmation message from the recorded identity to the current
+   coordinator (the existing `confirmReceiver` identity and epoch checks apply unchanged), writes
+   an ack marker, and prints the checkpoint as the briefing. There is no prefilled request file
+   and no separate resume command.
+6. The coordinator explicitly runs `collab handoff confirm` and `complete`; the successor then
+   runs `release-dispatch` at the new epoch. Until then dispatch stays frozen.
+
+**Seed.** Fixed text that substitutes only the task id, the handoff id and the one command (the
+absolute CLI path and task root are shell-quoted; the request id is a validated safe id). It tells
+the successor to run that command, reply with a fixed acknowledgement line and wait, and forbids
+dispatching, accepting or releasing until the previous coordinator says dispatch is released.
+Arbitrary prompt text is not accepted. The checkpoint reaches the successor only through the
+command's output.
+
+**Identity rules.**
+
+- Claude: the launcher pre-assigns `--session-id`, derived from the task id, the handoff id and
+  the request id (request ids are chosen by people, so two tasks must not share a session), and
+  requires Herdr to report exactly that id before any seed is typed. The acknowledgement binds a
+  Claude caller by the Herdr pane it runs in.
+- Codex: exactly one loaded thread whose `cwd` equals the pane's and whose `preview` equals the
+  delivered seed, created at or after the launch second (Codex stamps whole seconds, so no
+  tolerance is used). Zero or several matches refuse; nothing is guessed. The acknowledgement
+  binds a Codex caller by `CODEX_THREAD_ID`.
+- The agent id used in the protocol is the Herdr agent name, as for the Pi path.
+
+**Known identity limits.** A Codex coordinator pane normally reports no session to Herdr, so
+the launch precondition for Codex only checks the pane's cwd and warns; anyone holding the
+request file in that cwd could drive the launch, but gains no authority they did not already
+have (`rebind` and `transfer` can be run directly). The acknowledgement proves the command ran in
+the recorded pane (Claude) or thread (Codex), not that the recorded session is still alive: a
+successor replaced in the same pane could register the same deterministic message.
+
+**Out of scope here.** Replacing the old session (nothing stops it; the protocol fences it by
+epoch), mid-cohort adoption (phase 4), and Pi (it has the managed handoff).
+
+**Implementation split.** 3a identity discovery for both hosts and the launcher plan/apply with
+its intent journal; 3b ACK request prefill, the fixed seed and docs; 3c end-to-end real-session
+acceptance (Claude to Claude and Codex to Codex on a throwaway task). 3a and 3b touch an
+ownership-transfer path and need independent review before 3c.
+
+## Phase 3 real-session findings (2026-10-27)
+
+Real sessions (Claude Code 2.1.308 and Codex 0.164.0, each a throwaway task whose coordinator
+was a real session in a scratch directory) changed three parts of the design that the earlier
+probes had not exposed:
+
+- Herdr writes a refusal as JSON on **stderr** with exit code 1 (for example
+  `agent_not_found`), not on stdout. The Herdr wrapper reads both.
+- A freshly started session is not ready when `agent start` returns. Herdr reports
+  `interactive_ready` and, for Claude, the session id only after the session's own startup
+  (including the user's SessionStart hooks) finishes; a seed typed earlier was left unsubmitted
+  in the input box. The launcher now waits for `interactive_ready`, an idle state and, for
+  Claude, the pre-assigned id, and checks that the turn started.
+- Codex tool commands run in the shared daemon, so `HERDR_PANE_ID` there is the daemon's, not
+  the pane's. `CODEX_THREAD_ID` (equal to `CODEX_SESSION_ID`) is set and equals the thread the
+  daemon identified from the seed. The acknowledgement binds a Codex caller by that thread id.
+
+Result in both runs: the successor ran exactly one command, replied with the fixed
+acknowledgement line, the coordinator ran `confirm` and `complete`, the epoch became 2 with the
+previous coordinator recorded, and the previous coordinator's `release-dispatch` at epoch 1 was
+refused as `stale_epoch`. In the Claude run the successor itself then released dispatch.
+
+## Decisions for phase 3 (recorded 2026-10-27)
+
+1. The successor acknowledges by running a prefilled, digest-pinned request whose identity was
+   filled from observed Herdr or daemon evidence. This is not authentication.
+2. The seed asks the successor to run exactly one command. That command both registers the
+   acknowledgement and prints the briefing, so no separate resume command is needed. If the
+   user's permission mode asks for approval of it, the user answers in the pane; Pappra never does.
 
 ## Decisions (recorded 2026-10-27)
 
@@ -302,6 +418,6 @@ probe's scratch directory in the user's own configuration.
 
 | Probe | Needed by |
 | --- | --- |
-| Claude `SessionStart` `source: resume` and `fork`; auto-compaction hook order | phase 2 |
-| Codex `turn/interrupt`, `thread/inject_items`, `thread/fork` on a live TUI thread | phase 3 |
+| Claude `SessionStart` `source: resume` and `fork`; auto-compaction hook order | not needed for a fresh successor; only if resume-based takeover is ever added |
+| Codex `turn/interrupt`, `thread/inject_items`, `thread/fork` on a live TUI thread | not needed for a fresh successor |
 | Pinned-version matrix: Claude 2.1.292, Codex 0.163.0 | before declaring support |

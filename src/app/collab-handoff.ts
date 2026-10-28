@@ -656,6 +656,7 @@ export async function readHandoffInventory(
  */
 export async function readCoordinatorHandoffCheck(
   taskRoot: string,
+  options: { readonly ignoreHandoffId?: string } = {},
 ): Promise<TaskStoreResult<Record<string, unknown>>> {
   const opened = await openTaskStore(taskRoot);
   if (!opened.ok) return opened;
@@ -674,7 +675,7 @@ export async function readCoordinatorHandoffCheck(
   const workflowDriven =
     present(workflowWorkPlanPath(opened.value.taskRoot)) ||
     present(workflowManifestPath(opened.value.taskRoot));
-  const readiness = coordinatorHandoffReadiness(record);
+  const readiness = coordinatorHandoffReadiness(record, options);
   const blockers: HandoffReadinessFinding[] = [...readiness.blockers];
   if (workflowDriven) {
     // Reuse the dispatch evaluator: acceptance is the sealed plan's decision over verified

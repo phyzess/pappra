@@ -756,6 +756,10 @@ export interface CoordinatorHandoffReadiness {
  */
 export function coordinatorHandoffReadiness(
   record: TaskRecord,
+  options: {
+    /** The handoff being driven right now must not block itself. */
+    readonly ignoreHandoffId?: string;
+  } = {},
 ): CoordinatorHandoffReadiness {
   const blockers: HandoffReadinessFinding[] = [];
   const warnings: HandoffReadinessFinding[] = [];
@@ -769,7 +773,9 @@ export function coordinatorHandoffReadiness(
   const label = (item: { subtask_id: string; attempt: number }) =>
     `${item.subtask_id}#${String(item.attempt)}`;
   const open = (record.handoffs ?? []).filter(
-    (item) => !['completed', 'aborted'].includes(item.state),
+    (item) =>
+      !['completed', 'aborted'].includes(item.state) &&
+      item.handoff_id !== options.ignoreHandoffId,
   );
   if (open.length > 0)
     blockers.push({

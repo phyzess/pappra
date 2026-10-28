@@ -14,6 +14,8 @@ export async function handleHandoff(
     const handoffAction =
       selected === 'inventory' ||
       selected === 'check' ||
+      selected === 'successor' ||
+      selected === 'ack' ||
       selected === 'begin' ||
       selected === 'stopped' ||
       selected === 'rebind' ||
@@ -29,14 +31,18 @@ export async function handleHandoff(
         ? ['--task-root', '--subtask-id', '--attempt']
         : handoffAction === 'check'
           ? ['--task-root']
-          : ['--task-root', '--request'];
+          : handoffAction === 'successor'
+            ? ['--request']
+            : ['--task-root', '--request'];
     const duplicate = duplicateFlags.filter(
       (flag) =>
         args.filter((arg) => arg === flag || arg.startsWith(`${flag}=`))
           .length > 1,
     );
+    // `successor` takes its task root from the request document; an extra --task-root would be
+    // silently ignored, so it is refused instead.
     const allowed = new Set([
-      'task-root',
+      ...(handoffAction === 'successor' ? [] : ['task-root']),
       'json',
       ...(handoffAction === 'inventory'
         ? ['subtask-id', 'attempt']
@@ -53,7 +59,7 @@ export async function handleHandoff(
         output,
         json,
         'invalid_arguments',
-        `collab handoff accepts only inventory, check or a handoff mutation action and their own options.${
+        `collab handoff accepts only inventory, check, successor, ack or a handoff mutation action and their own options.${
           duplicate.length ? ` Duplicate: ${duplicate.join(', ')}.` : ''
         }${extra.length ? ` Unexpected: ${extra.join(', ')}.` : ''}\n${collaborationHandoffUsage}`,
       );

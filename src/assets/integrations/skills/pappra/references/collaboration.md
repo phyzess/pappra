@@ -340,6 +340,13 @@ work is in flight, reports are unaccepted, claims are held or uncertainty is ope
 because a successor cannot accept work registered under the old epoch. A passing
 check never means the outgoing session stopped.
 
+To hand the coordinator role to a fresh Claude Code or Codex session of the same harness, prepare
+a coordinator `handoff begin`, then `pappra collab handoff successor --request <abs> [--apply]`
+launches a visible sibling session, journals each effect first and never repeats an unknown one.
+The successor runs one command, `collab handoff ack`, which acknowledges and prints the
+digest-pinned briefing; you then run `confirm` and `complete`. Identity is observed evidence, not
+authentication, and the old session is neither stopped nor observed.
+
 `pappra context usage --host <claude|codex> --session <id>` reports how full a session's
 context is, as an advisory only. `workflow inspect` includes it for the coordinator and warns
 past 70%. An unavailable observation is never a low one, and nothing here starts a handoff.
