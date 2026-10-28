@@ -6,15 +6,26 @@ import {
   coordinatorLineage,
   hasSuccession,
   judgeEvidence,
+  lineageContains,
+  type CoordinatorLineage,
 } from '../../collab/lineage.js';
+import {
+  WORK_PLAN_EVALUATION_SCHEMA,
+  WORK_PLAN_SCHEMA,
+} from '../../collab/work-plan.js';
+import { object as isRecord } from '../../infra/validation.js';
 import type { TaskRecord } from '../../collab/types.js';
-import { workflowManifestPath } from '../../schemas/collab-workflow.js';
+import {
+  workflowManifestPath,
+  workflowWorkPlanPath,
+} from '../../schemas/collab-workflow.js';
 import type { WorkflowAdoptRequest } from '../../schemas/collab-workflow.js';
 import type {
   CollabBinding,
   CollabBindingParticipant,
 } from '../../schemas/collaboration.js';
 import { createHerdrBootstrapOps } from '../collab-bootstrap-transport.js';
+import { COLLAB_ROLE_PLAN_SCHEMA } from '../collab-role-plan.js';
 import {
   reportedSessionIdentity,
   type HerdrListResult,
@@ -118,6 +129,132 @@ function launchedPaneOf(
     : null;
 }
 
+/**
+ * The adopt request document plus its optional explicit list of role artifacts. Role plans and
+ * role event journals sit at caller-chosen paths, so adopt cannot find them by itself; naming
+ * them lets it check each one (docs/mid-cohort-succession-spec.md, section 8). The field is
+ * replaced rather than intersected so the type holds whether or not the request schema already
+ * carries it.
+ */
+export type AdoptRequest = Omit<WorkflowAdoptRequest, 'extra_paths'> & {
+  readonly extra_paths?: readonly string[] | undefined;
+};
+
+const MAX_EXTRA_PATHS = 16;
+
+/** Role subsystem documents that pin one owner epoch at the top level. */
+const EPOCH_PINNING_DOCUMENTS = new Map<string, string>([
+  [COLLAB_ROLE_PLAN_SCHEMA, 'role plan'],
+  [WORK_PLAN_SCHEMA, 'work plan'],
+  [WORK_PLAN_EVALUATION_SCHEMA, 'work plan evaluation'],
+]);
+/** Private to collab-role-orchestration.ts; if it is renamed there the file reads as unrecognized. */
+const ROLE_JOURNAL_SCHEMA = 'pappra/collab-role-orchestration-journal/1';
+
+const UNLISTED_ARTIFACTS =
+  'Role plans, role event journals and the goal-based worker path (collab prepare/start, work-run) keep current-epoch equality; they live at caller-chosen paths and cannot be detected here. Do not use them after a succession.';
+const UNLISTED_ARTIFACTS_AFTER_EXTRA_PATHS =
+  'Role artifacts that extra_paths does not list and the goal-based worker path (collab prepare/start, work-run) keep current-epoch equality; they live at caller-chosen paths and cannot be detected here. Do not use them after a succession.';
+
+/** What a role subsystem file is and the owner epoch it pins, if it pins one. */
+function recognizeRoleArtifact(document: unknown): {
+  readonly kind: string;
+  readonly pins: boolean;
+  readonly epoch: unknown;
+} | null {
+  if (!isRecord(document)) return null;
+  const schema = document['schema'];
+  const pinning =
+    typeof schema === 'string'
+      ? EPOCH_PINNING_DOCUMENTS.get(schema)
+      : undefined;
+  if (pinning !== undefined)
+    return { kind: pinning, pins: true, epoch: document['owner_epoch'] };
+  if (schema === ROLE_JOURNAL_SCHEMA)
+    return { kind: 'role orchestration journal', pins: false, epoch: null };
+  // A role-run request nests its role plan and carries no schema of its own.
+  const plan = document['role_plan'];
+  if (isRecord(plan) && plan['schema'] === COLLAB_ROLE_PLAN_SCHEMA)
+    return {
+      kind: 'role orchestration request',
+      pins: true,
+      epoch: plan['owner_epoch'],
+    };
+  return null;
+}
+
+/** True when `file` is the workflow's own sealed plan, which follows the coordinator lineage. */
+function isSealedWorkflowPlan(taskRoot: string, file: string): boolean {
+  const sealed = workflowWorkPlanPath(taskRoot);
+  try {
+    return fs.realpathSync(file) === fs.realpathSync(sealed);
+  } catch {
+    return path.resolve(file) === path.resolve(sealed);
+  }
+}
+
+/**
+ * One warning for one explicitly listed role artifact: whether it depends on an owner epoch and
+ * whether that epoch is still the current one. Reads one bounded regular file and writes nothing.
+ * The warning carries a fixed kind label and the epoch number, never file content. A file that
+ * cannot be read or recognized is reported as not checked and is never silently skipped.
+ */
+function describeExtraPath(
+  taskRoot: string,
+  file: string,
+  lineage: CoordinatorLineage,
+): string {
+  const label = `extra_paths ${JSON.stringify(file)}`;
+  const unchecked = (why: string) =>
+    `${label}: not checked (${why}); treat it as depending on the current epoch.`;
+  // The sealed plan is no role artifact: reading it as one would claim a refusal that never happens.
+  if (isSealedWorkflowPlan(taskRoot, file))
+    return `${label}: the sealed workflow plan follows the coordinator lineage; there is nothing to check.`;
+  const read = readBoundedJson(file, 'extra_paths entry');
+  if (!read.ok) return unchecked(read.code);
+  const artifact = recognizeRoleArtifact(read.value);
+  if (artifact === null)
+    return unchecked('neither a role plan nor a role journal');
+  if (!artifact.pins)
+    return `${label}: ${artifact.kind} records no owner epoch; its events are tied to a role plan by plan id, so check that plan as well.`;
+  const epoch = artifact.epoch;
+  if (typeof epoch !== 'number' || !Number.isSafeInteger(epoch) || epoch < 1)
+    return `${label}: ${artifact.kind} carries no usable owner_epoch; treat it as depending on the current epoch.`;
+  const current = lineage.current;
+  if (current === null)
+    return `${label}: ${artifact.kind} pins owner epoch ${String(epoch)}; the task records no current epoch to compare it with.`;
+  if (epoch === current)
+    return `${label}: ${artifact.kind} pins owner epoch ${String(epoch)}, the current epoch. It works only while this coordinator holds that epoch and fails closed after the next succession.`;
+  const relation = !lineage.valid
+    ? ''
+    : lineageContains(lineage, epoch)
+      ? ', an earlier epoch of this task'
+      : ', which is not an epoch of this task';
+  return `${label}: ${artifact.kind} pins owner epoch ${String(epoch)}${relation}; the current epoch is ${String(current)}. Executing through it (work-run, role-run) keeps current-epoch equality and is refused; only plan inspection follows the lineage. Rebuild it under epoch ${String(current)} or stop using it.`;
+}
+
+/**
+ * Without `extra_paths` adopt can only say that role artifacts cannot be detected. With it, each
+ * listed file is checked and the generic text narrows to what is still undetectable.
+ */
+function roleArtifactWarnings(
+  taskRoot: string,
+  extraPaths: readonly string[],
+  lineage: CoordinatorLineage,
+): string[] {
+  const listed = [...new Set(extraPaths)];
+  if (listed.length === 0) return [UNLISTED_ARTIFACTS];
+  const warnings = listed
+    .slice(0, MAX_EXTRA_PATHS)
+    .map((file) => describeExtraPath(taskRoot, file, lineage));
+  if (listed.length > MAX_EXTRA_PATHS)
+    warnings.push(
+      `extra_paths lists ${String(listed.length)} entries; only the first ${String(MAX_EXTRA_PATHS)} were checked.`,
+    );
+  warnings.push(UNLISTED_ARTIFACTS_AFTER_EXTRA_PATHS);
+  return warnings;
+}
+
 export interface AdoptOptions {
   readonly apply?: boolean;
   /** Herdr agent listing; injected by tests, observed through Herdr otherwise. */
@@ -138,7 +275,7 @@ export interface AdoptOptions {
  * pane must be observed through Herdr as that very session.
  */
 export async function applyAdopt(
-  request: WorkflowAdoptRequest,
+  request: AdoptRequest,
   options: AdoptOptions = {},
 ): Promise<WorkflowResult<AdoptDetail>> {
   const writing = options.apply !== false;
@@ -193,7 +330,7 @@ export async function applyAdopt(
       next_action: finding.next_action,
     });
   warnings.push(
-    'Role plans, role event journals and the goal-based worker path (collab prepare/start, work-run) keep current-epoch equality; they live at caller-chosen paths and cannot be detected here. Do not use them after a succession.',
+    ...roleArtifactWarnings(task.taskRoot, request.extra_paths ?? [], lineage),
   );
 
   const manifest = readBoundedJson(

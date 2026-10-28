@@ -16,6 +16,7 @@ pappra collab workflow prepare  --request <abs prepare.json>       [--apply] [--
 pappra collab workflow dispatch --request <abs dispatch.json>      [--apply] [--json]
 pappra collab workflow ack      --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow report   --request <abs participant.json>   [--apply] [--json]
+pappra collab workflow await    --request <abs await.json>                   [--json]
 pappra collab workflow release  --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow accept   --request <abs accept.json>        [--apply] [--json]
 pappra collab workflow adopt    --request <abs adopt.json>         [--apply] [--json]
@@ -34,6 +35,19 @@ that uses managed Pi, session transition, rollover or role artifacts. `pappra co
 check-mid-cohort` is the read-only check for handing off while transferable attempts are still in
 flight: it blocks on every non-transferable attempt and lists what it relaxed.
 
+Role plans, role orchestration requests and journals live at caller-chosen paths, so `adopt` cannot
+find them by itself. List them in the optional `extra_paths` of the adopt request (absolute, unique,
+at most 16). `adopt` reads each one (bounded, read-only, symlinks refused) and warns, per file,
+whether it pins an owner epoch and whether that is the current epoch; a file it cannot read or
+recognize is reported as not checked. Findings are warnings, never blockers. Without `extra_paths`
+the generic warning is unchanged.
+
+An attempt that only acknowledged keeps blocking `check-mid-cohort`, because an ACK is not a native
+observation. The mid-cohort result adds a `reconcile` entry per such attempt: the open uncertainty,
+the applied ACK to cite, the exact `pappra/collaboration-recovery-request/1` document (operator-asserted
+fields left as placeholders) and the `collab recovery reconcile` command, and points the blocker's
+`next_action` at it. It resolves nothing by itself.
+
 The family parses its own argv and is routed before the global option parser,
 so request documents never mix with the global flag surface. Without `--apply`
 every action is a plan: no document is sealed, no claim is made, no message is
@@ -41,6 +55,11 @@ registered and nothing is notified.
 
 Exit codes: `0` planned/applied, `1` blocked/refused/needs reconciliation, `2`
 invalid arguments or an invalid document.
+
+`await` is the one action with nothing to plan: it only reads, so it accepts and ignores `--apply`
+(passing it changes nothing). It exits `0` only for `decided`; a `timeout` exits `1` with status
+`timeout`, so `await && release` never releases without a decision — see
+[Awaiting the decision](#awaiting-the-decision).
 
 ## Request documents
 
@@ -62,6 +81,10 @@ fields are refused rather than ignored.
 - `pappra/collab-workflow-participant-request/1` — action (`ack`, `report`,
   `release`), caller, subtask, attempt and either a report declaration or a
   release declaration.
+- `pappra/collab-workflow-await-request/1` — task root, the participant caller, subtask,
+  attempt, an explicit `timeout_seconds` (integer 0–600; above the maximum is refused, never
+  clamped) and an optional `poll_interval_seconds` (integer 1–60, default 5). The identity
+  fields are validated exactly like the participant request's.
 - `pappra/collab-workflow-accept-request/1` — coordinator caller, subtask,
   attempt, the report message id being decided and a reason. It deliberately
   carries no plan or node id: both are resolved from the sealed work plan.
@@ -261,7 +284,7 @@ claim or a final result is not acceptance.
 
 ## Participant actions
 
-`ack`, `report` and `release` are self-call only. The request's caller must equal
+`ack`, `report`, `await` and `release` are self-call only. The request's caller must equal
 the registered attempt assignee on agent id, session id and harness; anything
 else is `sender_denied`. There is no on-behalf-of path: a coordinator that
 submitted a peer identity would fabricate a participant.
@@ -282,6 +305,8 @@ submitted a peer identity would fabricate a participant.
   delivery are separate facts: an undelivered or ambiguous notification is
   reported as a warning and never rolls the record back, and a duplicate resend
   never wakes the recipient twice.
+- `await` is read-only: it never notifies (so it has no `caller_pane`), registers no message and
+  touches no claim. See [Awaiting the decision](#awaiting-the-decision).
 
 ## Acceptance
 
@@ -297,6 +322,13 @@ re-derives: the plan's `plan_id` and node's `node_id` (never caller-supplied),
 and `decision: "accepted"`, addressed to the assignee and replying to the report. Dependent work is unlocked only when the
 work plan re-evaluates that decision.
 
+When the notification after a recorded decision fails or is not `submitted` (for example a Codex
+coordinator, whose sandbox cannot reach the Herdr socket), the decision stays final and the result's
+`detail.delivery_fallback` (`reason`, `worker_next_action`) names what the worker does instead: wait with
+`collab workflow await`, then `release`. Batch items carry the same field. If the exclusive create of the
+base accept id loses a race to a message registered under another epoch after a succession, the call retries
+once with the epoch-qualified id, only while the caller is still the coordinator at that epoch.
+
 An accept batch is N explicit decisions in one invocation, not a blanket
 approval. Each entry runs through the single-accept path in order: it is
 validated, written and notified on its own, and a refused entry neither blocks
@@ -308,6 +340,88 @@ duplicate; a changed reason for a recorded decision is refused as a content
 conflict. An unexpected failure stops the batch: earlier decisions stay recorded,
 later entries are reported `not-attempted` and the aggregate is
 `needs-reconciliation`. An empty batch is refused.
+
+## Awaiting the decision
+
+A coordinator that cannot reach the Herdr socket still records its decision, but it cannot wake the
+worker: a Codex coordinator runs in a sandbox, and `accept` then reports a delivery warning
+("Operation not permitted"). `await` is the file-based channel for that case, a bounded wait on the
+worker side that needs no Herdr, no pane and no wake-up.
+
+```json
+{
+  "schema": "pappra/collab-workflow-await-request/1",
+  "task_root": "/absolute/path/to/domain/tasks/example-task",
+  "caller": {
+    "agent_id": "writer-id",
+    "session_id": "writer-session",
+    "harness": "pi",
+    "cwd": "/absolute/path/to/repository"
+  },
+  "subtask_id": "write-docs",
+  "attempt": 1,
+  "timeout_seconds": 300,
+  "poll_interval_seconds": 5
+}
+```
+
+`pappra collab workflow await --request <file> --json` observes the persisted task record and the
+registered message files once, then every `poll_interval_seconds`, until a valid accept decision
+for the caller's own attempt exists or `timeout_seconds` has passed. The last sleep is cut short
+so the wait never overshoots its bound, and `timeout_seconds: 0` observes exactly once. It reads
+only `task.json` and `messages/` in the task root: no Herdr, no pane, no log, no native query. It
+writes nothing, registers nothing, notifies nobody and claims nothing, and it is not acceptance —
+it observes a decision, it never makes or confirms one, and the work-plan evaluator stays the
+authority that unlocks dependent work. `--apply` is accepted and ignored: there is nothing to apply.
+
+It is self-call only: the caller must equal the registered attempt assignee (agent id, session id
+and the harness when one is recorded), otherwise `sender_denied`; an attempt that was never
+registered is `attempt_not_registered`. A task root that cannot be opened, or that changes or
+disappears during the wait, is `invalid` and ends the wait, so a swapped namespace is never
+followed.
+
+A decision counts only when all of these hold:
+
+- it is an applied `ANSWER` replying to the attempt's current report: the last admitted
+  `applied` result of the attempt, which must be `completed`;
+- it passes the evidence the release path demands of `release.correlates_to`: a regular
+  registered file whose content digest still equals the record's, addressed to the caller, task
+  and attempt, signed by the current coordinator — or, after a coordinator succession, by the
+  coordinator of its own epoch, with that epoch in the lineage and the decision applied at or
+  before the instant the epoch ended (an invalid lineage reduces this to the current
+  coordinator only);
+- its payload is an acceptance for this attempt and this report with `decision: "accepted"`.
+
+A decision that was only registered, an informational answer, a rejection, a decision on another
+report, or one that fails the evidence never ends the wait. It is listed in `detail.ignored` (at
+most 16, with `detail.ignored_total` always exact) and in `warnings`, each with the first rule it
+failed. Among the decisions that pass, the last registered one counts, and one that fails never
+blocks it.
+
+`await` uses the same evidence as the release correlation, so `decided` is not the work-plan
+evaluator's verdict. The evaluator also checks the sealed plan, node, input revision and plan
+epoch, and without a succession it judges the last applied decision whether or not that decision
+passes these checks. So `await` can say `decided` while the evaluator does not accept the node,
+for example after an extra decision sent through the lower-level message path. Dependent work is
+unlocked only when the work plan re-evaluates the decision (see [Acceptance](#acceptance)).
+
+| `status`  | `ok`    | Exit | Meaning                                                                                                                                         |
+| --------- | ------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `decided` | `true`  | `0`  | A valid accept decision exists. `detail.decision` names it and `messages` lists it; the next action is `release`.                               |
+| `timeout` | `false` | `1`  | No valid decision appeared within `timeout_seconds` (one `await_timeout` blocker). Not a refusal and not a decision: run `await` again or ask the coordinator. |
+| `refused` | `false` | `1`  | The caller is not the attempt's participant, or the attempt is not registered.                                                                  |
+| `invalid` | `false` | `1`  | The task could not be read, or changed during the wait. An invalid document or argument is exit `2` and never reaches the wait.                 |
+
+Only `decided` exits `0`, so `await && release` stops at a timeout instead of releasing without a
+decision. `timeout`, `refused` and `invalid` all exit `1`: read `status` to tell a timeout (wait
+again) from the other two (stop). `timeout_seconds: 0` observes once and exits `1` unless a decision
+already exists. `detail` also carries `report_message_id` (null until a completed report is
+admitted, which the `await_timeout` blocker then says), `attempt_state`, `polls` and `waited_ms`.
+After `decided`, run `release`; its optional `release.correlates_to` may cite
+`detail.decision.message_id`, which the same evidence rules accept. A release records its intent
+once per attempt, so cite the decision on the first release: a later release with a different
+`correlates_to` is refused as a conflicting release (`release_status_conflict` or
+`release_intent_conflict`).
 
 ## Pane reclaim
 

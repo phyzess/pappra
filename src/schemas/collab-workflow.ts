@@ -506,6 +506,18 @@ export const workflowAdoptRequestSchema = z.strictObject({
   caller: workflowCallerSchema,
   /** The coordinator's own pane; it must be observed through Herdr as this session. */
   caller_pane: paneId,
+  /**
+   * Optional explicit role plans, role orchestration requests and journals. They live at
+   * caller-chosen paths, so adopt can only check the ones named here.
+   */
+  extra_paths: z
+    .array(absolutePath)
+    .max(16)
+    .refine(
+      (items) => new Set(items).size === items.length,
+      'entries must be unique',
+    )
+    .optional(),
 });
 
 export type WorkflowCaller = z.infer<typeof workflowCallerSchema>;

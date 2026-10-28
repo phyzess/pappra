@@ -226,7 +226,7 @@ context for every harness without any handoff:
 | 1 | Level 0 (`collab handoff check`, implemented): guided boundary handoff, read-only inventory check with exact blockers (mid-cohort, unaccepted reports, open uncertainty, source write claims); documentation of the checkpoint/resume and `collab handoff` path | no persisted-state change; tests for each blocker; independent review (it gates an ownership transfer) |
 | 2 | Signals and advisories (see [context usage](context-usage.md)): Codex live observer, Claude status-line beacon (opt-in, chained), advisory in `workflow inspect`; no advisory hook is needed because the coordinator already calls `inspect` at every step | real-session acceptance; no hook starts a model or writes a checkpoint |
 | 3 | Successor launch, identity evidence and checkpoint import per host (see "Phase 3 design"); implemented as `collab handoff successor` and `ack`, accepted in real Claude to Claude and Codex to Codex sessions | independent review |
-| 4 | Level 1: mid-cohort succession (adoption step). Specification first, then implementation | written spec reviewed independently before any code |
+| 4 | Level 1: mid-cohort succession (adoption step). Specification first, then implementation. Done in steps 4a-4e (commits `cdd182f`, `cb750f9`, `6ce1257`, `da34206`, `23f1476`): see [the mid-cohort succession spec](mid-cohort-succession-spec.md), including its "As built" and "Real-session findings" paragraphs; each step was reviewed independently and verified in real Claude to Claude and Codex to Codex runs | written spec reviewed independently before any code |
 | 5 | Digest projection and report bounds | context reduction measured on a real cohort |
 
 Every phase touching ownership, persisted state or recovery requires an independent review
@@ -317,6 +317,22 @@ epoch), mid-cohort adoption (phase 4), and Pi (it has the managed handoff).
 its intent journal; 3b ACK request prefill, the fixed seed and docs; 3c end-to-end real-session
 acceptance (Claude to Claude and Codex to Codex on a throwaway task). 3a and 3b touch an
 ownership-transfer path and need independent review before 3c.
+
+## Phase 4 real-session findings (2026-10-28)
+
+Claude to Claude and Codex to Codex, each with a plain visible Pi CLI writer in flight, both
+ended with the mid-cohort check `ready`, the writer's claim released and the decision made by the
+successor at epoch 2. Three things changed or were found; details are in section 9 of the
+mid-cohort succession spec:
+
+- `collab handoff successor` gained a `mode` (`boundary` by default, `mid_cohort`) so the launcher can
+  require the mid-cohort check instead of the boundary one.
+- Codex tools run in a sandboxed shared daemon that cannot reach the Herdr socket. `adopt` therefore binds
+  a Codex coordinator by `CODEX_THREAD_ID` and the launcher's recorded outcome, and a Codex coordinator
+  cannot notify anyone (`accept` records the decision and reports a delivery warning); the worker waits
+  for the decision with `collab workflow await` instead.
+- An acknowledged-only worker keeps its `registered_not_started` uncertainty until the operator resolves
+  it with `collab recovery reconcile`.
 
 ## Phase 3 real-session findings (2026-10-27)
 

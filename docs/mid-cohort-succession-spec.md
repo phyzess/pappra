@@ -281,8 +281,9 @@ Consequences, which differ from revision 1:
   difference is not even that: the content digest excludes it, so it is a plain duplicate. With a
   one-entry lineage the suffix therefore cannot appear (principle 6). The accept decides the id once,
   from the registered file it read; if its exclusive create then loses a race with a base-id message
-  it did not see, the result is today's `content_conflict` or duplicate and a re-run, which reads the
-  now registered file, takes the suffix. Authority-path ids are never suffixed: `handoff-ack-<request id>` is created before the epoch changes,
+  it did not see, the call retries exactly once with the suffixed id when the winner can be re-read, sits
+  under a different epoch and is not a valid applied decision for this report, and the caller is still the coordinator at the same epoch (otherwise it is refused and registers nothing) (as built in the follow-up
+  to step 4e); a same-content winner stays a duplicate, and every other outcome is today's `content_conflict`. Authority-path ids are never suffixed: `handoff-ack-<request id>` is created before the epoch changes,
   and the managed-Pi ids are out of scope (section 8). Two successor processes creating the same suffixed id with identical bytes are
   duplicates, and with different bytes `content_conflict` as today (registration is exclusive-create).
 - **Participant duplicates.** `participant.ts` stamps `to` with the coordinator at action time, so a
@@ -380,9 +381,10 @@ the completed handoff that created it. The previous coordinator's entry is dropp
 also holds an attempt of the task. The pane is observed with the Herdr agent listing: the agent in
 that pane must report the coordinator's harness and session id. Role plans and role event journals sit
 at caller-chosen paths, not under the task root, so only files with `role` in their name next to the
-task are detected; a warning always names the rest. The mid-cohort mode of `check` is the separate
+task are detected unless the request lists them in the optional `extra_paths` (reported as warnings, per
+file); a warning always names the rest. The mid-cohort mode of `check` is the separate
 action `collab handoff check-mid-cohort`; an attempt that only acknowledged still carries its
-`registered_not_started` uncertainty, which keeps blocking until a native observation resolves it.
+`registered_not_started` uncertainty, which keeps blocking until a native observation or an explicit operator resolution (`collab recovery reconcile`) resolves it.
 
 **Real-session findings (step 4e, 2026-10-28).** Claude to Claude and Codex to Codex, each with a
 plain visible Pi CLI writer in flight, both ended with the boundary check `ready`, the writer's
@@ -399,10 +401,11 @@ claim released and the decision made by the successor at epoch 2. They changed t
   not launched by `collab handoff successor` cannot adopt.
 - For the same reason a Codex coordinator cannot notify anyone (`accept` records the decision and
   reports a delivery warning). This is not specific to succession. The decision is final in the record;
-  the operator tells the worker to run `release`, or the worker polls.
+  the operator tells the worker to run `release`, or the worker waits with `collab workflow await`
+  (file-only, bounded, read-only), and `accept` adds `detail.delivery_fallback` naming that action.
 - An acknowledged-only worker keeps its `registered_not_started` uncertainty (an ACK is not a native
   observation); the operator resolves it with `collab recovery reconcile` citing the ACK before the
-  mid-cohort check turns `ready`.
+  mid-cohort check turns `ready`. `check-mid-cohort` now lists a `reconcile` entry per such attempt (uncertainty id, ACK id, the exact request document and command); it still blocks.
 
 ## 10. Threat model
 

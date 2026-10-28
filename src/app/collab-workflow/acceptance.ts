@@ -4,6 +4,7 @@ import {
   readRegisteredMessage,
 } from '../../collab/envelope.js';
 import {
+  type CoordinatorLineage,
   coordinatorLineage,
   hasSuccession,
   judgeEvidence,
@@ -18,8 +19,12 @@ import {
 } from '../collab-pane-reclaim.js';
 import { currentBindingFile, unadoptedWarning } from './binding-generation.js';
 import { validateWorkPlan } from '../../collab/work-plan.js';
-import { workflowWorkPlanPath } from '../../schemas/collab-workflow.js';
+import {
+  type WorkflowCaller,
+  workflowWorkPlanPath,
+} from '../../schemas/collab-workflow.js';
 import { digestText, readRecord } from '../../collab/store.js';
+import type { Message, TaskRecord } from '../../collab/types.js';
 import {
   openWorkflowTask,
   readBoundedJson,
@@ -35,6 +40,23 @@ import {
 } from './types.js';
 
 /**
+ * What a worker can do when the coordinator recorded the decision but could not deliver it, for
+ * example a sandboxed coordinator with no route to the Herdr socket. It is a plain additive object:
+ * it changes neither the decision nor how it is recorded, and it grants nothing.
+ */
+export interface AcceptDeliveryFallback {
+  readonly reason: string;
+  readonly worker_next_action: string;
+}
+
+export interface AcceptDetail {
+  readonly report_message_id: string;
+  readonly report_digest: string;
+  readonly pane_reclaim: readonly PaneReclaimEntry[];
+  readonly delivery_fallback?: AcceptDeliveryFallback;
+}
+
+/**
  * Coordinator acceptance.
  *
  * Acceptance is a separate, explicit decision and never follows from a report. The emitted
@@ -42,6 +64,15 @@ import {
  * plan id, node id, assignment id, attempt, input revision, the digest of the accepted
  * report and the decision. A writer cannot accept its own report, and a non-coordinator
  * caller is refused before any envelope is built.
+ *
+ * After a succession the decision id is `accept-<subtask>-<attempt>`, qualified with the current
+ * epoch only when a message under that id exists for another epoch and never became a valid
+ * applied decision. When the exclusive create loses a race with such a message, the call takes the
+ * qualified id once instead of reporting a conflict that a re-run would resolve, provided the
+ * record as it is then still has this caller as the coordinator at the same epoch; after a
+ * succession in between the call is refused and registers nothing. A decision whose
+ * notification fails is still recorded; the result then names the worker-side step that needs no
+ * coordinator channel.
  */
 export async function applyAccept(
   request: import('../../schemas/collab-workflow.js').WorkflowAcceptRequest,
@@ -51,20 +82,9 @@ export async function applyAccept(
     readonly notify?: typeof notifyRegisteredMessage;
     readonly reclaimOps?: PaneReclaimOptions['ops'];
   } = {},
-): Promise<
-  WorkflowResult<{
-    report_message_id: string;
-    report_digest: string;
-    pane_reclaim: readonly PaneReclaimEntry[];
-  }>
-> {
-  type Detail = {
-    report_message_id: string;
-    report_digest: string;
-    pane_reclaim: readonly PaneReclaimEntry[];
-  };
+): Promise<WorkflowResult<AcceptDetail>> {
   const writing = options.apply !== false;
-  const base = emptyResult<Detail>('accept', writing);
+  const base = emptyResult<AcceptDetail>('accept', writing);
   const opened = await openWorkflowTask(request.task_root);
   if (!opened.ok)
     return {
@@ -221,47 +241,28 @@ export async function applyAccept(
   // A valid applied decision for a report is final after a succession: the successor does not
   // re-decide it, and a decision that fails the evidence rules does not count.
   if (succession && report !== null) {
-    for (const entry of record.messages) {
-      if (
-        entry.type !== 'ANSWER' ||
-        entry.state !== 'applied' ||
-        entry.reply_to !== report.message_id
-      )
-        continue;
-      const decided = readRegisteredMessage(task.taskRoot, entry.message_id);
-      if (decided === null) {
-        blockers.push({
-          code: 'acceptance_decision_unreadable',
-          detail: `Applied decision ${entry.message_id} has no readable registered envelope.`,
-          next_action:
-            'Inspect the registered decision set before deciding again.',
-        });
-        break;
-      }
-      if (
-        (decided.body as Record<string, unknown> | undefined)?.[
-          'acceptance'
-        ] === undefined
-      )
-        continue;
-      if (
-        typeof entry.owner_epoch === 'number' &&
-        judgeEvidence(lineage, {
-          epoch: entry.owner_epoch,
-          signer: entry.from,
-          appliedAt: entry.applied_at,
-        }).valid
-      ) {
-        blockers.push({
-          code: 'acceptance_already_decided',
-          detail: `Report ${report.message_id} already has the valid applied decision ${entry.message_id}.`,
-          next_action:
-            'A valid decision made under an earlier coordinator stands; the successor does not decide it again.',
-        });
-        break;
-      }
-    }
+    const decided = finalDecisionBlocker(
+      record,
+      task.taskRoot,
+      lineage,
+      report.message_id,
+    );
+    if (decided !== null) blockers.push(decided);
   }
+
+  // One refusal for every stop before a write, whether the check ran at the start or just before a
+  // second write: nothing was registered, and the blockers say why.
+  const refuse = (current: TaskRecord): WorkflowResult<AcceptDetail> => ({
+    ...base,
+    status: 'refused',
+    task_id: current.task_id,
+    task_root: task.taskRoot,
+    domain_root: current.domain_root,
+    state_revision: current.state_revision,
+    principal: { ...request.caller, role: 'coordinator' },
+    blockers,
+    next_action: blockers[0]?.next_action ?? null,
+  });
 
   if (
     blockers.length > 0 ||
@@ -269,17 +270,7 @@ export async function applyAccept(
     report === null ||
     record.coordinator === null
   ) {
-    return {
-      ...base,
-      status: 'refused',
-      task_id: record.task_id,
-      task_root: task.taskRoot,
-      domain_root: record.domain_root,
-      state_revision: record.state_revision,
-      principal: { ...request.caller, role: 'coordinator' },
-      blockers,
-      next_action: blockers[0]?.next_action ?? null,
-    };
+    return refuse(record);
   }
 
   const changed = await revalidateWorkflowTask(task);
@@ -298,65 +289,127 @@ export async function applyAccept(
     };
 
   const reportDigest = contentDigest(report);
+  const coordinator = record.coordinator;
   const baseId = `accept-${request.subtask_id}-${request.attempt}`;
+  const qualifiedId = `${baseId}-e${coordinator.owner_epoch}`;
   // The only collision a succession causes is a message with the base id registered under another
   // epoch that never became a valid applied decision (its coordinator stopped between register and
   // apply). Only then is the id epoch-qualified; with no succession it never is.
+  const underOtherEpoch = (registered: Message | null) =>
+    registered !== null && registered.owner_epoch !== coordinator.owner_epoch;
   const registeredBase = succession
     ? readRegisteredMessage(task.taskRoot, baseId)
     : null;
-  const messageId =
-    registeredBase !== null &&
-    registeredBase.owner_epoch !== record.coordinator.owner_epoch
-      ? `${baseId}-e${record.coordinator.owner_epoch}`
-      : baseId;
-  const message = buildMessage({
-    type: 'ANSWER',
-    task_id: record.task_id,
-    from: {
-      agent_id: record.coordinator.agent_id,
-      session_id: record.coordinator.session_id,
-      harness: record.coordinator.harness,
-    },
-    to: {
-      agent_id: attempt.assignee.agent_id,
-      session_id: attempt.assignee.session_id,
-      harness: attempt.assignee.harness,
-    },
-    reply_to: report.message_id,
-    message_id: messageId,
-    subtask_id: request.subtask_id,
-    attempt: request.attempt,
-    owner_epoch: record.coordinator.owner_epoch,
-    body: {
-      status: 'completed',
-      reason: request.reason,
-      acceptance: {
-        plan_id: planId,
-        node_id: nodeId,
-        assignment_id: request.subtask_id,
-        attempt: request.attempt,
-        input_revision: attempt.input_revision ?? record.input_revision ?? null,
-        report_digest: reportDigest,
-        decision: 'accepted',
+  const messageId = underOtherEpoch(registeredBase) ? qualifiedId : baseId;
+  const decide = (id: string): Message =>
+    buildMessage({
+      type: 'ANSWER',
+      task_id: record.task_id,
+      from: {
+        agent_id: coordinator.agent_id,
+        session_id: coordinator.session_id,
+        harness: coordinator.harness,
       },
-    },
-    ...(options.clock === undefined ? {} : { clock: options.clock }),
-  });
-  const submitted = writing
-    ? submitMessage(task.taskRoot, message, {
-        ...(options.clock === undefined ? {} : { clock: options.clock }),
-      })
+      to: {
+        agent_id: attempt.assignee.agent_id,
+        session_id: attempt.assignee.session_id,
+        harness: attempt.assignee.harness,
+      },
+      reply_to: report.message_id,
+      message_id: id,
+      subtask_id: request.subtask_id,
+      attempt: request.attempt,
+      owner_epoch: coordinator.owner_epoch,
+      body: {
+        status: 'completed',
+        reason: request.reason,
+        acceptance: {
+          plan_id: planId,
+          node_id: nodeId,
+          assignment_id: request.subtask_id,
+          attempt: request.attempt,
+          input_revision:
+            attempt.input_revision ?? record.input_revision ?? null,
+          report_digest: reportDigest,
+          decision: 'accepted',
+        },
+      },
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+    });
+  const submit = (decision: Message) =>
+    submitMessage(task.taskRoot, decision, {
+      ...(options.clock === undefined ? {} : { clock: options.clock }),
+    });
+  let message = decide(messageId);
+  let submitted = writing
+    ? submit(message)
     : {
         ok: true as const,
         registration: { status: 'planned' },
         duplicate: false,
       };
+  // The id was chosen from what was registered a moment ago. If the exclusive create still loses to
+  // a message under the base id that appeared in between, and that message sits under another
+  // epoch, it is the collision handled above: take the epoch-qualified id once instead of leaving
+  // a re-run to do it. Only the epoch triggers this. A content-only difference at the current
+  // epoch, a winner that cannot be read, a one-entry lineage and a winner that already is a valid
+  // applied decision all keep `content_conflict`.
+  if (
+    writing &&
+    succession &&
+    messageId === baseId &&
+    !submitted.ok &&
+    submitted.reason === 'content_conflict' &&
+    submitted.registration.status === 'content_conflict' &&
+    underOtherEpoch(readRegisteredMessage(task.taskRoot, baseId))
+  ) {
+    // This is a second write: revalidate first, and read the record as it is now, because a
+    // decision that is final may have been applied, or the coordinator may have changed, while
+    // this call was running.
+    const stale = await revalidateWorkflowTask(task);
+    if (!stale.ok)
+      blockers.push({
+        code: stale.code,
+        detail: stale.message,
+        next_action: stale.nextAction,
+      });
+    else {
+      const fresh = readRecord(task.taskRoot);
+      if (fresh !== null) {
+        // Authority is derived again from this record, never carried over from the start of the
+        // call: after a succession that completed in between, this caller or its epoch no longer
+        // decides, and a qualified id would hold a decision nobody may make. Nothing is registered.
+        const lineageNow = coordinatorLineage(fresh);
+        const moved = authorityBlocker(
+          fresh,
+          lineageNow,
+          request.caller,
+          coordinator.owner_epoch,
+        );
+        if (moved !== null) {
+          blockers.push(moved);
+          return refuse(fresh);
+        }
+        const decided = finalDecisionBlocker(
+          fresh,
+          task.taskRoot,
+          lineageNow,
+          report.message_id,
+        );
+        if (decided !== null) blockers.push(decided);
+        else {
+          message = decide(qualifiedId);
+          submitted = submit(message);
+        }
+      }
+    }
+  }
   // Acceptance must reach the assignee through the durable notification reservation; a
   // persisted decision that nobody delivers is exactly the gap this loop exists to close.
   // A plan is read-only: the synthetic planned submission is not a duplicate, so without
   // this guard a plan would fall through into a real notification.
   let delivery = 'not-attempted';
+  let deliveryFallback: AcceptDeliveryFallback | null = null;
   if (writing && submitted.ok && !(submitted.duplicate === true)) {
     const notify = options.notify ?? notifyRegisteredMessage;
     const delivered = await notify({
@@ -368,11 +421,25 @@ export async function applyAccept(
       callerPane: request.caller_pane,
     });
     delivery = delivered.ok ? delivered.value.status : 'not-notified';
-    if (!delivered.ok) warnings.push(`${delivered.code}: ${delivered.message}`);
-    else if (delivered.value.status !== 'submitted')
-      warnings.push(
-        `delivery_${delivered.value.status}: ${String(delivered.value.detail ?? '')}`,
-      );
+    const undelivered = delivered.ok
+      ? delivered.value.status === 'submitted'
+        ? null
+        : `delivery_${delivered.value.status}: ${String(delivered.value.detail ?? '')}`
+      : `${delivered.code}: ${delivered.message}`;
+    if (undelivered !== null) {
+      warnings.push(undelivered);
+      // The decision stays recorded as it is; this only tells the worker how to learn of it
+      // without the coordinator's channel.
+      deliveryFallback = {
+        reason: undelivered,
+        worker_next_action: workerAwaitAction(
+          task.taskRoot,
+          request.subtask_id,
+          request.attempt,
+          message.message_id,
+        ),
+      };
+    }
   } else if (writing && submitted.ok) delivery = 'already-recorded';
   // A worker normally releases its claims after acceptance, so this usually keeps the pane;
   // a later dispatch or reclaim closes it. Eligibility is re-derived, never assumed.
@@ -428,6 +495,9 @@ export async function applyAccept(
       report_message_id: report.message_id,
       report_digest: reportDigest,
       pane_reclaim: paneReclaim,
+      ...(deliveryFallback === null
+        ? {}
+        : { delivery_fallback: deliveryFallback }),
     },
   };
 }
@@ -509,7 +579,13 @@ export async function applyAcceptBatch(
       continue;
     }
     results.push(result);
-    items.push({ ...item, status: result.status, ok: result.ok });
+    const fallback = result.detail?.delivery_fallback;
+    items.push({
+      ...item,
+      status: result.status,
+      ok: result.ok,
+      ...(fallback === undefined ? {} : { delivery_fallback: fallback }),
+    });
     for (const blocker of result.blockers)
       blockers.push({
         ...blocker,
@@ -553,4 +629,108 @@ export interface AcceptBatchItem {
   readonly report_message_id: string;
   readonly status: string;
   readonly ok: boolean;
+  readonly delivery_fallback?: AcceptDeliveryFallback;
+}
+
+/**
+ * After a succession a valid applied decision for a report is final: the successor does not decide
+ * it again, and an applied decision that fails the evidence rules does not count. Decisions are
+ * found by `reply_to`, never by constructed id, so an epoch-qualified one is found like any other.
+ * Returns the blocker that keeps the successor from deciding, or `null`.
+ */
+function finalDecisionBlocker(
+  record: TaskRecord,
+  taskRoot: string,
+  lineage: CoordinatorLineage,
+  reportMessageId: string,
+): WorkflowBlocker | null {
+  for (const entry of record.messages) {
+    if (
+      entry.type !== 'ANSWER' ||
+      entry.state !== 'applied' ||
+      entry.reply_to !== reportMessageId
+    )
+      continue;
+    const decided = readRegisteredMessage(taskRoot, entry.message_id);
+    if (decided === null)
+      return {
+        code: 'acceptance_decision_unreadable',
+        detail: `Applied decision ${entry.message_id} has no readable registered envelope.`,
+        next_action:
+          'Inspect the registered decision set before deciding again.',
+      };
+    if (
+      (decided.body as Record<string, unknown> | undefined)?.['acceptance'] ===
+      undefined
+    )
+      continue;
+    if (
+      typeof entry.owner_epoch === 'number' &&
+      judgeEvidence(lineage, {
+        epoch: entry.owner_epoch,
+        signer: entry.from,
+        appliedAt: entry.applied_at,
+      }).valid
+    )
+      return {
+        code: 'acceptance_already_decided',
+        detail: `Report ${reportMessageId} already has the valid applied decision ${entry.message_id}.`,
+        next_action:
+          'A valid decision made under an earlier coordinator stands; the successor does not decide it again.',
+      };
+  }
+  return null;
+}
+
+/**
+ * What a second write must still find on the record: the caller as the current coordinator, at the
+ * epoch the decision is stamped with, in a lineage that still shows the succession. Returns the
+ * refusal that stops the write, using the codes and next actions of the checks at the start, or
+ * `null`.
+ */
+function authorityBlocker(
+  record: TaskRecord,
+  lineage: CoordinatorLineage,
+  caller: WorkflowCaller,
+  epoch: number,
+): WorkflowBlocker | null {
+  const current = record.coordinator;
+  if (current === null || !sameCoordinator(current, caller))
+    return {
+      code: 'accept_not_coordinator',
+      detail:
+        'Only the current coordinator identity may accept a report; the coordinator changed while this decision was being recorded, so nothing was registered.',
+      next_action:
+        'Acceptance comes from the coordinator, never from a writer or a peer.',
+    };
+  if (current.owner_epoch !== epoch || !hasSuccession(lineage))
+    return {
+      code: 'acceptance_stale',
+      detail:
+        current.owner_epoch !== epoch
+          ? `This accept began under epoch ${epoch} and the record is now at epoch ${current.owner_epoch}, so nothing was registered.`
+          : 'The coordinator lineage no longer shows the succession this accept began under, so nothing was registered.',
+      next_action:
+        'Reconcile ownership before accepting; a stale acceptance unlocks nothing.',
+    };
+  return null;
+}
+
+/**
+ * The worker-side step that needs no coordinator channel: a read-only bounded wait on the persisted
+ * record for this attempt's decision, then the worker's own release. Waiting writes nothing, grants
+ * nothing and is not acceptance.
+ */
+function workerAwaitAction(
+  taskRoot: string,
+  subtaskId: string,
+  attempt: number,
+  decisionId: string,
+): string {
+  return (
+    'As the assignee, run `collab workflow await` (request document ' +
+    `pappra/collab-workflow-await-request/1 for ${taskRoot}, ${subtaskId}#${attempt}) until it ` +
+    `reports decision ${decisionId}, then run \`collab workflow release\` correlating to ` +
+    `${decisionId}.`
+  );
 }

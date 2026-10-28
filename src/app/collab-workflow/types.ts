@@ -31,6 +31,7 @@ export type WorkflowAction =
   | 'ack'
   | 'report'
   | 'accept'
+  | 'await'
   | 'release'
   | 'reclaim'
   | 'adopt'
@@ -42,7 +43,12 @@ export type WorkflowStatus =
   | 'blocked'
   | 'refused'
   | 'needs-reconciliation'
-  | 'invalid';
+  | 'invalid'
+  // `await` only. `decided`: a valid coordinator accept decision was observed in the persisted
+  // record (`ok`). `timeout`: the bounded wait ended without one (not `ok`, so the CLI exits
+  // non-zero). Neither is acceptance, and neither changes anything.
+  | 'decided'
+  | 'timeout';
 
 export interface WorkflowBlocker {
   readonly code: string;

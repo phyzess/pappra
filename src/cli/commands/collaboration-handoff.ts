@@ -10,6 +10,10 @@ import {
 } from '../../app/collab-handoff.js';
 import type { TaskStoreFailure } from '../../app/collab-task-store.js';
 import { applySuccessorAck } from '../../app/collab-successor/ack.js';
+import {
+  withReconcileGuidance,
+  type ReconcileGuidance,
+} from '../../app/collab-successor/reconcile-guidance.js';
 import { discoverCodexThread } from '../../hosts/codex/thread-discovery.js';
 import {
   runSuccessorLaunch,
@@ -213,6 +217,18 @@ function emitCheck(value: Record<string, unknown>, output: CliOutput): void {
     output.stdout(
       `  note ${item.code}: ${item.detail}\n    next: ${item.next_action}\n`,
     );
+  // Present only for the mid-cohort check: how the operator resolves an acknowledged-only attempt.
+  for (const item of (value.reconcile ?? []) as ReconcileGuidance[]) {
+    output.stdout(
+      `  reconcile ${item.subtask_id}#${String(item.attempt)} (${item.state}, uncertainty ${item.uncertainty_id}, ${item.ack_message_id === null ? 'no applied ACK in the record' : `cite ACK ${item.ack_message_id}`}):\n`,
+    );
+    for (const line of item.prerequisites) output.stdout(`    - ${line}\n`);
+    output.stdout(
+      `    fill in: ${item.operator_fields.join(', ')} (null in the request, which is refused until they are set)\n`,
+    );
+    output.stdout(`    request: ${JSON.stringify(item.request)}\n`);
+    output.stdout(`    command: ${item.command}\n`);
+  }
   const steps = value.next_steps as string[];
   if (steps.length > 0) {
     output.stdout('  next steps, in order:\n');
@@ -256,9 +272,14 @@ export async function runCollaborationHandoffCommand(
       options.action === 'check-mid-cohort' ? { mode: 'mid_cohort' } : {},
     );
     if (!result.ok) return failure(output, options, result, 1, true);
-    if (options.json) output.stdout(`${JSON.stringify(result.value)}\n`);
-    else emitCheck(result.value, output);
-    return result.value.ok === true ? 0 : 1;
+    // The mid-cohort check keeps its verdict; guidance only names how to clear a blocker.
+    const value =
+      options.action === 'check-mid-cohort'
+        ? await withReconcileGuidance(result.value, options.taskRoot)
+        : result.value;
+    if (options.json) output.stdout(`${JSON.stringify(value)}\n`);
+    else emitCheck(value, output);
+    return value.ok === true ? 0 : 1;
   }
 
   if (options.action === 'inventory') {

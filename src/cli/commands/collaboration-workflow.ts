@@ -19,6 +19,10 @@ import {
   type WorkflowPlan,
   type WorkflowResult,
 } from '../../app/collab-workflow.js';
+import {
+  applyAwait,
+  loadAwaitRequest,
+} from '../../app/collab-workflow/await.js';
 import type { CliOutput } from '../output.js';
 
 /**
@@ -31,11 +35,12 @@ import type { CliOutput } from '../output.js';
  */
 
 export const collaborationWorkflowUsage =
-  'pappra collab workflow <prepare|dispatch|ack|report|accept|release|reclaim|adopt|inspect> [options]\n' +
+  'pappra collab workflow <prepare|dispatch|ack|report|accept|await|release|reclaim|adopt|inspect> [options]\n' +
   '  prepare  --request <abs prepare.json> [--apply] [--json]\n' +
   '  dispatch --request <abs dispatch.json> [--apply] [--json]\n' +
   '  ack      --request <abs participant.json> [--apply] [--json]\n' +
   '  report   --request <abs participant.json> [--apply] [--json]\n' +
+  '  await    --request <abs await.json> [--json]\n' +
   '  release  --request <abs participant.json> [--apply] [--json]\n' +
   '  accept   --request <abs accept.json|accept-batch.json> [--apply] [--json]\n' +
   '  reclaim  --request <abs reclaim.json> [--apply] [--json]\n' +
@@ -46,12 +51,17 @@ export const collaborationWorkflowUsage =
   'derived ASSIGN messages and claims for writers only; reviewer ASSIGN and claims stay\n' +
   'deferred until accepted writers release. Dispatch re-derives the current capability card\n' +
   'immediately before notifying, and records one durable intent per attempt so an unknown\n' +
-  'delivery is reconciled instead of replayed. Ack, report and release are self-call only:\n' +
+  'delivery is reconciled instead of replayed. Ack, report, await and release are self-call only:\n' +
   'the caller must equal the registered attempt assignee. Accept is a separate coordinator\n' +
   'decision and a writer can never accept its own report. Reclaim closes only panes Pappra\n' +
   'created for accepted, released work after re-checking live pane identity; accept and\n' +
   'dispatch run the same check automatically. Nothing here launches a session,\n' +
-  'consumes a notification, or proves execution.';
+  'consumes a notification, or proves execution.\n\n' +
+  'Await is the worker-side bounded wait for the accept decision. It polls the persisted task\n' +
+  'files only (no Herdr), writes nothing, accepts and ignores --apply, and is never acceptance.\n' +
+  'It exits 0 only for status "decided": a timeout exits 1 with status "timeout", so\n' +
+  'await && release never releases without a decision. Read "status" to tell a timeout from a\n' +
+  'refusal.';
 
 export const WORKFLOW_ACTIONS = [
   'prepare',
@@ -59,6 +69,7 @@ export const WORKFLOW_ACTIONS = [
   'ack',
   'report',
   'accept',
+  'await',
   'release',
   'reclaim',
   'adopt',
@@ -220,8 +231,11 @@ function emitResult(
 ): number {
   if (json) output.stdout(`${JSON.stringify(result)}\n`);
   else {
+    // `await` applies nothing: "plan" would be wrong and "apply" would overstate it.
+    const mode =
+      result.action === 'await' ? '' : result.apply ? ' apply' : ' plan';
     output.stdout(
-      `Workflow ${result.action} ${result.apply ? 'apply' : 'plan'}: ${result.status}${result.task_id === null ? '' : ` (${result.task_id})`}\n`,
+      `Workflow ${result.action}${mode}: ${result.status}${result.task_id === null ? '' : ` (${result.task_id})`}\n`,
     );
     if (result.state_revision !== null)
       output.stdout(`  record revision ${result.state_revision}\n`);
@@ -342,6 +356,14 @@ export async function runCollaborationWorkflowCli(
     const request = loadReclaimRequest(options.requestFile);
     if (!request.ok) return invalid(output, options.json, [request.message]);
     const result = await applyReclaim(request.value, { apply: options.apply });
+    return emitResult(output, options.json, result);
+  }
+
+  if (options.action === 'await') {
+    // Read-only by construction: `--apply` is accepted and ignored, there is no plan to run instead.
+    const request = loadAwaitRequest(options.requestFile);
+    if (!request.ok) return invalid(output, options.json, [request.message]);
+    const result = await applyAwait(request.value);
     return emitResult(output, options.json, result);
   }
 

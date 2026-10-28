@@ -77,8 +77,17 @@ test('collab workflow bypasses the global option parser and prints its own usage
   assert.equal(help.code, 0);
   assert.match(
     help.stdout,
-    /pappra collab workflow <prepare\|dispatch\|ack\|report\|accept\|release\|reclaim\|adopt\|inspect>/,
+    /pappra collab workflow <prepare\|dispatch\|ack\|report\|accept\|await\|release\|reclaim\|adopt\|inspect>/,
   );
+  // `await` is read-only, so its usage line carries no `--apply`.
+  assert.match(
+    help.stdout,
+    /\n {2}await {4}--request <abs await\.json> \[--json\]\n/,
+  );
+  assert.match(help.stdout, /Await is the worker-side bounded wait/);
+  // Only a decision exits 0; a timeout exits 1, so `await && release` cannot release without one.
+  assert.match(help.stdout, /accepts and ignores --apply/);
+  assert.match(help.stdout, /a timeout exits 1 with status "timeout"/);
 
   // `--watch` is a global flag; the workflow family must reject it as its own unknown
   // option instead of silently accepting a flag it does not implement.
