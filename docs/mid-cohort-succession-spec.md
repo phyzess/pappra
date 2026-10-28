@@ -384,6 +384,26 @@ task are detected; a warning always names the rest. The mid-cohort mode of `chec
 action `collab handoff check-mid-cohort`; an attempt that only acknowledged still carries its
 `registered_not_started` uncertainty, which keeps blocking until a native observation resolves it.
 
+**Real-session findings (step 4e, 2026-10-28).** Claude to Claude and Codex to Codex, each with a
+plain visible Pi CLI writer in flight, both ended with the boundary check `ready`, the writer's
+claim released and the decision made by the successor at epoch 2. They changed three things:
+
+- `collab handoff successor` ran the boundary check, which refuses any in-flight work. The request
+  gains an optional `mode` (`boundary` by default, `mid_cohort`), so the launcher can require the
+  mid-cohort check instead; a request recorded before the field existed keeps its meaning.
+- A Codex coordinator cannot be adopted through a Herdr listing. Codex tools run in a sandboxed
+  shared daemon that cannot reach the Herdr socket ("Operation not permitted"), and Herdr reports no
+  session for a Codex pane. `adopt` therefore binds a Codex coordinator by `CODEX_THREAD_ID` (as `ack`
+  does) and by the pane and Herdr agent name the launcher recorded for that very thread in
+  `<task root>/successor/*.outcome.json`; it never consults Herdr for Codex. A Codex successor that was
+  not launched by `collab handoff successor` cannot adopt.
+- For the same reason a Codex coordinator cannot notify anyone (`accept` records the decision and
+  reports a delivery warning). This is not specific to succession. The decision is final in the record;
+  the operator tells the worker to run `release`, or the worker polls.
+- An acknowledged-only worker keeps its `registered_not_started` uncertainty (an ACK is not a native
+  observation); the operator resolves it with `collab recovery reconcile` citing the ACK before the
+  mid-cohort check turns `ready`.
+
 ## 10. Threat model
 
 | Attack or fault | Outcome |

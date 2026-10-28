@@ -53,6 +53,12 @@ export const successorRequestSchema = z.strictObject({
   /** The coordinator's Herdr pane; the sibling is split from it. Never inferred from focus. */
   caller_pane: paneId,
   direction: z.enum(['right', 'down']).default('right'),
+  /**
+   * Which handoff check the launch requires. `mid_cohort` accepts transferable attempts still in
+   * flight (`collab handoff check-mid-cohort`); the default is the cohort-boundary check. Optional
+   * and without a default so a request recorded before this field existed keeps its meaning.
+   */
+  mode: z.enum(['boundary', 'mid_cohort']).optional(),
   /** Briefing the successor receives; its digest is pinned here and re-checked on use. */
   checkpoint: z.strictObject({ file: absolutePath, digest }),
 });

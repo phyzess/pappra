@@ -385,6 +385,47 @@ test('a handoff check blocker (work in flight) blocks the launch', async () => {
   }
 });
 
+test('the mid-cohort launch mode runs the mid-cohort check and keeps blocking an untied claim', async () => {
+  const f = fixture();
+  try {
+    const claimed = claimResources(f.taskRoot, {
+      resources: [{ kind: 'path', path: join(f.root, 'work') }],
+      holder: { agent_id: 'w', session_id: 'ws', harness: 'pi' },
+    });
+    assert.ok(claimed.ok);
+    const { ops } = fakeHerdr(f);
+    const boundary = await runSuccessorLaunch(
+      f.write('b.json', requestFor(f)),
+      { apply: false },
+      deps(ops),
+    );
+    assert.equal(boundary.status, 'blocked');
+    const mid = await runSuccessorLaunch(
+      f.write('m.json', requestFor(f, { mode: 'mid_cohort' })),
+      { apply: false },
+      deps(ops),
+    );
+    // A claim tied to no attempt is not carried over by a successor: still blocked, but by the
+    // mid-cohort check, whose wording says so.
+    assert.equal(mid.status, 'blocked');
+    assert.ok(
+      mid.blockers.some(
+        (item) =>
+          item.code === 'check_claims_unreleased' &&
+          item.detail.includes('not tied to a transferable attempt'),
+      ),
+      JSON.stringify(mid.blockers),
+    );
+    assert.ok(
+      boundary.blockers.every(
+        (item) => !item.detail.includes('not tied to a transferable attempt'),
+      ),
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
 test('claude launch journals first, pre-assigns the session id, delivers the exact seed and binds the handoff', async () => {
   const f = fixture();
   try {

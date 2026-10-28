@@ -850,3 +850,126 @@ test('accept and dispatch warn, never refuse, before the successor adopts', asyn
     fixture.cleanup();
   }
 });
+
+test('a Codex coordinator is adopted by its thread id and the pane the launcher recorded, never by a Herdr listing', async () => {
+  const { fixture, taskRoot, adopt } = await boundFixture('adopt-codex');
+  try {
+    succeed(taskRoot, '2099-01-01T00:00:00Z');
+    const codex = transact(taskRoot, {
+      actor: 'fixture',
+      purpose: 'codex',
+      apply: (record) => {
+        record.coordinator!.harness = 'codex';
+        return { record, op: 'codex', summary: {}, result: { ok: true } };
+      },
+    });
+    assert.ok(codex.ok);
+    // A sandboxed Codex shell cannot reach Herdr: listing must not be needed.
+    const unreachable = async () => {
+      throw new Error('Herdr must not be consulted for a Codex coordinator');
+    };
+    const request = adopt({
+      caller: { ...NEXT, harness: 'codex', cwd: fixture.root },
+      caller_pane: 'w1:p9',
+    });
+    const record = (pane: string, session: string) => {
+      mkdirSync(join(taskRoot, 'successor'), { recursive: true });
+      writeFileSync(
+        join(taskRoot, 'successor', 'req1.outcome.json'),
+        JSON.stringify({
+          schema: 'pappra/collab-successor-outcome/1',
+          request_id: 'req1',
+          request_digest: `sha256:${'a'.repeat(64)}`,
+          recorded_at: '2026-10-28T00:00:00Z',
+          status: 'launched',
+          pane_id: pane,
+          agent_name: 'next-agent',
+          identity: {
+            agent_id: NEXT.agent_id,
+            session_id: session,
+            harness: 'codex',
+            cwd: fixture.root,
+          },
+          evidence: null,
+          detail: null,
+        }),
+      );
+    };
+    const unrecorded = await applyAdopt(request, {
+      listAgents: unreachable,
+      callerCodexThread: NEXT.session_id,
+    });
+    assert.ok(
+      unrecorded.blockers.some((item) => item.code === 'adopt_pane_unobserved'),
+    );
+    record('w1:p7', NEXT.session_id);
+    const otherPane = await applyAdopt(request, {
+      listAgents: unreachable,
+      callerCodexThread: NEXT.session_id,
+    });
+    assert.ok(
+      otherPane.blockers.some((item) => item.code === 'adopt_pane_unobserved'),
+    );
+    // An outcome for another thread, and a schema-invalid one, are skipped: still unrecorded.
+    writeFileSync(
+      join(taskRoot, 'successor', 'req2.outcome.json'),
+      '{"nope":1}\n',
+    );
+    record('w1:p9', 'another-thread');
+    const elsewhere = await applyAdopt(request, {
+      listAgents: unreachable,
+      callerCodexThread: NEXT.session_id,
+    });
+    assert.ok(
+      elsewhere.blockers.some((item) => item.code === 'adopt_pane_unobserved'),
+    );
+    record('w1:p9', NEXT.session_id);
+    // Two launches of the same thread that disagree on the pane are ambiguous.
+    writeFileSync(
+      join(taskRoot, 'successor', 'req3.outcome.json'),
+      readFileSync(join(taskRoot, 'successor', 'req1.outcome.json'), 'utf8')
+        .replace('"request_id":"req1"', '"request_id":"req3"')
+        .replace('"pane_id":"w1:p9"', '"pane_id":"w1:p8"'),
+    );
+    const ambiguous = await applyAdopt(request, {
+      listAgents: unreachable,
+      callerCodexThread: NEXT.session_id,
+    });
+    assert.ok(
+      ambiguous.blockers.some((item) => item.code === 'adopt_pane_unobserved'),
+    );
+    rmSync(join(taskRoot, 'successor', 'req3.outcome.json'));
+    const wrongThread = await applyAdopt(request, {
+      listAgents: unreachable,
+      callerCodexThread: 'some-other-thread',
+    });
+    assert.ok(
+      wrongThread.blockers.some(
+        (item) => item.code === 'adopt_pane_unobserved',
+      ),
+    );
+    const right = await applyAdopt(request, {
+      listAgents: unreachable,
+      callerCodexThread: NEXT.session_id,
+    });
+    assert.equal(right.status, 'applied', JSON.stringify(right.blockers));
+    const generation = JSON.parse(
+      readFileSync(join(taskRoot, 'binding.e2.json'), 'utf8'),
+    ) as {
+      participants: {
+        agent_id: string;
+        herdr_agent: string;
+        pane_id: string;
+      }[];
+    };
+    const entry = generation.participants.find(
+      (item) => item.agent_id === NEXT.agent_id,
+    );
+    assert.deepEqual(
+      [entry?.herdr_agent, entry?.pane_id],
+      ['next-agent', 'w1:p9'],
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});

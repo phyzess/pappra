@@ -446,6 +446,7 @@ export async function runSuccessorLaunch(
 
   const check = await readCoordinatorHandoffCheck(taskRoot, {
     ignoreHandoffId: request.handoff_id,
+    mode: request.mode ?? 'boundary',
   });
   if (!check.ok) blockers.push({ code: check.code, detail: check.message });
   else if (check.value['ok'] !== true)

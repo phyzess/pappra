@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { readSuccessorOutcome } from '../collab-successor/journal.js';
 import { findAttempt } from '../../collab/lifecycle.js';
 import {
   coordinatorLineage,
@@ -76,10 +79,55 @@ function hasValidDecision(
   );
 }
 
+/** The pane and Herdr agent name the launcher recorded for a successor thread, if any. */
+function launchedPaneOf(
+  taskRoot: string,
+  sessionId: string,
+): { readonly pane_id: string; readonly agent_name: string } | null {
+  let names: string[];
+  try {
+    names = fs.readdirSync(path.join(taskRoot, 'successor'));
+  } catch {
+    return null;
+  }
+  const matches: { pane_id: string; agent_name: string }[] = [];
+  for (const name of names) {
+    if (!name.endsWith('.outcome.json')) continue;
+    const outcome = readSuccessorOutcome(
+      taskRoot,
+      name.slice(0, -'.outcome.json'.length),
+    );
+    if (
+      outcome.ok &&
+      outcome.value.status === 'launched' &&
+      outcome.value.identity?.session_id === sessionId
+    )
+      matches.push({
+        pane_id: outcome.value.pane_id,
+        agent_name: outcome.value.agent_name,
+      });
+  }
+  // Several launches for one thread that disagree on the pane are ambiguous: never pick one.
+  const first = matches[0];
+  return first !== undefined &&
+    matches.every(
+      (item) =>
+        item.pane_id === first.pane_id && item.agent_name === first.agent_name,
+    )
+    ? first
+    : null;
+}
+
 export interface AdoptOptions {
   readonly apply?: boolean;
   /** Herdr agent listing; injected by tests, observed through Herdr otherwise. */
   readonly listAgents?: () => Promise<HerdrListResult>;
+  /**
+   * Codex thread the CLI runs in, from CODEX_THREAD_ID. Herdr reports no session for a Codex
+   * pane and Codex tools run in a shared daemon, so for a Codex coordinator the thread id is the
+   * identity evidence and the pane is only checked to host a Codex agent.
+   */
+  readonly callerCodexThread?: string | null;
 }
 
 /**
@@ -210,30 +258,49 @@ export async function applyAdopt(
       next_action: blockers[0]?.next_action ?? null,
     };
 
-  // The pane must be observed through Herdr as this very coordinator session.
-  const listing = await (
-    options.listAgents ??
-    (() => createHerdrBootstrapOps({ taskRoot: task.taskRoot }).listAgents())
-  )();
-  const agent = listing.ok
-    ? listing.agents.find((item) => item.paneId === request.caller_pane)
-    : undefined;
-  if (
-    agent === undefined ||
-    agent.name === null ||
-    agent.harness !== coordinator.harness ||
-    reportedSessionIdentity(agent.sessionKind, agent.sessionValue).identity !==
-      coordinator.session_id
-  )
+  // The pane must be observed as this very coordinator session. A Claude or Pi coordinator is
+  // observed through the Herdr agent listing. A Codex coordinator cannot be: Codex runs its tools
+  // in a sandboxed shared daemon that may not reach the Herdr socket, and Herdr reports no session
+  // for a Codex pane. Its identity is the thread id in CODEX_THREAD_ID, and its pane and Herdr
+  // agent name are the ones the launcher recorded for that very thread.
+  let herdrAgent: string | null = null;
+  let observeFailure = '';
+  if (coordinator.harness === 'codex') {
+    const launched = launchedPaneOf(task.taskRoot, coordinator.session_id);
+    if ((options.callerCodexThread ?? null) !== coordinator.session_id)
+      observeFailure =
+        'CODEX_THREAD_ID does not identify this coordinator session; run adopt from the successor Codex session.';
+    else if (launched === null || launched.pane_id !== request.caller_pane)
+      observeFailure = `Pane ${request.caller_pane} is not the pane the launcher recorded for this Codex thread.`;
+    else herdrAgent = launched.agent_name;
+  } else {
+    const listing = await (
+      options.listAgents ??
+      (() => createHerdrBootstrapOps({ taskRoot: task.taskRoot }).listAgents())
+    )();
+    const agent = listing.ok
+      ? listing.agents.find((item) => item.paneId === request.caller_pane)
+      : undefined;
+    if (!listing.ok)
+      observeFailure = `Herdr could not list agents: ${listing.detail}`;
+    else if (
+      agent === undefined ||
+      agent.name === null ||
+      agent.harness !== coordinator.harness ||
+      reportedSessionIdentity(agent.sessionKind, agent.sessionValue)
+        .identity !== coordinator.session_id
+    )
+      observeFailure = `Pane ${request.caller_pane} is not observed as this coordinator session.`;
+    else herdrAgent = agent.name;
+  }
+  if (herdrAgent === null)
     return {
       ...common,
       status: 'refused',
       blockers: [
         {
           code: 'adopt_pane_unobserved',
-          detail: listing.ok
-            ? `Pane ${request.caller_pane} is not observed as this coordinator session.`
-            : `Herdr could not list agents: ${listing.detail}`,
+          detail: observeFailure,
           next_action:
             'Run adopt from the successor session in its own pane, with Herdr reachable.',
         },
@@ -267,9 +334,9 @@ export async function applyAdopt(
     );
   const entry: CollabBindingParticipant = {
     agent_id: coordinator.agent_id,
-    harness: coordinator.harness,
+    harness: coordinator.harness ?? request.caller.harness,
     cwd: request.caller.cwd,
-    herdr_agent: agent.name,
+    herdr_agent: herdrAgent,
     pane_id: request.caller_pane,
     native_session_id: coordinator.session_id,
   };

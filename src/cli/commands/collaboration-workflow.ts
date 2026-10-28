@@ -331,7 +331,10 @@ export async function runCollaborationWorkflowCli(
   if (options.action === 'adopt') {
     const request = loadAdoptRequest(options.requestFile);
     if (!request.ok) return invalid(output, options.json, [request.message]);
-    const result = await applyAdopt(request.value, { apply: options.apply });
+    const result = await applyAdopt(request.value, {
+      apply: options.apply,
+      callerCodexThread: process.env['CODEX_THREAD_ID'] ?? null,
+    });
     return emitResult(output, options.json, result);
   }
 

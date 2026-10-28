@@ -483,7 +483,8 @@ pappra collab handoff ack --task-root <abs> --request <successor request id> [--
 the planned Herdr `agent_name`, the `harness` (it must equal the coordinator's), the coordinator's
 `cwd` and Herdr `caller_pane`, and a `checkpoint` file with its pinned sha256 digest (at most
 24 KiB). Plan is read-only. It refuses unless `collab handoff check` is ready (the handoff being
-driven does not block itself), the pane's cwd matches, Herdr's session for the pane (when it
+driven does not block itself; with `"mode": "mid_cohort"` it requires `collab handoff check-mid-cohort`
+instead, for a handoff made while transferable attempts are in flight), the pane's cwd matches, Herdr's session for the pane (when it
 reports one) is the recorded coordinator, the agent name is free, and the checkpoint matches its
 digest.
 
