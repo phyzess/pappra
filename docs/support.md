@@ -2,11 +2,11 @@
 
 ## Supported baseline
 
-- Node.js 24+; development and package checks use Node.js 24.20.0.
+- Node.js 24+; development and package checks currently run on Node.js 24.20.0.
 - pnpm 12.3.4 with the lockfile committed in this repository.
 - macOS is the primary local test environment. CI declares Ubuntu and macOS
-  Node 24/26 coverage; this source snapshot does not claim that every native
-  host or external engine has been exercised on every platform.
+  Node 24/26 coverage; not every native host or external engine has been exercised
+  on every platform.
 - Git is required for repository identity operations, not for importing the core
   TypeScript API.
 

@@ -1,19 +1,20 @@
 # Agent-native usage
 
-Pappra exposes its workspace capabilities to agents over MCP plus a small CLI surface.
-Everything stays workspace-local; tools never infer identity, approval or a task from chat
-text.
+Pappra exposes its workspace capabilities to agents over MCP plus a small CLI
+surface. Everything stays workspace-local; tools never infer identity, approval
+or a task from chat text. Permission boundaries are described in
+[MCP permissions](mcp-permissions.md).
 
 ## MCP server
 
 ```sh
 pappra mcp                 # stdio server for the current workspace
 pappra mcp --root <dir>    # explicit workspace root
-pappra mcp --help          # tool catalog
+pappra mcp --help          # tool summary
 ```
 
-Read-only tools: `workspace_status`, `resume`, `docs_list`, `docs_check`, `code_status`,
-`code_query`, `runtime_status`.
+Read-only tools: `workspace_status`, `resume`, `docs_list`, `docs_check`,
+`code_status`, `code_query`, `runtime_status`.
 
 Write tools, gated by arguments:
 
@@ -26,40 +27,50 @@ Write tools, gated by arguments:
 | `collab_prepare` | writes the prepared goal/claims from an explicit goal; generates no card |
 | `collab_start` | always returns `cli_required`; never launches from MCP |
 
-`collab_prepare` accepts `{ domainRoot, goal }`, where `goal` is the shared strict
-`pappra/collaboration-goal/1` document — the same document the installed CLI consumes
-through `pappra collab prepare --goal <file> --domain-root <dir>`. Coordinator
-(`agent_id`/`session_id`/`harness`/`owner_epoch`), assignee
-(`agent_id`/`session_id`/`harness`/`surface`/`configuration_id`/`cwd`), resources,
-`roles` and `required`/`preferred` capabilities are supplied explicitly; nothing is
-inferred from prose, resource paths or defaults, and the assignee cwd must be a real
-existing directory. Preparation maps the assignee harness to its established runner on
-the assignment (`pi` → `pi-cli`, `codex` → `codex-exec`, `claude` → `claude-cli`); other
-harnesses are refused before any task or claim is written. Explicit bounded unique
-`roles` are copied to the assignment; omitting them defaults to `['implementer']`, and
-`phase` never replaces an explicit role.
+`checkpoint`, `docs_scan` and workspace-private `collab_prepare` additionally
+require a trusted host to start the server with `--allow-workspace-writes`; a
+tool argument alone never enables them. See
+[MCP permissions](mcp-permissions.md).
+
+## Collaboration preparation
+
+`collab_prepare` accepts `{ domainRoot, goal }`, where `goal` is the shared
+strict `pappra/collaboration-goal/1` document — the same document the installed
+CLI consumes through `pappra collab prepare --goal <file> --domain-root <dir>`.
+Coordinator (`agent_id`/`session_id`/`harness`/`owner_epoch`), assignee
+(`agent_id`/`session_id`/`harness`/`surface`/`configuration_id`/`cwd`),
+resources, `roles` and `required`/`preferred` capabilities are supplied
+explicitly; nothing is inferred from prose, resource paths or defaults, and the
+assignee cwd must be a real existing directory. Preparation maps the assignee
+harness to its established runner on the assignment (`pi` → `pi-cli`, `codex` →
+`codex-exec`, `claude` → `claude-cli`); other harnesses are refused before any
+task or claim is written. Explicit bounded unique `roles` are copied to the
+assignment; omitting them defaults to `['implementer']`, and `phase` never
+replaces an explicit role.
 
 The earlier flat MCP form (`objective`, `task`, `acceptance`, `resources`,
-`coordinatorSession`, `assigneeSession`, `harness`, `subtaskId`, `attempt`, `phase`,
-`prompt` as tool arguments) is intentionally unsupported. Missing `goal`, mixed
-legacy/new fields and unknown fields are refused by schema validation before any task
-metadata, claim or card write. Migrate by building the goal document explicitly — the
-same fields move under `goal` with snake_case protocol names, the coordinator/owner
-epoch become required, and the assignee gains `surface`/`configuration_id`/`cwd`.
+`coordinatorSession`, `assigneeSession`, `harness`, `subtaskId`, `attempt`,
+`phase`, `prompt` as tool arguments) is intentionally unsupported. Missing
+`goal`, mixed legacy/new fields and unknown fields are refused by schema
+validation before any task metadata, claim or card write. Migrate by building
+the goal document explicitly — the same fields move under `goal` with
+snake_case protocol names, the coordinator/owner epoch become required, and the
+assignee gains `surface`/`configuration_id`/`cwd`.
 
-Preparation returns the existing prepared bundle and goal. It no longer synthesizes a
-`card.declared.json` and no longer returns the removed `cardPath`/`card` outputs: a
-declared card never authorized a launch. Callers supply actual capability evidence
-separately — observe the receiving session, derive a runtime card with
-`pappra collab capabilities derive`, check it with `pappra collab preflight`, then ask
-the user to launch through `pappra collab run --prepared <file> --capabilities <file>
---controller <controller>`. Agent-supplied `confirm:true` is not user approval;
-the MCP tool cannot launch. Tarball and registry runtime installs also require the CLI.
-Declared, stale or mismatched evidence is still
-refused by admission. This is metadata support only: live controllers remain
-`fixture` and `pi-rpc`; `collab run` rejects a real controller whose
-harness does not match the assignment without launching, and no Codex/Claude live
-controller is added here.
+Preparation returns the existing prepared bundle and goal. It synthesizes no
+capability card and returns no `cardPath`/`card` outputs: a declared card never
+authorized a launch. (The `card.declared.json` name survives only as the
+`--template` input of `pappra collab capabilities derive`.) Callers supply
+actual capability evidence separately — observe the receiving session, derive a
+runtime card with `pappra collab capabilities derive`, check it with
+`pappra collab preflight`, then ask the user to launch through
+`pappra collab run --prepared <file> --capabilities <file> --controller
+<controller>`. Agent-supplied `confirm:true` is not user approval; the MCP tool
+cannot launch. Tarball and registry runtime installs also require the CLI.
+Declared, stale or mismatched evidence is still refused by admission. This is
+metadata support only: live controllers remain `fixture` and `pi-rpc`;
+`collab run` rejects a real controller whose harness does not match the
+assignment without launching, and no Codex/Claude live controller is added here.
 
 An explicit `collab_prepare` call:
 
@@ -109,8 +120,8 @@ pappra host mcp verify --host claude --json
 codex mcp add pappra -- pappra mcp
 ```
 
-Existing `mcpServers` entries are preserved. A different existing `pappra` entry is a
-conflict; `--force` replaces it.
+Existing `mcpServers` entries are preserved. A different existing `pappra` entry
+is a conflict; `--force` replaces it.
 
 ## Task pin and auto-resume
 
@@ -120,10 +131,12 @@ pappra task show --json
 pappra task unpin
 ```
 
-The pin lives in `.pappra/local/current-task`; `--auto-resume` sets
-the ignored `.pappra/local/task-preferences.json` (`pappra/task-preferences/1`). It does not modify shared `workspace.json`; cloning the shared workspace does not enable another user's preference. Hooks include a
-bounded resume packet only when both the switch and a pin exist; without a pin they keep the
-generic advisory text. Neither grants execution.
+The pin lives in `.pappra/local/current-task`; `--auto-resume` sets the ignored
+`.pappra/local/task-preferences.json` (`pappra/task-preferences/1`). It does not
+modify shared `workspace.json`; cloning the shared workspace does not enable
+another user's preference. Hooks include a bounded resume packet only when both
+the switch and a pin exist; without a pin they keep the generic advisory text.
+Neither grants execution.
 
 ## Protocol probe
 
@@ -132,13 +145,14 @@ pappra host probe --host pi --json
 pappra host probe --host codex --json
 ```
 
-The Pi probe starts the RPC child in a throwaway session directory, sends `get_state`, and
-checks the contracted session id plus the reported session file; it never sends a prompt or
-starts a model. Other hosts probe the version against the pinned matrix.
+The Pi probe starts the RPC child in a throwaway session directory, sends
+`get_state`, and checks the contracted session id plus the reported session
+file; it never sends a prompt or starts a model. Other hosts probe the version
+against the pinned matrix.
 
 ## Version drift
 
 `pappra onboard` compares the installed version with the pinned matrix: in the
 admitted observed-version set → verified, undetectable → unverified, unlisted →
 unsupported with the safe fallback. Release evidence is recorded in
-`docs/host-plugin-validation.md` and `docs/pi-rpc.md`.
+[host plugin validation](host-plugin-validation.md) and `docs/pi-rpc.md`.

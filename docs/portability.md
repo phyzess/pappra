@@ -19,7 +19,7 @@ bindings. Copy the first, never the second.
 | `.pappra/local/code/*.json` | prepared code-index registrations for this checkout identity |
 | `.pappra/local/knowledge/catalog.json` | local catalog state; regenerate from `docs scan` |
 | `.pappra/local/host-events/**` | local lifecycle observations |
-| `.pappra/host-bundles/**` | re-exportable host packages |
+| `.pappra/host-bundles/**` | exported host packages; regenerate with `pappra onboard` or `pappra host bundle` |
 
 ## Second machine
 

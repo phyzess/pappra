@@ -58,9 +58,9 @@ What just happened:
   `npx @phyzess/pappra@beta init --no-runtime`, plus `--yes --apply` when you want it to
   write.
 - The guided health check prints a summary and every error; `pappra doctor` prints the same
-  checks one line at a time whenever you want them: a few `[WARNING]`, `[UNKNOWN]` or
-  `[PARTIAL]` lines for things you have not set up (hosts, code graphs) are normal, and
-  `[ERROR]` lines are what needs fixing.
+  checks one line at a time whenever you want them: a few `[WARNING]`, `[UNKNOWN]`,
+  `[PARTIAL]` or `[UNSUPPORTED]` lines for things you have not set up (hosts, code graphs)
+  are normal, and `[ERROR]` lines are what needs fixing.
 
 ### For scripts and CI
 
@@ -137,12 +137,12 @@ npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
 ```
 
 `examples/minimal-choices.json` in this repository is a complete selection file for a
-host-free, no-graph, single-directory workspace. `--yes` and `--print-choices` never prompt,
+host-free, no-graph workspace with no declared repositories. `--yes` and `--print-choices` never prompt,
 so they work in CI. `init --json` without selections still exits nonzero, but it returns the
 discovery candidates and the suggested `pappra/init-choices/1` document; only a TTY without
 selections opens the wizard.
 
-`init --apply` installs a durable runtime copy of the executing package and binds it in
+`init --apply` verifies, reuses or installs a durable runtime copy and binds it in
 `machine.json`, which is what makes an npx/dlx bootstrap survive cache eviction. Pass
 `--no-runtime` to leave that action pending (the result is `ok:true`,
 `status:"external-actions-pending"`, exit `0`; inspect `pendingExternalActions` instead of
@@ -235,13 +235,14 @@ $PAPPRA init --config .pappra-choices.json --reconfigure --apply --json
 
 Notes:
 
-- Excludes take effect after the first apply; a later `--print-choices` or `--reconfigure`
-  only sees the configured repositories plus the root, not the whole tree.
+- Excludes take effect after the first apply: a later `--print-choices` or `--reconfigure`
+  scans the workspace again and skips excluded paths; it never descends into a checkout or
+  a nested workspace.
 - Code registrations live in `<workspace>/.pappra/local/code/<repo>.json`; no `.pappra`
   directory is created inside a checkout, so outer discovery keeps resolving it.
-- `doctor` observes host manifests in the private default root, project directories and
-  `$CODEX_HOME`, but a Pi package installed with `pi install` has no such manifest: check it
-  with a real session instead.
+- `doctor` observes host manifests in the private default host root, project
+  `.claude`/`.codex`/`.pi` directories and `$CODEX_HOME`, but a Pi package installed with
+  `pi install` has no such manifest: check it with a real session instead.
 - The workspace root does not have to be a Git repository; checkpoints work without it.
 
 ## Work on Pappra itself (development checkout)
@@ -268,7 +269,7 @@ node "$PAPPRA_CLI" doctor --json
 
 Node.js 24+ and pnpm 12.3.4 are the supported development baseline.
 
-A converged apply exits `0`. With `--no-runtime` the result is `ok:true` with
+An apply with nothing left pending exits `0`. With `--no-runtime` the result is `ok:true` with
 `status:"external-actions-pending"`, `initComplete:false` and exit `0`; inspect
 `pendingExternalActions` instead of treating that as a corrupt configuration.
 `doctor` reports the resulting runtime conditions; `pappra runtime verify` runs

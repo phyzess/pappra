@@ -1,7 +1,5 @@
 # Explicit document review
 
-Status: current implementation.
-
 `docs check` reports changed registered bytes as `needs-review`, but it never
 accepts them. Accepting reviewed bytes is a separate, explicit operation:
 `docs review` re-registers the *same* `documentId` with the digest of the bytes a
@@ -40,7 +38,9 @@ pappra docs review 4f4b1c8e-5a5f-4a1e-9a8b-0f2d3c4b5a69 \
 
 `--apply` requires `--expected-digest`, and that digest must equal the bytes on
 disk at apply time. Without it the command refuses: a review must never accept
-bytes nobody pinned. A plan-mode JSON report carries the value to pass:
+bytes nobody pinned. A plan-mode JSON report carries the value to pass (abridged
+to the fields a reviewer acts on; the stored plan also pins the location,
+catalog digest, workspace-root identity and the full record):
 
 ```json
 {
@@ -66,8 +66,8 @@ After a successful apply the same `documentId` reports `current` in
 
 The record's catalog decides the scope. Private records live in the private
 catalog; `shareable` records live in the shared catalog. `--scope` is optional,
-and passing a scope that does not own the record is refused rather than
-silently retargeted:
+and passing a scope that does not own the record is refused rather than silently
+retargeted:
 
 ```sh
 pappra docs review <documentId> --scope private

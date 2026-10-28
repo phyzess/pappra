@@ -47,8 +47,9 @@ records `digestScheme: sha256-utf8-byte-order-v1`; a manifest with a different o
 scheme is reported as incompatible, separately from corrupted content. Old beta state is
 not migrated: use the current package with `init --reconfigure --apply`, and preserve old
 data until you explicitly remove it. Verification never rewrites a manifest to adopt an
-unexpected digest. Removal refuses unknown cross-workspace references; `--force` is an
-explicit override after checking other workspaces. `runtime archive --runtime-version <v>`
+unexpected digest. Removal checks only explicitly registered workspace roots: unknown coverage
+blocks removal, and `--force` accepts that unknown coverage but never bypasses a verified active
+reference. `runtime archive --runtime-version <v>`
 previews an evidence-preserving exit for corrupt, legacy or abandoned state, and applying
 it requires explicit unknown-reference acceptance and a reason.
 
@@ -78,8 +79,9 @@ pappra init --yes --apply
 
 The old tree remains under ignored `.pappra/local-archive/<id>`. The stopped-writers flag is
 an operator assertion for unknown/imported ownership, not process-stop proof. For a single
-malformed or empty lock, `repair --quarantine-unowned-locks --apply` uses the same
-precondition and preserves the lock plus a receipt in private quarantine. Never use either
+malformed or empty lock, `repair --quarantine-unowned-locks --apply` moves the lock plus a receipt
+into private quarantine without claiming owner death; the flag itself is the explicit operator
+assertion that every affected writer is stopped. Never use either
 escape while a writer is alive or paused.
 
 Every first private-state write creates `.pappra/local/.gitignore` with a final `*` rule,
@@ -91,12 +93,9 @@ and symlink target text are not copied into the checkpoint.
 
 Pappra prompts only for a person at a terminal: both stdin and stdout are TTYs, the invocation
 has no `--json` and no `--no-interactive`, and `CI` is unset or false. `init` applies the same
-rule, so a CI job that allocates a PTY does not open its wizard. `--no-interactive` is
-accepted by every command; before this change, a non-`init` command rejected it with exit `2`.
-Outside interactive mode nothing else changed: `--json` output, including the `usage` field of
-`pappra --json`, and the non-interactive usage summary are unchanged. The human `--help` text
-gained a `--no-interactive` options line and the sentence "Run pappra with no arguments on a
-terminal for guided setup or the workspace menu."
+rule, so a CI job that allocates a PTY does not open its wizard. `--no-interactive` is accepted
+by every command, and it (like `--json`, `CI` or a non-TTY stream) makes a bare `pappra` print
+the usage summary instead of opening the guided flow; the `--help` text says so.
 
 A bare `pappra` uses that mode:
 
@@ -153,8 +152,7 @@ declining prints `Nothing was applied.` and writes nothing. Cancelling the wizar
 After a confirmed apply from a terminal, `pappra init` also offers the optional follow-up
 steps: prepare the code index, register the discovered knowledge documents, connect coding
 agents including MCP registration, and run a health check. Each step asks before it writes and
-can be skipped; `--apply`, `--yes`, `--config` and `--json` never run them. The plan says
-those steps follow instead of claiming that init will not scan or index anything.
+can be skipped; `--apply`, `--yes`, `--config` and `--json` never run them.
 
 ## Development checks
 

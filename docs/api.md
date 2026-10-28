@@ -1,8 +1,8 @@
 # Pappra API boundaries
 
 Pappra exposes a deliberately small package map. Schemas use explicit version
-strings; callers should validate returned data rather than infer capabilities from
-command success alone.
+strings; callers should validate returned data rather than infer capabilities
+from command success alone.
 
 ## Published entrypoints
 
@@ -26,42 +26,42 @@ The 0.1.0 beta publishes fourteen package keys and no per-surface aliases:
 | `@phyzess/pappra/package.json` | package metadata |
 
 Core workspace operations use Pappra-owned `.pappra/` files. A checkout-local
-machine file binds the workspace to a canonical path; missing or mismatched local
-identity fails closed.
+machine file binds the workspace to a canonical path; missing or mismatched
+local identity fails closed.
 
 ## Layer boundaries
 
-Published barrels follow the dependency order, and a lower layer never imports an
-upper one:
+Published barrels follow the dependency order, and a lower layer never imports
+an upper one:
 
 - `schemas`, `infra`, `collab` — leaf contracts, bounded IO and collaboration
   primitives.
 - `workspace`, `knowledge`, `continuity`, `code`, `install` — core services.
 - `hosts` — native host primitives: detection, hook adapters, bundles and the
   managed-Pi controllers. No `hosts` module imports `src/app`.
-- `adapters` — explicit composition above both layers. `src/adapters/pi` owns the
-  opt-in recovery and session-transition extensions, and the emitted host bundles
-  are built from those adapter sources.
+- `adapters` — explicit composition above both layers. `src/adapters/pi` owns
+  the opt-in recovery and session-transition extensions, and the emitted host
+  bundles are built from those adapter sources.
 - `app`, `cli`, `experimental` — application orchestration and the barrels that
   publish it.
 
-A format that both a host primitive and an adapter need belongs to the lower layer:
-the recovery configuration contract is
-`src/hosts/integration/recovery-config.ts`, which bundle export inside `hosts` and
-the recovery adapter both read, and which imports no application module.
+A format that both a host primitive and an adapter need belongs to the lower
+layer: the recovery configuration contract is
+`src/hosts/integration/recovery-config.ts`, which bundle export inside `hosts`
+and the recovery adapter both read, and which imports no application module.
 
-`pnpm source:check` enforces this direction: `workspace`, `knowledge`, `continuity`,
-`code` and `schemas` modules may not import `app`, `hosts`, `collab` or `adapters`;
-host modules may not import `app` or `adapters`; and infrastructure may import only
-`infra` and `schemas`.
+`pnpm source:check` enforces this direction: `workspace`, `knowledge`,
+`continuity`, `code` and `schemas` modules may not import `app`, `hosts`,
+`collab` or `adapters`; host modules may not import `app` or `adapters`; and
+infrastructure may import only `infra` and `schemas`.
 
 ## Experimental surface
 
-Collaboration, automation and managed-Pi APIs are experimental: their wire schemas
-are validated, but exported TypeScript shapes and observed host-version pins may
-change before 0.1.0. They are reachable only through the two experimental
-entrypoints, which keeps internal `src/app` and `src/hosts` files out of the
-published contract.
+Collaboration, automation and managed-Pi APIs are experimental: their wire
+schemas are validated, but exported TypeScript shapes and observed host-version
+pins may change before 0.1.0. They are reachable only through the two
+experimental entrypoints, which keeps internal `src/app` and `src/hosts` files
+out of the published contract.
 
 ```ts
 import * as experimental from '@phyzess/pappra/experimental';
@@ -73,22 +73,22 @@ const { validateSessionTransitionRequest } = experimental.collabSessionTransitio
 const { PI_RECOVERY_CONFIG_SCHEMA } = pi.piRecovery;
 ```
 
-`@phyzess/pappra/experimental` exposes exactly these namespaces: `collaboration`,
-`collabAdmission`, `collabRolePlan`, `collabRoleOrchestration`,
+`@phyzess/pappra/experimental` exposes exactly these namespaces:
+`collaboration`, `collabAdmission`, `collabRolePlan`, `collabRoleOrchestration`,
 `collabAutomaticHandoff`, `collabWorkPlanInspection`, `collabWorkExecution`,
 `collabRecovery`, `collabRecoveryProjection`, `collabRecoveryExecutor`,
 `collabSessionTransition`, `collabWorkPlan`, `collabWorkflow`, `piManaged`,
-`piManagedSdk`, `piRecovery` and `piSessionTransition`. The Pi namespaces are also
-importable on their own from `@phyzess/pappra/experimental/pi`. Work-plan
+`piManagedSdk`, `piRecovery` and `piSessionTransition`. The Pi namespaces are
+also importable on their own from `@phyzess/pappra/experimental/pi`. Work-plan
 validation stays reachable from `@phyzess/pappra/collab` as the `workPlan`
 namespace; this barrel re-exports the same module as `collabWorkPlan`.
 
-`collabWorkflow` provides typed preparation, dispatch, participant actions (including the
-read-only `await` for a coordinator's decision), explicit coordinator acceptance, pane reclaim,
-successor adoption and inspection for a declared cohort. The CLI
-entry is `pappra collab workflow`; see [the workflow contract](collaboration-workflow.md).
-It composes existing protocol authority and never chooses identities or accepts
-worker output automatically.
+`collabWorkflow` provides typed preparation, dispatch, participant actions
+(including the read-only `await` for a coordinator's decision), explicit
+coordinator acceptance, pane reclaim, successor adoption and inspection for a
+declared cohort. The CLI entry is `pappra collab workflow`; see [the workflow
+contract](collaboration-workflow.md). It composes existing protocol authority
+and never chooses identities or accepts worker output automatically.
 
 The knowledge service exposes `previewReview` and `applyReview` for explicitly
 reviewed bytes. These preserve the document ID and unrelated metadata; see
@@ -111,10 +111,12 @@ version is skipped with guidance; sharing a semantic-version minor is not
 admission. Dry-run uses the same planning rules. These checks neither broaden
 plugin-hook support nor prove native loading, trust, reload or callability.
 
-Managed Pi is narrower still. The PTY controller pins Pi 1.3.0 behaviour, and the
-opt-in SDK controller requires exactly `@earendil-works/pi-coding-agent@1.4.0`
-with matching private-source hashes; a different build is refused rather than
-degraded.
+Managed Pi is narrower still. The default PTY controller launches the host's own
+Pi and keeps a conservative `unknown` work inventory; it never claims
+quiescence. The opt-in SDK controller requires exactly
+`@earendil-works/pi-coding-agent@1.4.0` — it checks the reported version and
+pinned private-source hashes, and refuses a different build rather than
+degrading it.
 
 ## Capability notes
 
@@ -125,31 +127,34 @@ degraded.
 - `collab` primitives never launch a host by themselves. A caller supplies an
   explicit controller (`fixture` or `pi-rpc`); the observed Pi RPC behaviour is
   documented in `docs/pi-rpc.md`.
-- `experimental.piManaged` performs an explicit fresh native Pi TUI launch with a
-  write-ahead terminal ingress journal, a private endpoint and exact owned-child
-  exit evidence. It uses Python 3's standard PTY support on Unix, normal Pi
-  configuration and an explicit model. It does not adopt an existing session and
-  does not prove native queue, approval or external-writer quiescence.
-- `experimental.piManagedSdk` drives an explicit Pi 1.4.0 SDK and native TUI with a
-  pinned internal queue/dialog inventory, ingress fences and owned-runtime
-  disposal. Its receipt describes runtime disposal, not operating-system process
-  exit.
-- `experimental.collabAutomaticHandoff` captures a threshold-driven native summary
-  and full-source checkpoint artifacts, prepares immutable bundles and runs guarded
-  transition ticks.
+- `experimental.piManaged` performs an explicit fresh native Pi TUI launch with
+  a write-ahead terminal ingress journal, a private endpoint and exact
+  owned-child exit evidence. It uses Python 3's standard PTY support on Unix,
+  normal Pi configuration and an explicit model. It does not adopt an existing
+  session and does not prove native queue, approval or external-writer
+  quiescence.
+- `experimental.piManagedSdk` drives an explicit Pi 1.4.0 SDK and native TUI
+  with a pinned internal queue/dialog inventory, ingress fences and
+  owned-runtime disposal. Its receipt describes runtime disposal, not
+  operating-system process exit.
+- `experimental.collabAutomaticHandoff` captures a threshold-driven native
+  summary and full-source checkpoint artifacts, prepares immutable bundles and
+  runs guarded transition ticks.
 - `experimental.collabRoleOrchestration` dispatches bounded events through the
   existing work executor with durable no-redelivery receipts and authoritative
   aggregation.
-- `experimental.collabRolePlan` expands optional planner/writer/reviewer roles into
-  the existing work-plan model and conservatively aggregates their evaluated
-  results. These automation namespaces are available from the experimental
-  barrel; the stable root exposes core package and host-integration APIs.
+- `experimental.collabRolePlan` expands optional planner/writer/reviewer roles
+  into the existing work-plan model and conservatively aggregates their
+  evaluated results. These automation namespaces are available from the
+  experimental barrel; the stable root exposes core package and host-integration
+  APIs.
 
-The CLI exposes `session plan|start|status|fence|stop --config <absolute-file>` and
-`collab role-plan expand|aggregate`, plus `collab role-run --request <file>
---apply [--watch]`. `collab capabilities derive --harness pi --live` derives a
-standard card from a settled saved interactive session without inventing a
-process-exit receipt. Existing preflight freshness checks still apply.
+The CLI exposes `session plan|start|status|fence|stop --config
+<absolute-file>` and `collab role-plan expand|aggregate`, plus
+`collab role-run --request <file> --apply [--watch]`. `collab capabilities
+derive --harness pi --live` derives a standard card from a settled saved
+interactive session without inventing a process-exit receipt. Existing
+preflight freshness checks still apply.
 
 ## Safety contract
 
@@ -157,7 +162,8 @@ process-exit receipt. Existing preflight freshness checks still apply.
 - Unknown ownership, stale identities, partial writes and interrupted locks are
   reported rather than silently repaired.
 - Outputs are bounded and failures carry diagnostics or a typed outcome.
-- No API authorizes a model, provider or external host merely by being imported.
+- No API authorizes a model, provider or external host merely by being
+  imported.
 - Version pins for optional hosts describe an observed integration surface; they
   do not prove that a native installation is callable.
 - Store recovery primitives are not library APIs. `breakLock` is deliberately
@@ -168,15 +174,16 @@ process-exit receipt. Existing preflight freshness checks still apply.
 ## Removed beta paths and the reset policy
 
 The beta narrows the map instead of preserving every earlier path. These
-specifiers no longer exist and fail with `ERR_PACKAGE_PATH_NOT_EXPORTED`. No shim
-and no compatibility promise accompanies them:
+specifiers no longer exist and fail with `ERR_PACKAGE_PATH_NOT_EXPORTED`. No
+shim and no compatibility promise accompanies them:
 
 - `@phyzess/pappra/collaboration`
 - `@phyzess/pappra/collab/admission`, `.../collab/work-plan`
 - `@phyzess/pappra/collab/role-plan`, `.../role-orchestration`
 - `@phyzess/pappra/collab/automatic-handoff`
 - `@phyzess/pappra/collab/work-plan-inspection`, `.../work-execution`
-- `@phyzess/pappra/collab/recovery`, `.../recovery-projection`, `.../recovery-executor`
+- `@phyzess/pappra/collab/recovery`, `.../recovery-projection`,
+  `.../recovery-executor`
 - `@phyzess/pappra/collab/session-transition`
 - `@phyzess/pappra/hosts/pi-recovery`, `.../pi-managed`, `.../pi-managed-sdk`,
   `.../pi-session-transition`
@@ -192,4 +199,5 @@ already exist on disk. Pappra does not rewrite them, does not adopt a legacy
 user-global state directory, and does not migrate configuration automatically.
 `init --reconfigure` is the only supported way to rebuild a workspace file from
 current selections, and it keeps identity, extension and continuity bindings.
-Old local state keeps its archival exit (`repair --reset-local`), not a migration.
+Old local state keeps its archival exit (`repair --reset-local`), not a
+migration.

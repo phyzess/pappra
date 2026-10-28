@@ -51,8 +51,8 @@ MCP 服务，需要你在那个 Agent 里自己决定。
   带上 `--no-runtime`：`npx @phyzess/pappra@beta init --no-runtime`，再加上 `--yes --apply`
   就会真正写入。
 - 引导式健康检查会打印一行汇总和所有错误；`pappra doctor` 随时可以把同一批检查逐条打印出来：
-  出现几条 `[WARNING]`、`[UNKNOWN]` 或 `[PARTIAL]`，对应的是你还没有配置的东西（宿主、代码图），
-  这很正常，`[ERROR]` 才是需要修的。
+  出现几条 `[WARNING]`、`[UNKNOWN]`、`[PARTIAL]` 或 `[UNSUPPORTED]`，对应的是你还没有配置的东西
+  （宿主、代码图），这很正常，`[ERROR]` 才是需要修的。
 
 ### 脚本与 CI
 
@@ -123,12 +123,12 @@ npx @phyzess/pappra@beta init --print-choices        # 打印推导出的文档�
 npx @phyzess/pappra@beta init --config ./minimal-choices.json --apply --json
 ```
 
-本仓库里的 `examples/minimal-choices.json` 是一份完整的选择文件，适用于无宿主、无代码图、单目录的
+本仓库里的 `examples/minimal-choices.json` 是一份完整的选择文件，适用于无宿主、无代码图、且不声明任何仓库的
 工作区。`--yes` 和 `--print-choices` 从不提示，所以可以在 CI 中使用。不带选择的 `init --json`
 依然以非零状态退出，但会返回发现的候选项和建议的 `pappra/init-choices/1` 文档；只有在没有选择的
 TTY 中才会打开向导。
 
-`init --apply` 会安装一份所执行软件包的持久运行时副本，并把它绑定到 `machine.json`，这正是 npx/dlx
+`init --apply` 会验证并复用、或在需要时安装一份持久运行时副本，并把它绑定到 `machine.json`，这正是 npx/dlx
 引导在缓存被清理后仍能继续工作的原因。传入 `--no-runtime` 可以把这一步留到以后（结果是 `ok:true`、
 `status:"external-actions-pending"`，退出码 `0`；请查看 `pendingExternalActions`，不要把它当成配置
 损坏）。这份副本可以直接管理：
@@ -210,11 +210,11 @@ $PAPPRA init --config .pappra-choices.json --reconfigure --apply --json
 
 说明：
 
-- 排除项在第一次应用之后才生效；之后的 `--print-choices` 或 `--reconfigure` 只会看到已配置的
-  仓库加上根目录，而不是整棵目录树。
+- 排除项在第一次应用之后才生效：之后的 `--print-choices` 或 `--reconfigure` 会重新扫描工作区并跳过
+  已排除的路径，且绝不会进入某个检出目录或嵌套工作区内部。
 - 代码登记信息保存在 `<workspace>/.pappra/local/code/<repo>.json`；检出目录内部不会创建
   `.pappra` 目录，因此外层的发现仍能正常解析。
-- `doctor` 会观察私有默认根目录、项目目录和 `$CODEX_HOME` 中的宿主清单，但用 `pi install` 安装的
+- `doctor` 会观察私有默认宿主根目录、项目里的 `.claude`/`.codex`/`.pi` 目录以及 `$CODEX_HOME` 中的宿主清单，但用 `pi install` 安装的
   Pi 包没有这样的清单：请用真实会话来检查它。
 - 工作区根目录不必是 Git 仓库；没有 Git 时检查点也能工作。
 
@@ -241,7 +241,7 @@ node "$PAPPRA_CLI" doctor --json
 
 Node.js 24+ 和 pnpm 12.3.4 是受支持的开发基线。
 
-收敛的应用以 `0` 退出。使用 `--no-runtime` 时，结果是 `ok:true`，并带有
+没有遗留待办的应用以 `0` 退出。使用 `--no-runtime` 时，结果是 `ok:true`，并带有
 `status:"external-actions-pending"`、`initComplete:false`，退出码为 `0`；请查看
 `pendingExternalActions`，不要把它当成配置损坏。`doctor` 会报告由此产生的运行时状况；
 `pappra runtime verify` 则执行主动检查。

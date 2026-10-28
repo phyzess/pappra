@@ -1,9 +1,12 @@
 # Pi RPC collaboration
 
 `pappra collab run --controller pi-rpc` is the "one host directs, Pi executes" path: the
-calling agent (Codex, Claude Code, a script) prepares one bounded task with `pappra collab
-prepare`, then pappra admits and launches an owned Pi RPC child that does the work. It is
+calling agent (Codex, Claude Code, a script) prepares one bounded task, then Pappra admits
+and launches an owned Pi RPC child that does the work. The child is a process this command
+spawned, bound to one frozen prompt; nothing adopts an existing session. The path is
 independent of any host lifecycle hook.
+
+## Preparing and running
 
 ```sh
 pappra collab prepare --goal goal.json --domain-root /abs/domain --json
@@ -14,21 +17,42 @@ pappra collab run --prepared /abs/domain/tasks/<task>/p10/prepared.json \
 Prerequisites:
 
 - an absolute shared domain root; the task lands in `<domain>/tasks/<task_id>`
-- a goal (`pappra/collaboration-goal/1`) whose assignee is `harness: pi`, `surface: rpc`
+- a goal (`pappra/collaboration-goal/1`) whose assignee names `harness: pi` — the
+  controller refuses assignments for any other harness — with assignee fields
+  (agent id, session id, cwd, surface, configuration id) matching the capability card
 - a capability card (`harness-collab/capabilities/1`) with `evidence_level: runtime`,
   `observed_at` within 30 minutes, and assignee fields matching the goal
-- Pi on `PATH` with a working provider configuration
+- Pi on `PATH` (or `PAPPRA_PI_BIN`) with a working provider configuration
 
-The controller spawns `pi --mode rpc --session-dir <task evidence>/pi-sessions
---session-id <contracted id>` and records `evidence/pi-rpc.{proof,rpc,execution}.*` plus the
-native session file under the prepared task directory. A `finish` command must match the
-native result status; a mismatch is refused rather than reported as success.
+The run re-validates the sealed assignment bytes before launch. It spawns
+`pi --mode rpc --session-dir <task evidence>/pi-sessions --session-id <contracted id>`
+and, because the controller always uses the `daily` runner profile, adds no capability
+flags: Pi starts with its normal tools and MCP servers. The run records
+`evidence/pi-rpc.{rpc.jsonl,execution.json,proof.json}` (plus a bounded stderr log) under
+the prepared task directory, alongside the native session file it binds.
 
-## Deadlines and bounded evidence
+The controller reads `pappra/collaboration-command/1` JSONL from stdin and writes
+`pappra/collaboration-event/1` JSONL to stdout. Three commands exist:
 
-Single RPC responses have a 15-second deadline (configurable from 1 to 60,000 ms).
-This covers commands such as `get_state` and prompt acceptance, not completion of the
-model's task. The task has its own 30-minute deadline, configurable up to 24 hours:
+- `query` — a repeatable read-only native query, recorded through the protocol identities
+  read from the registered task before the observation is taken.
+- `cancel` — never starts work and never sends CANCELLED. The cancellation intent must be
+  registered and applied first; claims stay held.
+- `finish` — closes the run. Its declared status must match the native result status; a
+  mismatch is a refusal, never a reported success. A run that closes without `finish`
+  reports `run_closed`, not completion.
+
+The finish result must be publishable as `harness-collab/native-current-result/1`
+evidence: records written after a baseline sampled before the prompt, with the session
+file inside the task's private namespace. A run whose transport exits cleanly is not
+therefore a task success; only a validated terminal result counts.
+
+## Deadlines and bounds
+
+Single RPC responses have a 15-second deadline, configurable from 1 to 60,000 ms
+(`--rpc-request-timeout-ms`). This covers commands such as `get_state` and prompt
+acceptance, not completion of the model's task. The task has its own 30-minute deadline,
+configurable up to 24 hours (`--rpc-operation-timeout-ms`, 1 to 86,400,000 ms):
 
 ```sh
 pappra collab run --prepared prepared.json --capabilities card.json \
@@ -36,61 +60,44 @@ pappra collab run --prepared prepared.json --capabilities card.json \
   --rpc-operation-timeout-ms 7200000 < commands.jsonl
 ```
 
-Normal completion waits for `agent_settled` within the remaining task budget. Cancellation
-keeps a separate short settling limit (15 seconds by default). On task expiry the owned
-RPC child shuts down even if the caller stops issuing commands. Shutdown still uses bounded
-EOF, TERM, KILL and stream-close waits; it never claims to stop arbitrary descendants.
-`PiRpcController` accepts the same `requestTimeoutMs` and `operationTimeoutMs` settings in
-its constructor. Lower-level `startOwnedPiRpc` callers can also set `settleTimeoutMs` for
-cancellation, or supply an explicit timeout to `awaitSettled` for an individual wait.
+Normal completion waits for `agent_settled` within the remaining task budget.
+Cancellation keeps a separate short settling limit (15 seconds by default). When the task
+budget expires, the owned child shuts down even if the caller stops issuing commands.
 
-Streaming output is bounded per JSONL frame (16 MiB by default, configured by `maxBytes`),
-not by the cumulative bytes of a long task. The transport retains at most 256 recent records
-and 1 MiB of history; a separate minimal `agent_settled` marker preserves lifecycle evidence
-when noisy events evict history. It processes responses immediately and permits at most
-4,096 requests per owned handle. A response to a known expired request is recorded as late
-and ignored; the original request failure remains visible. Unknown response IDs still fail
-the transport.
+Transport bounds, all enforced per run:
 
-The RPC JSONL evidence file keeps a bounded prefix (16 MiB by default, configured by
-`maxLogBytes`). Reaching that budget does not kill the task. Execution and proof files
-explicitly record `rpc_capture.log.complete: false`, omitted record counts, stdout byte
-counts, history eviction and retained sizes. The returned evidence also exposes
-`events_complete` and `events_omitted_records`; a partial log must not be described as a
-complete execution trace. Native session history remains separate evidence. Stderr capture
-is independently bounded and reports truncation. Both byte-limit overrides are capped at
-256 MiB; one oversized frame still refuses the transport and stops the owned child.
+- One JSONL frame may be 16 MiB (`maxBytes`); a larger frame refuses the transport and
+  stops the child. Overrides are capped at 256 MiB.
+- History keeps at most 256 recent records and 1 MiB; a minimal `agent_settled` marker
+  preserves lifecycle evidence when noisy events evict history. Responses are processed
+  immediately, so eviction never delays work.
+- At most 4,096 requests per owned handle. A response to a known expired request is
+  recorded as late and ignored while the original request failure stays visible; a
+  response with an unknown id fails the transport.
 
-## Pi 1.3.0 lifecycle notes
+The JSONL evidence file keeps a bounded prefix (16 MiB by default, `maxLogBytes`, capped
+at 256 MiB). Reaching that budget does not kill the task: execution and proof files
+record `rpc_capture.log.complete: false`, the omitted record count, stdout byte counts,
+history eviction and retained sizes, and the evidence exposes `events_complete` and
+`events_omitted_records`. A partial log must not be described as a complete execution
+trace; native session history remains separate evidence. Stderr capture is bounded
+independently and reports truncation.
 
-Two behaviours changed from the version the original protocol was written against:
+Shutdown is bounded and per-child: orderly EOF, then TERM, then KILL for this exact
+child, then a bounded wait on this process's own stdio handles. Descendants that
+inherited the pipes are detached, never signalled.
 
-1. **The session file is created lazily**, on the first persisted message. Identity binding
-   therefore verifies the reported session id before the prompt and requires the file header
-   immediately after it (bounded retry while the writer flushes).
-2. **The current-result baseline must be sampled before the prompt**, not after it. The
-   controller now takes the byte offset from the RPC handle; sampling after the prompt hid
-   the assistant message and produced `finish status does not match the native result`.
+## Identity binding
 
-## Verification (2026-10-20)
+The run binds the contracted identity before returning a live handle and re-checks it at
+every protocol step:
 
-A real task was prepared and run on this machine (`deepseek-flash` provider):
-
-- `collab run --controller pi-rpc` exited `0` with `started` and `finished` events
-- the Pi session recorded the user prompt and the assistant answer `COLLAB_OK`
-- `evidence/pi-rpc.execution.json`: `status: exited`, `exit_code: 0`, `header_bound: true`,
-  `identity_status: match`, `identity_confirmed: true`
-- the published report is `results/work-a1-*.json` with `status: completed` and
-  `classification: applied`
-
-This is a deterministic, no-fixture proof that the Codex/Pi split works end to end; it does
-not imply host hook wiring (see `docs/host-plugin-validation.md` for that surface).
-
-## Offline transport verification (2026-10-24)
-
-Pi 1.4.0 also passed a local RPC load/status smoke with an isolated temporary HOME,
-configuration directory, working directory and session directory. Startup used `--offline`
-and disabled extension, MCP, skill and context discovery. A single `get_state` returned
-the requested session ID and `isStreaming: false`; closing stdin produced exit code 0.
-No prompt or external model request was sent. This verifies the installed binary's local
-RPC protocol and orderly EOF behavior; it does not validate paid model execution.
+- `get_state` must report the contracted session id; the reported session file must
+  resolve, and once bound it may not switch to another path. The file header must carry
+  the same id and cwd.
+- Pi creates the session file lazily, on the first persisted message. The pre-prompt
+  check therefore verifies the reported session id only; the header is bound immediately
+  after prompt acceptance with a short bounded retry. The current-result baseline is
+  sampled before the prompt, not after it, so the assistant message is never hidden.
+- The proof and execution files record `header_bound` and `identity_status`, so a reader
+  can tell a bound run from an id-only run.

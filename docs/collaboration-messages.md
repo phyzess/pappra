@@ -1,37 +1,57 @@
 # Collaboration messages and notification
 
-Status: implemented in C0 over the existing `harness-collab` protocol. This is
-the supported replacement for the temporary task-local bootstrap helper.
+Pappra's collaboration protocol lets two agent sessions exchange task-scoped
+messages without a daemon, a scheduler, or model polling, and this surface carries
+the persisted message commands, their notification transport, and the supporting
+controls built on the same task record: capability evidence, readiness preflight,
+task state and resource claims, recorded ownership handoff, explicit recovery, and
+portable task bindings. Every command here plans by default and performs its
+effect only with `--apply`.
 
-Before these commands can reach anyone, the operator or agent must choose the
-environment and ensure the receiving instance exists. The shipped skill's
-`references/environment.md` documents that entry path: direct versus visible
-Herdr operation, one bounded read-only discovery contact for a newly started
-peer, authorized sibling-pane bootstrap versus exact-peer reuse, task-local
-`pappra/collab-binding/1` routing metadata, readiness, and the proactive
-no-polling return. Note that `pappra collab prepare` is not plan-only: it writes
-task/prepared state, claims resources and registers the initial `ASSIGN`, which
-should be read and notified rather than duplicated. `message send` and `notify`
-plan by default. `notify` assumes a bound recipient already exists; it never
-starts or discovers one. A pane is routing/visibility evidence, not native
-ownership or process authentication.
+The environment entry (direct versus visible Herdr operation, sibling-pane
+bootstrap versus exact-peer reuse) is documented in the shipped skill's
+`references/environment.md`, and the typed cohort workflow that drives these
+commands is documented in [the workflow](collaboration-workflow.md).
 
-## Purpose
+## Before you start
 
-Two agent sessions can exchange task-scoped protocol messages without a daemon,
-a scheduler, or model polling:
+A task root is `<domain>/tasks/<task-id>` and already contains `task.json`,
+`messages/` and `ledger.jsonl`; `pappra collab prepare` creates it. All commands
+on this surface require an explicit absolute `--task-root`. Nothing is inferred
+from the current directory, from chat text, or from another task.
+
+`pappra collab prepare` is not plan-only: it writes task/prepared state, claims
+resources and registers the initial `ASSIGN`. Read the registered assignment and
+notify it; never send a second one. `message send` and `message notify` plan by
+default. `notify` assumes a bound recipient already exists; it never starts or
+discovers one. A pane is routing/visibility evidence, not native ownership or
+process authentication.
+
+## Message commands
 
 ```sh
 pappra collab message send   --task-root <abs> --message <abs-envelope.json> [--apply]
 pappra collab message list   --task-root <abs> [--limit <1-100>]
 pappra collab message read   --task-root <abs> --message-id <id>
 pappra collab message notify --task-root <abs> --message-id <id> \
-                             --binding <abs-binding.json> [--apply] [--retry]
+                             --binding <abs-binding.json> [--caller-pane <id>] \
+                             [--apply] [--retry]
 ```
 
-All commands require an explicit absolute `--task-root`. Nothing is inferred
-from the current directory or from prose. `--json` returns
-`pappra/collaboration-message/1`.
+`--json` returns `pappra/collaboration-message/1` for every action.
+
+- `send` validates one envelope file and, with `--apply`, registers and applies it
+  through the existing protocol. It reports `planned`, `accepted`, `duplicate`
+  (same id and content, no second side effect), `conflict` (same id, different
+  content), or `rejected` with the protocol reason, and returns the registered
+  message path and the SHA-256 of the file. It never notifies anyone and never
+  claims native delivery or task acceptance.
+- `list` reports the most recent registered messages from the authoritative
+  record, including both `applied` and `recorded` entries, with their delivery
+  status when notification was attempted. The default limit is 20; the maximum
+  is 100.
+- `read` returns one registered message, its record entry and its delivery
+  record. Both read commands are read-only.
 
 Five facts stay distinct and are never collapsed:
 
@@ -43,9 +63,46 @@ Five facts stay distinct and are never collapsed:
 4. **reported** — the recipient's `REPORT` message and stored result.
 5. **accepted** — the coordinator's explicit decision, outside this surface.
 
-Successful `notify` JSON results carry `consumed: false` and `taskAccepted: false`.
-Successful `send` results return `delivery: "persisted-not-notified"`, `notified: false`
-and `taskAccepted: false`.
+Successful `notify` JSON results carry `consumed: false` and
+`taskAccepted: false`. Successful `send` results return
+`delivery: "persisted-not-notified"`, `notified: false` and `taskAccepted: false`.
+
+## Envelope
+
+Messages use `harness-collab/message/1` and are validated with the same rules the
+protocol applies on apply: an explicit `from` identity, the per-type required
+`to`/`reply_to`/`subtask_id`/`attempt` fields, and the per-type required `body`
+keys. `body.status` is restricted to the report statuses (`running`, `completed`,
+`needs_input`, `failed`, `cancelled`, `unknown`); `BLOCK` kinds are
+`clarification` and `approval`; `HANDOFF` kinds are `writer` and `coordinator`.
+Unknown extension fields are tolerated on purpose; unknown semantics are never
+inferred.
+
+Current apply behaviour per type:
+
+- `ASSIGN` registers or updates the attempt and opens a
+  `registered_not_started` uncertainty; it does not launch anything.
+- `ACK` correlates to the assignment (or to a pending handoff) and records
+  consumption, not progress.
+- `ASK` is evidence only: it is recorded with `state: "recorded"` and changes no
+  attempt state. Blocking a clarification remains `BLOCK(kind=clarification)`.
+- `ANSWER` resolves a correlated `needs_input`/clarification attempt back to
+  `running`; an uncorrelated answer is recorded without a transition; an
+  `ANSWER` to an approval block is refused (`approval_not_auto_answerable`).
+- `REPORT` is admitted only from the attempt's current assignee; a stale sender's
+  report is retained as evidence with an uncertainty (`classification:
+  "stale_sender"`) and changes nothing.
+- `CANCEL` records intent, marks the holder's claims `cancel_pending` and opens a
+  `cancel_unconfirmed` uncertainty; `CANCELLED` requires stop evidence, confirms
+  the stop, releases exactly that execution's claims and resolves the
+  uncertainty.
+- `STATUS`, `STATUS_QUERY` and `HANDOFF` notifications are recorded without a
+  state change; a `HANDOFF` request phase moves ownership through the handoff
+  primitives.
+
+Message ids are single path segments
+(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`), so `..`, separators and control
+characters are refused before any path is built.
 
 ## Task-root validation
 
@@ -53,119 +110,135 @@ and `taskAccepted: false`.
 `task.json`, a real `messages/` directory, no final-component symlinks, and a
 record whose `task_id`/`task_root`/`domain_root` match. A system-level ancestor
 symlink (for example `/var` on macOS) is resolved, but the domain entry itself,
-the `tasks` parent, the task root, messages directory and record must be real:
-a symlinked domain, `tasks` parent, task root, messages directory or record
-fails closed. Message ids are single path segments
-(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`), so `..` and separators are refused before
-a path is built.
+the `tasks` parent, the task root, the messages directory and the record must be
+real: a symlinked domain, `tasks` parent, task root, messages directory or record
+fails closed. Message ids are single path segments, so `..` and separators are
+refused before a path is built.
 
-## Send
+## Protocol sender authority
 
-- Plan-only by default: parse, validate the envelope, check task/record identity
-  and the target registration path, and write nothing.
-- `--apply` reports the protocol outcome: `accepted`, `duplicate` (same id and
-  content, no second side effect), `conflict` (same id, different content), or
-  `rejected` with the protocol reason.
-- Returns the registered message path and SHA-256 of the file.
-- Never notifies anyone and never claims native delivery or task acceptance.
+The owner epoch identifies an authority generation; it does not authorize an
+arbitrary sender. Before mutating an attempt, the protocol matches both
+`agent_id` and `session_id` against the recorded role: `ASSIGN` and `CANCEL`
+require the current coordinator; `ACK` and `CANCELLED` require the current
+attempt's assignee (a registered handoff receiver may acknowledge that exact
+pending handoff without changing the source writer's attempt); `BLOCK` accepts
+the current assignee or coordinator so coordinator approval gates remain
+enforceable; handoff requests require the corresponding coordinator or writer. An
+`ANSWER` must correlate with the recorded question, its intended recipient and
+the current assignee, so a worker cannot unblock another attempt by creating and
+answering its own question. Coordinator `ANSWER` decisions replying to
+assignments or reports are recorded as evidence for downstream validation and
+cannot resolve a clarification. Rejected sender-role checks do not mutate
+attempts, uncertainty or resource ownership; stale-epoch refusals are recorded as
+uncertainty; stale `REPORT` messages remain evidence rather than authority over
+current work.
 
-### Protocol sender authority
-
-The owner epoch identifies an authority generation; it does not authorize an arbitrary sender.
-Before mutating an attempt, the protocol matches both `agent_id` and `session_id` against the
-recorded role. `ASSIGN` and `CANCEL` require the current coordinator; `ACK` and
-`CANCELLED` require the current attempt's assignee. `BLOCK` accepts the current assignee or
-coordinator so coordinator approval gates remain enforceable. A registered handoff receiver may acknowledge
-that exact pending handoff without changing the source writer's attempt. Handoff requests require
-the corresponding coordinator or writer. An `ANSWER` must correlate with the recorded question,
-its intended recipient and the current assignee; a worker cannot unblock another attempt by
-creating and answering its own question. Coordinator `ANSWER` decisions replying to assignments or
-reports are recorded as evidence for downstream validation and cannot resolve a clarification. Rejected sender-role checks do not mutate attempts, uncertainty or
-resource ownership; stale-epoch refusals are recorded as uncertainty. Stale `REPORT` messages remain evidence rather than authority over current work.
-
-These are protocol consistency checks within a cooperative, same-user environment. Envelope fields
-are not independently authenticated credentials; copying another participant's complete known identity
-is outside the identity guarantees of this CLI.
+These are protocol consistency checks within a cooperative, same-user
+environment. Envelope fields are not independently authenticated credentials;
+copying another participant's complete known identity is outside the identity
+guarantees of this CLI.
 
 ## Notify
 
-- Only forwards an **already registered** message pointer:
-  `COLLAB_MESSAGE task=<id> type=<type> message=<abs path> digest=sha256:<file digest>`.
-  No body, transcript, prompt or report text is included.
-- Requires a task-local binding (`pappra/collab-binding/1`); see
-  `skills/pappra/references/collaboration.md` for the document shape.
-- Two routing modes, neither of which authenticates the sender:
-  - **current context (default):** requires the Herdr marker and a nonempty
-    inherited `HERDR_PANE_ID` before `pane current --current`. Missing context
-    refuses with `herdr_caller_unverified` and a `--caller-pane` hint; stale or
-    inconsistent IDs fail visibly. It never resolves through focus.
-  - **explicit task-bound (`--caller-pane <id>`):** uses
-    `pane current --pane <id>` without changing the environment or using focus.
-    Stale inherited IDs do not override it. The pane is a routing candidate, not
-    process proof.
-- Validates both participants against the binding, message and live observations:
-  the binding must contain sender and recipient; the selected pane must equal the
-  sender binding pane; sender/recipient live name, pane, harness and cwd must
-  match; sender and recipient sessions are compared exactly when Herdr reports
-  them. A null binding session never disables comparison with the message's
-  explicit session. Missing session stays `unknown` (for example Codex).
-- Process affiliation is **not established** by pane selection. Recorded caller
-  evidence says `process_affiliation: "not-established"`; hosted or detached
-  agents whose process tree differs from the pane are supported through the
-  task-bound binding, not by ancestry claims.
-- Native session evidence is compared exactly, not by substring. For Pi
-  (`kind: "path"`) only the final `_<session-id>` segment of the session file is
-  the native identity; a different session in an ancestor directory is a
-  mismatch. When Herdr reports no session value the result records
-  `native_session: "unknown"` rather than a match.
-- For ordinary Herdr targets, runs `herdr agent prompt <name> <text>`; for a verified
-  owned Pi SDK target, calls the owned controller's `deliver` operation instead. In both
-  cases it uses no `--wait`, no shell interpolation, no pane creation, no focus changes and
-  no blocked-agent answering.
-- The task namespace and registered bytes are revalidated after awaited transport
-  work and immediately before any delivery mutation or prompt; a root renamed,
-  replaced or redirected in the meantime fails closed without creating state
-  outside the task. The registered message is read through one bounded,
-  identity-checked reader, so a final symlink, special file, oversized file or
-  id/content mismatch is never treated as protocol content.
-- Delivery metadata is stored in `<task-root>/notifications/<message-id>.json`.
-  A successful submission, a refusal, a blocked target and an unknown outcome are
-  recorded distinctly.
-- Repeating `notify` after a recorded outcome reports `already_recorded` without
-  sending another prompt. An explicit `--retry` repeats the same message identity
-  up to 3 recorded attempts (`retry_limit` afterwards). A `submitting`
-  reservation (in flight, or crashed before its outcome was recorded) is reported
-  as `in_flight_unknown` and is never retried or reclaimed by age; an operator
-  must inspect the delivery evidence. Concurrent retries serialize on a
-  task-private lock: one reserves, the other is refused without a wakeup.
-- Spawn failure before a process exists is `failed` (nothing submitted).
-  `agent_blocked` is `blocked`; only the explicit recognized pre-submission
-  refusal set (`agent_not_found`) is `refused`; `timeout`/`agent_prompt_stalled`
-  are `unknown`. Any other error envelope — including an unrecognized code from a
-  future Herdr version — is `unknown` with the code preserved, because a parseable
-  error does not prove the command stopped before submitting. There is no
-  automatic resend.
+`notify` only forwards an **already registered** message pointer:
 
+```text
+COLLAB_MESSAGE task=<id> type=<type> message=<abs path> digest=sha256:<file digest>
+```
+
+No body, transcript, prompt or report text is included. It requires a task-local
+binding (`pappra/collab-binding/1`, `channel: "herdr"`, at most 16 participants)
+whose `task_id` and `task_root` match the record and which contains both the
+message sender and recipient, with one participant per agent id and per Herdr
+agent name. `native_session_id` may be `null` when the harness exposes no native
+session.
+
+Routing has two modes, neither of which authenticates the sender:
+
+- **current context (default):** requires the Herdr marker (`HERDR_ENV=1`) and a
+  nonempty inherited `HERDR_PANE_ID` before `herdr pane current --current`.
+  Missing context refuses with `herdr_caller_unverified` and a `--caller-pane`
+  hint; stale or inconsistent workspace/pane ids fail visibly. It never resolves
+  through focus.
+- **explicit task-bound (`--caller-pane <id>`):** uses
+  `herdr pane current --pane <id>` without changing the environment or using
+  focus. Stale inherited ids do not override it. The pane is a routing candidate,
+  not process proof.
+
+The selected caller pane must equal the sender binding pane. Both participants
+are then verified against live Herdr observations: exactly one agent per bound
+name, and the live pane, harness and cwd must match the binding. Sender and
+recipient native sessions are compared exactly when Herdr reports them, even
+when the binding leaves `native_session_id` null: for Pi (`kind: "path"`) only
+the final `_<session-id>` segment of the session file is the native identity, so
+a different session in an ancestor directory is a mismatch; other kinds are
+compared as reported ids; a missing session stays `native_session: "unknown"`
+rather than claiming a match. Process affiliation is **not established** by pane
+selection: recorded caller evidence says
+`process_affiliation: "not-established"`, and hosted or detached agents whose
+process tree differs from the pane are supported through the task-bound binding,
+not by ancestry claims.
+
+For ordinary Herdr targets the delivery is one `herdr agent prompt <name> <text>`;
+for a verified owned Pi SDK target it calls the owned controller's `deliver`
+operation instead after revalidating the recorded identity. In both cases the
+command runs without `--wait`, without shell interpolation, without pane
+creation, without focus changes, and never answers a blocked agent.
+
+The task namespace and the registered bytes are revalidated after awaited
+transport work and immediately before any delivery mutation or prompt: a root
+renamed, replaced or redirected in the meantime, a changed binding participant, a
+changed message digest, or an unproven succession route fails closed without
+creating state outside the task. The registered message is read through one
+bounded, identity-checked reader, so a final symlink, special file, oversized
+file or id/content mismatch is never treated as protocol content.
+
+Delivery metadata is stored in `<task-root>/notifications/<message-id>.json`
+(`pappra/collab-delivery/1`). A successful submission, a refusal, a blocked
+target and an unknown outcome are recorded distinctly. Repeating `notify` after a
+recorded outcome reports `already_recorded` without sending another prompt. An
+explicit `--retry` repeats the same message identity up to 3 recorded attempts
+(`retry_limit` afterwards). A `submitting` reservation — in flight, or crashed
+before its outcome was recorded — is reported as `in_flight_unknown` and is never
+retried or reclaimed by age; an operator must inspect the delivery evidence.
+Concurrent retries serialize on a task-private lock: one reserves, the other is
+refused without a wakeup, and a residual lock directory stays visible evidence.
+
+Outcome classification is conservative: a spawn failure before a process exists
+is `failed` (nothing submitted); `agent_blocked` is `blocked`; only the
+recognized pre-submission refusal set (`agent_not_found`) is `refused`;
+`timeout`/`agent_prompt_stalled` are `unknown`; and any other error envelope —
+including an unrecognized code from a future Herdr version — is `unknown` with
+the code preserved, because a parseable error does not prove the command stopped
+before submitting. There is no automatic resend.
 
 ## Native capability evidence
 
-`pappra collab capabilities derive --harness <pi|codex|claude> --assignment <abs assignment.json> --template <abs card.declared.json> [--execution <abs execution.json> | --live] [--session <abs pi-session.jsonl> | --events <abs events.jsonl>] [--json]`
-derives a runtime capability card from saved native evidence using the maintained
-Pi, Codex and Claude adapter semantics. It is read-only: deriving writes no file,
-launches no process, spends no model turn, authenticates nothing and dispatches
-nothing. Pi requires `--session`; Codex and Claude require `--events`; other host
-options, duplicate flags and unknown flags are rejected. Exit codes are `0`
-derived, `1` needs_input, `2` invalid request/configuration. JSON results use
+```sh
+pappra collab capabilities derive --harness <pi|codex|claude> \
+  --assignment <abs assignment.json> --template <abs card.declared.json> \
+  [--execution <abs execution.json> | --live] \
+  [--session <abs pi-session.jsonl> | --events <abs events.jsonl>] [--json]
+```
+
+`derive` produces a runtime capability card from saved native evidence using the
+maintained Pi, Codex and Claude adapter semantics. It is read-only: deriving
+writes no file, launches no process, spends no model turn, authenticates nothing
+and dispatches nothing. Pi requires `--session`; Codex and Claude require
+`--events`; duplicate, unknown or cross-host flags are rejected. Exit codes are
+`0` derived, `1` needs_input, `2` invalid request/configuration. JSON results use
 `pappra/collaboration-capabilities/1`.
 
-For an interactive Pi session, `--live` replaces `--execution` and derives a settled
-saved-session snapshot without a process-exit receipt. Pending tool results, a trailing
-user message or a later model change are refused.
+For an interactive Pi session, `--live` replaces `--execution` and derives a
+settled saved-session snapshot without a process-exit receipt. Pending tool
+results, a trailing user message or a later model change are refused, as is a
+turn that ended while a tool call was still outstanding.
 
-Configuration files are bounded at 1 MiB and each native evidence file at 16 MiB.
-All paths must be absolute; final symlinks, FIFOs and other special files are
-refused without blocking, with descriptor-level type and size checks and bounded
-reads. Diagnostics stay generic and never include evidence content.
+Configuration files are bounded at 1 MiB and each native evidence file at
+16 MiB. All paths must be absolute; final symlinks, FIFOs and other special
+files are refused without blocking, with descriptor-level type and size checks
+and bounded reads. Diagnostics stay generic and never include evidence content.
 
 Observed semantics are preserved rather than generalized:
 
@@ -176,10 +249,10 @@ Observed semantics are preserved rather than generalized:
   session's own last usable timestamp. Incomplete results and an indeterminate
   `toolUse` turn end are refused.
 - **Codex:** only explicitly mapped completed items promote tools
-  (`command_execution` → `shell`, `file_change` → `apply_patch`, `mcp_tool_call` →
-  `mcp`, `web_search` → `web_search`). `exec --json` does not report skill
-  invocation, so skills stay `unknown` and a required skill still blocks
-  preflight. Unknown row/item shapes fail closed.
+  (`command_execution` → `shell`, `file_change` → `apply_patch`,
+  `mcp_tool_call` → `mcp`, `web_search` → `web_search`). `exec --json` does not
+  report skill invocation, so skills stay `unknown` and a required skill still
+  blocks preflight. Unknown row/item shapes fail closed.
 - **Claude:** discovery/bootstrap executions may use only `Read` and `Skill`;
   successful call/result correlation promotes tools, and a skill is `verified`
   only when the injected skill base directory matches the fingerprinted source.
@@ -202,8 +275,32 @@ pappra collab preflight --assignment /abs/assignment.json \
   --capabilities /abs/task/card.runtime.json --json
 ```
 
-
 Deriving alone neither persists the card nor dispatches work.
+
+## Readiness preflight
+
+```sh
+pappra collab preflight --assignment <abs assignment.json> \
+  --capabilities <abs card.json> [--max-age-minutes <n>] [--json]
+```
+
+`preflight` runs the existing readiness primitive without launching, claiming,
+mutating a task record, refreshing evidence or printing file contents. Exit codes
+are `0` ready, `1` needs_input, `2` invalid request/JSON/contract/card; `ok` is
+true only for `ready`. The default freshness window is 30 minutes; an explicit
+positive finite `--max-age-minutes` overrides it. JSON results use
+`pappra/collaboration-preflight/1` and preserve reported readiness, task /
+assignment / attempt / checked time, errors, blockers, warnings and limits.
+
+A declared template is useful for planning only: it blocks with
+`runtime_capabilities_unconfirmed`. Do not edit `evidence_level` or otherwise
+relabel a declared template as runtime — derive a runtime card from native
+evidence with `pappra collab capabilities derive`, or pass a separately obtained
+card. `ready` reports only current reported capability/evidence readiness; it
+does not authenticate self-reported facts, authorize dispatch, acquire
+resources, verify ownership epochs, launch, prove completion or replace launch
+admission. Advisory warnings (for example a write resource whose ownership is
+not enforced) and limits stay visible.
 
 ## Task state and resource controls
 
@@ -236,12 +333,18 @@ pappra collab resource release --task-root /abs/tasks/<task-id> \
 ```
 
 Requests use `pappra/collaboration-resource-request/1`; the action must match the
-command, and the holder has explicit nonempty agent/session identity. A claim
-uses the existing canonical resource kinds and access semantics. The holder
-must match the current coordinator, or an `assigned`, `accepted`, or `running`
-attempt's assignee with explicit `subtask_id` and `attempt`. A frozen dispatch
-refuses new worker claims. The participant check runs again inside the claim
-transaction; a plan does not reserve that authority:
+command, and the holder carries explicit nonempty agent/session identity. A claim
+names at most 256 resources with `access: "read" | "write"` and uses the
+existing canonical resource kinds: paths (`scope: "file" | "tree"`), git index,
+git HEAD, shared git common dir, build cache, file, port and opaque/process
+values. A tree-scoped path claim derives the worktree's git index and HEAD
+resources, and the shared git common dir only with `include_shared_git: true`;
+expansion keeps one claim per canonical key.
+
+The holder must match the current coordinator, or an `assigned`, `accepted`, or
+`running` attempt's assignee with explicit `subtask_id` and `attempt`. A frozen
+dispatch refuses new worker claims. The participant check runs again inside the
+claim transaction; a plan does not reserve that authority:
 
 ```json
 {
@@ -257,17 +360,16 @@ transaction; a plan does not reserve that authority:
 ```
 
 A release names one `claim_id` and the same holder; the low-level release API
-also requires an explicit holder. There is no unowned or mass release.
-These checks enforce recorded protocol roles, not caller authentication: this
-same-user CLI has no trusted caller identity and cannot distinguish an actor
-that deliberately copies another known agent/session identity. A duplicate
-self-declared actor field would not establish that identity.
-Request JSON is bounded at 1 MiB and read through the special-file-safe
-loader. Without `--apply`, a plan validates the strict request, task namespace and,
-for a claim, current holder participation: it creates no reservation, lock, transaction or claim. With `--apply`,
-the namespace is revalidated and exactly the existing `claimResources` or
-`releaseClaim` primitive runs. This is cooperative record mutation, not OS
-fencing or proof that another process stopped.
+also requires an explicit holder. There is no unowned or mass release. These
+checks enforce recorded protocol roles, not caller authentication: this same-user
+CLI has no trusted caller identity and cannot distinguish an actor that
+deliberately copies another known agent/session identity. Request JSON is bounded
+at 1 MiB and read through the special-file-safe loader. Without `--apply`, a plan
+validates the strict request, task namespace and, for a claim, current holder
+participation: it creates no reservation, lock, transaction or claim. With
+`--apply`, the namespace is revalidated and exactly the existing
+`claimResources` or `releaseClaim` primitive runs. This is cooperative record
+mutation, not OS fencing or proof that another process stopped.
 
 The namespace proof reuses the message task validator and additionally refuses
 redirected or special nested state before reading/mutating it: the write lock
@@ -282,18 +384,18 @@ counts are retained separately and `omitted`/`truncated` reflect actual omitted
 rows.
 
 Exit codes are 0 for a successful read/plan/apply, 1 for state conflict,
-uncertainty or a core refusal, and 2 for invalid request/options. Tests and
-examples use fresh fixture domains; they never release or alter live
-collaboration claims.
+uncertainty or a core refusal, and 2 for invalid request/options.
 
 ## Recorded ownership handoff
 
 ```sh
 pappra collab handoff inventory --task-root /abs/tasks/<task-id> \
-  [--subtask-id <id>] [--attempt <positive>] [--json]
-
+  [--subtask-id <id>] [--attempt <positive integer>] [--json]
 pappra collab handoff check --task-root /abs/tasks/<task-id> [--json]
-
+pappra collab handoff check-mid-cohort --task-root /abs/tasks/<task-id> [--json]
+pappra collab handoff successor --request <abs successor.json> [--apply] [--json]
+pappra collab handoff ack --task-root <abs> --request <successor request id> \
+  [--apply] [--json]
 pappra collab handoff <begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> \
   --task-root /abs/tasks/<task-id> --request /abs/request.json [--apply] [--json]
 ```
@@ -301,22 +403,28 @@ pappra collab handoff <begin|stopped|rebind|transfer|confirm|complete|abort|rele
 Handoff requests use `pappra/collaboration-handoff-request/1`; the action must
 match the command. Every mutation carries an explicit actor identifier, a
 positive current `owner_epoch` and an optional `expect_revision` for the existing
-transaction revision check. These editable fields are protocol inputs, not
-caller authentication. Request JSON is bounded at 1 MiB and read through the
-shared special-file-safe loader. No clock override or inline confirmation
-envelope is accepted.
+transaction revision check. These editable fields are protocol inputs, not caller
+authentication. Request JSON is bounded at 1 MiB and read through the shared
+special-file-safe loader. No clock override or inline confirmation envelope is
+accepted.
 
 A writer `begin` names `handoff_id`, `kind`, exact `from`/`to` identities,
 resource claim ids and the writer subtask/attempt. A coordinator `begin` uses
 `kind: "coordinator"` and moves coordinator ownership. Later actions map directly
 to the maintained primitives:
 
-- `stopped`: explicit observation and evidence ref; unknown stop refuses.
-- `rebind`: explicit receiver identity and evidence ref; refused after confirmation.
-- `transfer`: bounded inventory arrays recorded as data, not approval authority.
+- `stopped`: explicit observation and evidence ref; an unconfirmed stop refuses
+  and opens uncertainty.
+- `rebind`: explicit receiver identity and evidence ref; refused after
+  confirmation, because one party's acknowledgement must not authorize a transfer
+  to another party.
+- `transfer`: bounded inventory arrays recorded as data, not approval authority,
+  plus an ownership snapshot (claim id, holder, resource epoch) that completion
+  must match exactly.
 - `confirm`: only a registered `confirmation_message_id`.
-- `complete`, `abort`: existing completion/abort behavior.
-- `release-dispatch`: explicit current epoch; completion never releases the freeze automatically.
+- `complete`, `abort`: existing completion/abort behaviour.
+- `release-dispatch`: explicit current epoch; completion never releases the
+  freeze automatically.
 
 Plan without `--apply` validates the request and task namespace only; it writes
 nothing, acquires no lock and makes no ownership reservation. Apply revalidates
@@ -331,11 +439,11 @@ message must be safely registered and present in the authoritative record as an
 accepted/recorded `ACK` or `HANDOFF` entry. It must match the stored content
 digest, come from the receiver identity to the current coordinator, carry the
 current owner epoch, and explicitly correlate via `body.handoff_id` or
-`reply_to` to this handoff without a conflicting body id. A `HANDOFF` confirmation
-must use a non-request phase; `confirmation` is the documented phase. Missing,
-unregistered, rejected/unapplied, wrong-recipient/session, wrong-epoch, replayed
-or unrelated messages cannot authorize a transfer; symlink and FIFO
-registrations are refused.
+`reply_to` to this handoff without a conflicting body id. A `HANDOFF`
+confirmation must use a non-request phase; `confirmation` is the documented
+phase. Missing, unregistered, rejected/unapplied, wrong-recipient/session,
+wrong-epoch, replayed or unrelated messages cannot authorize a transfer; symlink
+and FIFO registrations are refused.
 
 Writer completion raises the affected claim resource epochs and transfers the
 recorded claim holder; coordinator completion raises `owner_epoch`, changes the
@@ -355,181 +463,113 @@ agent.
 is the task at a cohort boundary where the coordinator can change safely? A
 coordinator handoff raises `owner_epoch` and nothing re-stamps attempts or the
 sealed work plan afterwards, so a successor cannot accept work registered under
-the old epoch (`acceptance_stale`, `plan_epoch_stale`). From the task record it
-blocks on: `attempt_in_flight`, `attempt_needs_input`, `source_holds_claims` (the
-outgoing coordinator itself holds a claim; a protocol-only handoff does not stop
-that session), `claims_unreleased` (other holders), `uncertainty_open`,
-`handoff_open` and `no_coordinator`. An unresolved uncertainty on an attempt that
-already ended is a warning, not a blocker.
+the old epoch. From the task record it blocks on: `attempt_in_flight`,
+`attempt_needs_input`, `source_holds_claims` (the outgoing coordinator itself
+holds a claim; a protocol-only handoff does not stop that session),
+`claims_unreleased` (other holders), `uncertainty_open`, `handoff_open` and
+`no_coordinator`. An unresolved uncertainty on an attempt that already ended is a
+warning, not a blocker.
 
 A task is workflow-driven when a sealed `workflow/work-plan.json` or
 `workflow/manifest.json` exists, judged without following links, so a missing or
-redirected artifact never downgrades the answer. For such a task the check reuses
-the dispatch evaluator: the sealed plan, the record and the registered decision
-envelopes must show every node as `accepted`, otherwise `cohort_node_not_accepted`
-(a deferred reviewer that never started is such a node). An unreadable, invalid or
-epoch-stale plan, or a registered decision without a readable envelope, is a
-blocker with the evaluator's own code (`work_plan_missing`, `work_plan_invalid`,
-`decision_envelope_missing`, ...). Acceptance is never inferred from a message id.
+redirected artifact never downgrades the answer. For such a task the check
+reuses the dispatch evaluator: the sealed plan, the record and the registered
+decision envelopes must show every node as `accepted`, otherwise
+`cohort_node_not_accepted` (a deferred reviewer that never started is such a
+node). An unreadable, invalid or refused plan evaluation, or a registered
+decision without a readable envelope, is a blocker with the evaluator's own code
+(`work_plan_missing`, `work_plan_invalid`, `work_plan_evaluation_refused`,
+`decision_envelope_missing`). Acceptance is never inferred from a message id.
 
-The result always states `fence: protocol_fenced, process_quiescence: unavailable`:
-a passing check means the stored state allows the handoff, never that the outgoing
-session has stopped. When ready it lists the ordered `begin`, `transfer`, `confirm`,
-`complete`, `release-dispatch` steps, in human output as well as JSON. Exit code 0
-means ready and 1 means blocked; an unreadable task reports `status: unreadable`.
+The result always states `fence: protocol_fenced, process_quiescence:
+unavailable`: a passing check means the stored state allows the handoff, never
+that the outgoing session has stopped. When ready it lists the ordered `begin`,
+`transfer`, `confirm`, `complete`, `release-dispatch` steps, in human output as
+well as JSON. Exit code 0 means ready and 1 means blocked; an unreadable task
+reports `status: unreadable`.
 
-Exit codes are 0 for a successful read/plan/apply, 1 for state conflict,
-uncertainty or a core refusal, and 2 for invalid request/options. Tests and
-examples use fresh fixture domains; they never release or alter live
-collaboration claims.
+### Mid-cohort handoff
 
-## Recorded ownership handoff
-
-```sh
-pappra collab handoff inventory --task-root /abs/tasks/<task-id> \
-  [--subtask-id <id>] [--attempt <positive>] [--json]
-
-pappra collab handoff check --task-root /abs/tasks/<task-id> [--json]
-
-pappra collab handoff <begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> \
-  --task-root /abs/tasks/<task-id> --request /abs/request.json [--apply] [--json]
-```
-
-Handoff requests use `pappra/collaboration-handoff-request/1`; the action must
-match the command. Every mutation carries an explicit actor identifier, a
-positive current `owner_epoch` and an optional `expect_revision` for the existing
-transaction revision check. These editable fields are protocol inputs, not
-caller authentication. Request JSON is bounded at 1 MiB and read through the
-shared special-file-safe loader. No clock override or inline confirmation
-envelope is accepted.
-
-A writer `begin` names `handoff_id`, `kind`, exact `from`/`to` identities,
-resource claim ids and the writer subtask/attempt. A coordinator `begin` uses
-`kind: "coordinator"` and moves coordinator ownership. Later actions map directly
-to the maintained primitives:
-
-- `stopped`: explicit observation and evidence ref; unknown stop refuses.
-- `rebind`: explicit receiver identity and evidence ref; refused after confirmation.
-- `transfer`: bounded inventory arrays recorded as data, not approval authority.
-- `confirm`: only a registered `confirmation_message_id`.
-- `complete`, `abort`: existing completion/abort behavior.
-- `release-dispatch`: explicit current epoch; completion never releases the freeze automatically.
-
-Plan without `--apply` validates the request and task namespace only; it writes
-nothing, acquires no lock and makes no ownership reservation. Apply revalidates
-the namespace/confirmation evidence, checks the request epoch inside the guarded
-transaction before the primitive, and uses the existing transaction/ledger path
-exactly once. A primitive refusal leaves the authoritative record unchanged; an
-in-memory partial mutation is never committed accidentally. This is cooperative
-record ownership transfer, not OS fencing, stop proof or a launch mechanism.
-
-Receiver confirmation is stricter than the core message note. The referenced
-message must be safely registered and present in the authoritative record as an
-accepted/recorded `ACK` or `HANDOFF` entry. It must match the stored content
-digest, come from the receiver identity to the current coordinator, carry the
-current owner epoch, and explicitly correlate via `body.handoff_id` or
-`reply_to` to this handoff without a conflicting body id. A `HANDOFF` confirmation
-must use a non-request phase; `confirmation` is the documented phase. Missing,
-unregistered, rejected/unapplied, wrong-recipient/session, wrong-epoch, replayed
-or unrelated messages cannot authorize a transfer; symlink and FIFO
-registrations are refused.
-
-Writer completion raises the affected claim resource epochs and transfers the
-recorded claim holder; coordinator completion raises `owner_epoch`, changes the
-coordinator and keeps `dispatch_frozen` until an explicit current-epoch
-`release-dispatch`. Existing overlapping-handoff, old-writer-stop,
-ownership-drift, holder, stale-epoch and rebound-receiver refusals remain in
-force.
-
-`handoff inventory` is stored-state-only and read-only. It reports bounded
-summaries with full counts and actual omission for inflight/closed attempts,
-pending approvals, uncertainty, resources, results (output counts, not payloads)
-and handoffs. It never prints message bodies, stop artifact bodies or arbitrary
-inventory payloads, and never queries pane idle, kills a process or launches an
-agent.
-
-`handoff check` is also stored-state-only and read-only. It answers one question:
-is the task at a cohort boundary where the coordinator can change safely? A
-coordinator handoff raises `owner_epoch` and nothing re-stamps attempts or the
-sealed work plan afterwards, so a successor cannot accept work registered under
-the old epoch (`acceptance_stale`, `plan_epoch_stale`). The check therefore blocks
-on: `attempt_in_flight`, `attempt_needs_input`, `report_unaccepted` (only for
-tasks that have a sealed workflow work plan), `assignment_not_started` (a
-sealed assignment, such as a deferred reviewer, has no attempt yet),
-`workflow_manifest_unreadable` (the cohort cannot be known, so it is not treated
-as finished), `source_holds_claims` (the outgoing
-coordinator itself holds a claim; a protocol-only handoff does not stop that
-session), `claims_unreleased` (other holders), `uncertainty_open`, `handoff_open`
-and `no_coordinator`. An unresolved uncertainty on an attempt that already ended
-is a warning, not a blocker. The result always states
-`fence: protocol_fenced, process_quiescence: unavailable`: a passing check means
-the stored state allows the handoff, never that the outgoing session has stopped.
-When ready it lists the ordered `begin`, `transfer`, `confirm`, `complete`,
-`release-dispatch` steps. Exit code 0 means ready and 1 means blocked.
+`check-mid-cohort` answers a different question: can the coordinator change
+safely **now**, with transferable attempts still in flight? It keeps the boundary
+blockers and relaxes only what a successor can inherit: attempts that are
+`accepted` or `running` with native evidence bound (an attempt whose only
+evidence is an ACK keeps blocking, because an acknowledgement does not prove the
+native run started), attempts that already ended, and the claims those attempts
+hold under their own subtask and attempt. Attempts that were only `assigned`,
+that wait for input, or whose `registered_not_started` uncertainty is unresolved
+keep blocking, and every relaxed item is reported with its reason. For each
+acknowledged-only attempt the human output lists reconcile guidance: the
+uncertainty id, the applied ACK id to cite, the request fields to fill and the
+exact command.
 
 ### Coordinator successor launch and acknowledgement
 
-A coordinator handoff to a fresh Claude Code or Codex session of the same harness is driven by
-two more actions. The protocol fence is unchanged: nothing stops or observes the outgoing
-session, and the old coordinator is refused by the owner epoch after `complete`.
+A coordinator handoff to a fresh Claude Code or Codex session of the same harness
+is driven by two more actions, `successor` and `ack`. The protocol fence is
+unchanged: nothing stops or observes the outgoing session, and the old
+coordinator is refused by the owner epoch after `complete`.
 
-```sh
-pappra collab handoff successor --request <abs successor.json> [--apply] [--json]
-pappra collab handoff ack --task-root <abs> --request <successor request id> [--apply] [--json]
-```
+`successor` takes a `pappra/collab-successor-request/1` document: a durable
+`request_id`, the `task_root`, an existing coordinator `handoff_id` in `requested`
+state whose receiver agent id is the planned Herdr `agent_name`, the `harness`
+(it must equal the coordinator's), the coordinator's `cwd` and Herdr
+`caller_pane`, an optional split `direction` (`right` or `down`), an optional
+`mode` (`boundary` by default, `mid_cohort`), and a `checkpoint` file with its
+pinned sha256 digest (at most 24 KiB). Plan is read-only. It refuses unless the
+matching handoff check is ready (the handoff being driven does not block itself;
+`mid_cohort` requires `check-mid-cohort` instead), the pane's cwd matches, Herdr's
+session for the pane (when it reports one) is the recorded coordinator, the agent
+name is free, and the checkpoint matches its digest.
 
-`successor` takes a `pappra/collab-successor-request/1` document: a durable `request_id`, the
-`task_root`, an existing coordinator `handoff_id` in `requested` state whose receiver agent id is
-the planned Herdr `agent_name`, the `harness` (it must equal the coordinator's), the coordinator's
-`cwd` and Herdr `caller_pane`, and a `checkpoint` file with its pinned sha256 digest (at most
-24 KiB). Plan is read-only. It refuses unless `collab handoff check` is ready (the handoff being
-driven does not block itself; with `"mode": "mid_cohort"` it requires `collab handoff check-mid-cohort`
-instead, for a handoff made while transferable attempts are in flight), the pane's cwd matches, Herdr's session for the pane (when it
-reports one) is the recorded coordinator, the agent name is free, and the checkpoint matches its
-digest.
+Apply journals every native effect first in `<task_root>/successor/` (not in
+`task.json`): the request, the intent with the exact seed, and one step file per
+effect (`split`, `start`, `prompt`). A recorded outcome is returned as is; a step
+without an outcome is `reconcile_required` and nothing is repeated. After a
+definite failure use a new `request_id`. It then splits a sibling pane without
+changing focus, starts the agent, waits until Herdr reports the session
+interactive (a trust or approval dialog is reported and never answered or typed
+over), and delivers the seed with `herdr agent prompt`. The seed is a fixed
+template that only substitutes the task id, handoff id and one command; it is
+never passed as an argv because Herdr rejects newlines and rewrites single quotes
+there. The launcher confirms the turn started and otherwise warns without
+re-sending.
 
-Apply journals every native effect first in `<task_root>/successor/` (not in `task.json`): the
-request, the intent with the exact seed, and one step file per effect (`split`, `start`,
-`prompt`). A recorded outcome is returned as is; a step without an outcome is
-`reconcile_required` and nothing is repeated. After a definite failure use a new `request_id`.
-It then splits a sibling pane without changing focus, starts the agent, **waits until Herdr
-reports the session interactive** (a trust or approval dialog is reported and never answered or
-typed over), and delivers the seed with `herdr agent prompt`. The seed is a fixed template that
-only substitutes the task id, handoff id and one command; it is never passed as an argv because
-Herdr rejects newlines and rewrites single quotes there. The launcher confirms the turn started
-and otherwise warns without re-sending.
+Identity comes from observed evidence and is not authentication. Claude: the
+launcher pre-assigns `--session-id` (derived from the request id) and requires
+Herdr to report exactly that id before any seed is typed. Codex: exactly one
+thread loaded in the shared app-server daemon whose `cwd` equals the pane's and
+whose `preview` equals the delivered seed, created at or after the launch second;
+none or several is `identity_unavailable` and the handoff is left untouched. On
+success the launcher rebinds the observed identity into the handoff and records
+the transfer through the existing `rebind` and `transfer` actions; both are
+idempotent, so rerunning a request whose outcome is recorded finishes a bind that
+a crash interrupted, without launching again. A recorded `identity_unavailable`
+is reported as a failure (exit 1): the agent it started may still be running,
+Pappra never stops it, so close that pane and use a new `request_id`.
 
-Identity comes from observed evidence and is not authentication. Claude: the launcher pre-assigns
-`--session-id` (derived from the request id) and requires Herdr to report exactly that id
-before any seed is typed. Codex: exactly one thread loaded in the shared app-server daemon whose
-`cwd` equals the pane's and whose `preview` equals the delivered seed, created at or after the
-launch second;
-none or several is `identity_unavailable` and the handoff is left untouched. On success the
-launcher rebinds the observed identity into the handoff and records the transfer through the
-existing `rebind` and `transfer` actions; both are idempotent, so rerunning a request whose
-outcome is recorded finishes a bind that a crash interrupted, without launching again. A recorded
-`identity_unavailable` is reported as a failure (exit 1): the agent it started may still be
-running, Pappra never stops it, so close that pane and use a new `request_id`.
+`ack` is the **only** command the successor is asked to run. It verifies that the
+caller is the recorded successor, checks the checkpoint digest **before**
+registering anything, registers one `HANDOFF` confirmation message
+(`handoff-ack-<request id>`) from the recorded identity to the current
+coordinator, writes an ack marker, and prints the digest-pinned checkpoint as the
+briefing. The caller is the pane named by `HERDR_PANE_ID` for Claude. Codex runs
+tool commands in the shared daemon, whose `HERDR_PANE_ID` belongs to the daemon
+and says nothing about the session, so a Codex successor is bound by
+`CODEX_THREAD_ID`, which must equal the thread the launcher recorded. A wrong
+caller is refused and registers nothing. The coordinator then explicitly runs
+`confirm` (confirmation message `handoff-ack-<request id>`) and `complete`; the
+successor runs `release-dispatch` at the new epoch. Neither action completes the
+handoff by itself.
 
-`ack` is the **only** command the successor is asked to run. It verifies that the caller is the
-recorded successor, checks the checkpoint digest **before** registering anything, registers one
-`HANDOFF` confirmation message (`handoff-ack-<request id>`) from the recorded identity to the
-current coordinator, writes an ack marker, and prints the digest-pinned checkpoint as the
-briefing. The caller is the pane named by `HERDR_PANE_ID` for Claude. Codex runs tool commands in
-the shared daemon, whose `HERDR_PANE_ID` belongs to the daemon and says nothing about the
-session (observed: a different workspace), so a Codex successor is bound by `CODEX_THREAD_ID`,
-which must equal the thread the launcher recorded. A wrong caller is refused and registers
-nothing. The coordinator then explicitly runs `confirm` (confirmation message
-`handoff-ack-<request id>`) and `complete`; the successor runs `release-dispatch` at the new
-epoch. Neither action completes the handoff by itself.
-
-Limits: the outgoing session is neither stopped nor observed; for a Codex coordinator the
-launch precondition only checks the pane's cwd (Herdr reports no session for it) and warns, and
-the acknowledgement proves the command ran in the recorded pane or thread, not that the recorded
-session is still alive; a launched session runs under the
-user's own permission mode, so its one command may raise an approval prompt in its visible pane
-that only the user answers; the checkpoint text is coordinator-authored and digest-pinned but is
-printed to the successor model as briefing, so it must not contain instructions you would not
+Limits: the outgoing session is neither stopped nor observed; for a Codex
+coordinator the launch precondition only checks the pane's cwd (Herdr reports no
+session for it) and warns, and the acknowledgement proves the command ran in the
+recorded pane or thread, not that the recorded session is still alive; a launched
+session runs under the user's own permission mode, so its one command may raise
+an approval prompt in its visible pane that only the user answers; the
+checkpoint text is coordinator-authored and digest-pinned but is printed to the
+successor model as briefing, so it must not contain instructions you would not
 give it.
 
 Exit codes are 0 for a successful read/plan/apply, 1 for a core refusal,
@@ -540,14 +580,16 @@ request/options.
 
 ```sh
 pappra collab recovery inspect --task-root /abs/tasks/<task-id> [--json]
-pappra collab recovery reconcile --task-root /abs/tasks/<task-id> --request /abs/request.json [--apply] [--json]
-pappra collab recovery lock-break --task-root /abs/tasks/<task-id> --request /abs/request.json [--apply] [--json]
+pappra collab recovery reconcile --task-root /abs/tasks/<task-id> \
+  --request /abs/request.json [--apply] [--json]
+pappra collab recovery lock-break --task-root /abs/tasks/<task-id> \
+  --request /abs/request.json [--apply] [--json]
 ```
 
 Results use `pappra/collaboration-recovery/1`; mutations use the strict
-`pappra/collaboration-recovery-request/1` schema. Request JSON is bounded at 1 MiB
-through the shared special-file-safe loader; no public clock override or raw
-evidence body is accepted.
+`pappra/collaboration-recovery-request/1` schema. Request JSON is bounded at
+1 MiB through the shared special-file-safe loader; no public clock override or
+raw evidence body is accepted.
 
 `inspect` is read-only. It reports task/revision/current coordinator epoch,
 bounded open/resolved uncertainty summaries with full counts and omission, the
@@ -565,12 +607,12 @@ the uncertainty entry's exact subtask/attempt. Resolution and transition run in
 one guarded transaction: an invalid/denied transition, missing attempt context or
 approval boundary refuses the entire operation, so the resolution is not
 committed first. Resolution is the caller's recorded conclusion, not a Pappra
-native query or proof. It does not auto-release claims, clear `cancel_pending` or
-invent stop/completion evidence.
-An unexpected reconcile transaction exception is reported conservatively as
-`reconcile_uncertain`: the record commit may already have happened even if ledger
-evidence failed. Inspect the task record and ledger before any explicit retry; no
-automatic rollback, retry or second journal is created.
+native query or proof. It does not auto-release claims, clear `cancel_pending`
+or invent stop/completion evidence. An unexpected reconcile transaction exception
+is reported conservatively as `reconcile_uncertain`: the record commit may
+already have happened even if ledger evidence failed. Inspect the task record and
+ledger before any explicit retry; no automatic rollback, retry or second journal
+is created.
 
 `lock-break` requires explicit actor, current epoch, nonempty reason,
 `confirm_holder_stopped: true` and the exact `expected_lock_fingerprint` from
@@ -602,7 +644,7 @@ pappra collab binding unbind --task-id <alias> [--root /abs/workspace] [--apply]
 resolution; without it the current cwd is used. There is no home scan and an
 incomplete `.pappra` marker never falls back to an outer workspace. The alias is
 the collaboration 128-character safe segment rule and may differ from the
-record’s protocol `task_id`.
+record's protocol `task_id`.
 
 The index is workspace-local
 `<workspace>/.pappra/local/collab-bindings.json`, schema
@@ -661,6 +703,7 @@ not prove a native execution is running, stopped or accepted. `list`/`resolve`/
 plan are read-only. Exit 0 for a clean read/plan/usable/unbound/none result, 1
 for unusable targets, conflict, ambiguity or incomplete discovery, and 2 for
 invalid workspace/options or corrupt metadata.
+
 Every action emits one versioned JSON result
 (`pappra/collaboration-binding-result/1`) with `--json`; human output is a
 summary of the same fields. Examples, run from an unrelated directory with an
@@ -691,54 +734,6 @@ Without `--root`, the caller's nearest registered workspace is used; a caller
 outside any workspace fails with `workspace_unavailable` (exit 2) instead of
 scanning home or an outer registry.
 
-## Readiness preflight
-
-`pappra collab preflight --assignment <abs assignment.json> --capabilities <abs card.json> [--max-age-minutes <n>] [--json]`
-runs the existing `preflight` primitive without launching, claiming, mutating a
-task record, refreshing evidence or printing file contents. Exit codes are
-`0` ready, `1` needs_input, `2` invalid request/JSON/contract/card; `ok` is true
-only for `ready`. The default freshness window is 30 minutes; an explicit
-positive finite `--max-age-minutes` overrides it. JSON results use
-`pappra/collaboration-preflight/1` and preserve reported readiness, task /
-assignment / attempt / checked time, errors, blockers, warnings and limits.
-
-Walkthrough before a dispatch:
-
-```sh
-# A card observed from a real receiving session (runtime evidence).
-pappra collab preflight --assignment /abs/assignment.json \
-  --capabilities /abs/card.runtime.json --json
-
-# A declared template is useful for planning only:
-pappra collab preflight --assignment /abs/assignment.json \
-  --capabilities /abs/card.declared.json --json
-# -> needs_input, blocker runtime_capabilities_unconfirmed
-```
-
-Do not edit `evidence_level` or otherwise relabel a declared template as runtime.
-Derive a runtime card from native evidence with `pappra collab capabilities
-derive`, or pass a separately obtained card. `ready` reports only
-current reported capability/evidence readiness — it does not authenticate
-self-reported facts, authorize dispatch, acquire resources, verify ownership
-epochs, launch, prove completion or replace launch admission. Advisory warnings
-(for example a write resource whose ownership is not enforced) and limits stay
-visible.
-
-## Protocol compatibility
-
-No task-state authority was added.
-
-- Envelope, registration, dedupe, ledger, epoch, freeze, approval, cancellation
-  and stale-report rules are the existing ones.
-- `ASK` previously existed in the envelope vocabulary but had no apply branch in
-  the legacy or current implementation, so it registered and then failed as
-  `unsupported_message_type`. C0 adds an evidence-only branch: the message is
-  recorded with `state: "recorded"` and changes no attempt state. Clarification
-  blocking remains `BLOCK(kind=clarification)`; a correlated `ANSWER` still moves
-  that attempt back to `running`; approval answers are still refused.
-- Collaboration task ids keep the 128-character wire rule; this change does not
-  touch continuity/task-pin identifiers.
-
 ## Limits
 
 - No polling, timers, sequential status inspection, or blocking `--wait`.
@@ -751,65 +746,7 @@ No task-state authority was added.
 - Pane selection is task-bound routing, not sender authentication or process
   affiliation; hosted agents (for example Codex under a launch daemon) are
   supported, and no ancestry claim is required or made.
-
-## Tests
-
-`tests/collab/messages.test.ts` covers plan/no-write, persistence and dedupe,
-unsafe ids, record/task mismatch, redirected state, ASK evidence-only behaviour,
-clarification/approval/stale-report boundaries, binding and live-metadata
-mismatches, one-prompt delivery, duplicate/retry bounds, blocked/unknown/
-unavailable outcomes, and crashed-reservation handling. Repair round 1 adds
-regressions for a symlinked `tasks` parent, a registered-message symlink, a task
-redirect during awaited transport work, exact Pi session identity, an explicit
-recipient session with a null binding session, concurrent retries, caller
-resolution/stale caller IDs, and ambiguous post-spawn transport outcomes.
-C1 adds regressions for missing inherited pane context (no live or focus
-resolution), stale-context recovery hints, explicit sender-pane routing with an
-unknown session, foreign-pane refusal, missing/mismatched sender binding, live
-sender name/pane/harness/cwd/session mismatches, null sender binding sessions,
-and plan-only no-query behavior. CLI coverage includes strict `--caller-pane`
-validation and notify-only usage.
-`tests/collab/preflight.test.ts` and `preflight-cli.test.ts` cover ready results
-with advisory warnings/limits, declared and required-capability blockers,
-freshness overrides, changed inputs/evidence, identity/schema/JSON errors,
-unsafe file kinds, invalid options, no-write immutability, and the installed CLI
-from an unrelated cwd with absolute inputs.
-`tests/collab/capabilities.test.ts` and `capabilities-cli.test.ts` cover the three
-maintained adapters: positive derivation and preflight integration, identity and
-cwd mismatches, changed skills, failed/incomplete/unmatched calls, unsupported
-stream rows, native-time freshness, non-promotion of unknown evidence, absent
-transcript/payload output, no file mutation, FIFO/symlink/oversize refusal,
-strict flag validation and the installed CLI from an unrelated cwd.
-`tests/collab/task-state-cli.test.ts` and `task-resources-cli.test.ts` cover
-read-only show/doctor/epoch projections with no side effects, bounded collection
-counts, plan/apply separation, cross-task conflict, holder and cancel-pending
-release boundaries, unreadable-domain uncertainty, nested lock/transaction/
-ledger/domain-lock and neighboring-record redirects, parallel CLI claims,
-worktree Git resources with explicit shared-Git opt-in, strict/oversized/FIFO
-inputs, and installed commands from an unrelated cwd using fresh fixture domains.
-`tests/collab/task-handoff-cli.test.ts` covers installed writer and coordinator
-sequences, plan/read-only effects, unknown stop refusal, accepted/recorded
-confirmation correlation and rejection cases, symlink/FIFO confirmation files,
-rebind-after-confirmation, overlapping handoffs, stale epoch/revision, claim
-release drift, freeze retention/current-epoch release, bounded inventory, nested
-redirects, strict/oversized/FIFO requests and separate-process competing begins,
-all on fresh fixture domains.
-`tests/collab/task-recovery-cli.test.ts` covers read-only inspect with bounded
-uncertainty and lock fingerprints, explicit resolution without implicit state,
-atomic legal/illegal transition and missing-context refusal, approval and
-cancel-pending boundaries, stale epoch/revision, lock archive/break-record
-retention, changed and absent locks, oversized snapshots, strict/oversized/FIFO
-requests, and separate-process lock-break contention on fresh fixture domains.
-Repair regressions additionally assert human plan wording/no-write behavior and
-deterministic late-ledger/early-rename transaction faults classified as
-`reconcile_uncertain` with committed/uncommitted record evidence.
-`tests/collab/bindings-cli.test.ts` covers read-only list/resolve/plan, explicit
-bind and tombstone unbind/rebind, protocol-ID/alias differences, normal
-revision/inode replacement usability, reinitialized/missing target refusal,
-corrupt/symlink/oversize index preservation, explicit-root unique/ambiguous/
-incomplete discovery and canonical dedupe, own-property aliases, unsafe
-workspace/private paths, strict options, and concurrent independent mutations.
-`tests/collab/messages-cli.test.ts` runs the built CLI for the installed-user
-path, including plan-only send, `herdr_unavailable`, argument rejection, and help
-text. The transport seam keeps all of this deterministic; no model, pane or real
-Herdr prompt is exercised by the suite.
+- Envelope identities and request actor/epoch fields are cooperative protocol
+  inputs, never authenticated caller credentials.
+- Collaboration task ids keep the 128-character wire rule; continuity and
+  task-pin identifiers are unaffected.
