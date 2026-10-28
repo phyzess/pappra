@@ -1,10 +1,7 @@
 # Mid-cohort coordinator succession (specification)
 
-Status: specification only, revision 4. No code implements it, and no code may until this
-document has been approved. Revisions 1 and 2 were each independently reviewed against the real
-code and found not implementable as written; revision 3 was found implementable with four
-corrections, which this revision makes (sections 15 to 17). It is phase 4
-of [cross-host coordinator continuity](cross-host-coordinator-continuity.md).
+Status: implemented in steps 4a to 4e (commits `cdd182f`, `cb750f9`, `6ce1257`, `da34206`, `23f1476`, with the
+follow-ups in section 9). It is phase 4 of [cross-host coordinator continuity](cross-host-coordinator-continuity.md).
 
 ## 1. Problem
 
@@ -195,7 +192,7 @@ The real role table (`messages.ts:34,44-93,247-291,329-561`):
 | STATUS | none | no | either |
 | STATUS_QUERY | none | no | either |
 
-Consequences, which differ from revision 1:
+Consequences:
 
 - Only `CANCELLED` is a participant type refused by the epoch gate today. The new participant
   rule applies to **`CANCELLED` only**: a message whose `owner_epoch` is not current is accepted
@@ -209,9 +206,8 @@ Consequences, which differ from revision 1:
   copies are refused.
 - **`ASK` is neither sender- nor epoch-gated.** After succession the old coordinator can still send
   a clarification `ASK`, and the asked worker's `ANSWER` is authorized against that question. This is
-  unchanged behaviour and it has no execution authority (`messages.ts:60-66`), but revision 1
-  wrongly claimed it was refused. It is recorded as a residual limit (section 10), not changed
-  here, to keep principle 6.
+  unchanged behaviour and it has no execution authority (`messages.ts:60-66`). It is recorded as a
+  residual limit (section 10), not changed here, to keep principle 6.
 
 ## 7. Work-plan, decisions, message ids and workflow behaviour
 
@@ -412,7 +408,7 @@ claim released and the decision made by the successor at epoch 2. They changed t
 | Attack or fault | Outcome |
 | --- | --- |
 | The old coordinator sends `accept`, `ASSIGN`, `CANCEL` or a decision `ANSWER` after succession | refused: class A or N need the current coordinator and epoch |
-| A forged decision `ANSWER` signed with the old coordinator's identity and an old epoch, registered after succession | not evidence: for a non-current epoch the decision must have been **applied at or before that epoch's `until`**; a later one is ignored. Revision 1 honoured it |
+| A forged decision `ANSWER` signed with the old coordinator's identity and an old epoch, registered after succession | not evidence: for a non-current epoch the decision must have been **applied at or before that epoch's `until`**; a later one is ignored |
 | A forged decision registered before succession | out of the threat model: whoever could do that was the coordinator then, and the protocol is cooperative |
 | A decision applied before succession is overridden by a later one | not possible: the first valid applied decision per attempt is final |
 | A suffixed accept id appears with no succession | not possible: the trigger needs an existing message under the base id with a different epoch |
@@ -497,72 +493,24 @@ Each scenario asserts that no sealed document, registered message file or attemp
 Real session: a Claude to Claude mid-cohort succession with a Pi CLI writer (a plain visible pane, not a
 managed SDK session) in the cohort, then a Codex to Codex one.
 
-## 13. Phasing and review gates
+## 13. Phasing
 
-| Step | Content | Gate |
+| Step | Content | State |
 | --- | --- | --- |
-| 4a | `coordinatorLineage` (including `until`) and its unit tests | independent review |
-| 4b | message layer (`CANCELLED` rule, role-table test) and the work-plan evaluator rows | independent review |
-| 4c | workflow facade rows: accept, dispatch and activation, release correlation, pane reclaim; epoch-qualified ids; `to`-only duplicates | independent review |
-| 4d | binding generations, the resolver, `workflow adopt` and its unsupported-surface detection, and the mid-cohort mode of `collab handoff check` with the transferable-attempt classification | independent review |
-| 4e | real-session acceptance | the user |
+| 4a | `coordinatorLineage` (including `until`) and its unit tests | done |
+| 4b | message layer (`CANCELLED` rule, role-table test) and the work-plan evaluator rows | done |
+| 4c | workflow facade rows: accept, dispatch and activation, release correlation, pane reclaim; epoch-qualified ids; `to`-only duplicates | done |
+| 4d | binding generations, the resolver, `workflow adopt` and its unsupported-surface detection, and the mid-cohort mode of `collab handoff check` | done |
+| 4e | real-session acceptance (Claude to Claude, Codex to Codex) | done |
 
-Every step touches authorization or the interpretation of persisted state, so each needs an independent
-review by an observed native participant before the next starts. A review of this revision comes
-first.
+Every step touched authorization or the interpretation of persisted state and was independently reviewed.
 
-## 14. Open questions
+## 14. Remaining limits
 
-1. **Role-plan artifacts.** The exact files the role subsystem writes under a task root must be
-   enumerated in 4d for the `adopt` scan; the safe default is to refuse on any.
-2. **`until` source.** The completion time is the handoff's `completed` step. 4a must confirm every
-   completed coordinator handoff has that step with a parseable time (a missing or unparseable one
-   invalidates the lineage), and which field (`steps[].at` or `updated_at`) is the authoritative one.
-3. **Reader inventory.** 4c must enumerate every reader of `accept-<subtask>-<attempt>` and
-   `released-<subtask>-<attempt>` and convert each to lookup by `reply_to`.
-4. **The `ASK` channel.** Left unchanged on purpose. Gating `ASK` on the current coordinator would alter
-   behaviour for tasks that never had a succession and is out of scope here.
-
-## 15. What the review of revision 1 changed
-
-| Finding | Change |
-| --- | --- |
-| H1 sealed-block anchor (fresh attempts stranded at `dispatch.ts:1255-1260`) | sections 3 (principle 4), 5: every row names its anchor; the sealed block is judged against its **own** epoch; the final authority check is class A on the caller |
-| H2 deterministic ids | section 7: epoch-qualified ids for successor-created messages, `to`-only duplicates |
-| H3 forged late decisions | principle 3, section 4 (`until`), section 5, section 10: non-current evidence must be applied before its epoch ended; an applied decision is final |
-| M1 `acceptance_not_coordinator` unclassified | section 5 rows for `work-plan.ts:1016-1024` and pane reclaim |
-| M2 message layer misstated | section 6 rewritten from the real role table; only `CANCELLED` is rule P; `ASK` documented as an unchanged residual limit; the invalid-lineage promise now holds |
-| M3 anchor ambiguity | section 5 anchor column |
-| M4 binding consumers | section 9 lists every consumer and which use the resolver |
-| M5 unsupported detection | section 8 detection rules from the record fields; role plans scanned from disk |
-| M6 goal-based path | section 8: out of scope, fails closed, warned |
-| L1 lineage hardening | section 4: `coordinator.previous` cross-check and array-order requirement |
-| L2 one decision survives | section 7 |
-| L3 dispatch freeze | section 7: startup sequence |
-
-## 16. What the review of revision 2 changed
-
-| Finding | Change |
-| --- | --- |
-| H2 not resolved, N1 (reviewer retry has no working encoding) | both encodings the reviewer named are refused by the protocol (re-issue: the suffixed ASSIGN registers and is then refused at apply by `lifecycle.ts` with `attempt_in_flight`, which is why the suffix idea was dropped, while an unsuffixed re-issue fails at registration with `content_conflict`; re-delivery: the notifier needs the caller pane to equal the sender's bound pane, so even a retained old-coordinator row would not help). A cheap fix does not exist, so the spec stops the state from being entered instead: an `assigned`, never-acknowledged attempt is **non-transferable**, enforced by a mid-cohort mode of `check` and by `adopt` (sections 2, 7). The `assign` suffix is removed; scenario 5 pins the refusal codes the paths really produce |
-| N2 (byte-based suffix trigger fires on `created_at` drift) | the trigger is epoch-based and applies to the accept id only (section 7); scenario 7 |
-| N3 (finality lacks detection, validity predicate and tie-break) | section 7: scan by `reply_to`; the evidence rules decide what counts; today's last-by-registration witness rule is kept so nothing changes; a new decision is prevented rather than re-ordered; scenario 8 |
-| N4 (readers of the base id miss suffixed ids) | section 7: lookup by `reply_to`; 4c must enumerate and convert every reader; scenario 13 |
-| N5 (`to`-only duplicate rule unscoped) | section 7: scoped to `ACK`, `REPORT` and release `STATUS`; scenario 12 |
-| N6 (`until` instant comparison and skew) | section 4: parsed instants, `applied_at <= until`, single-machine clock domain stated |
-| N7 (vacuous `native.manager` clause) | removed from section 8 |
-| N8 (authority-path ids not suffixed) | confirmed intended: only the accept id can collide because of succession |
-| Verified correct by the reviewer | anchors, the role table, the record-field names for detection, and `adopt`'s plan outputs |
-
-## 17. What the review of revision 3 changed
-
-| Finding | Change |
-| --- | --- |
-| N9 (scenario 5 cited `attempt_in_flight`, unreachable without the removed suffix) | scenario 5 and section 16 now cite the codes the paths produce: `content_conflict`, `dispatch_already_attempted`, `review_activation_not_retryable` |
-| N10 (the `to`-only rule bypassed on the release `STATUS` path) | section 7 names both sites: `registerMessage` and the release flow's pre-registration comparison (`participant.ts:816-843`) |
-| N11 (no bucket for `unknown`, terminal attempts unplaced) | section 7 classifies every attempt: `unknown` is non-transferable (reconcile first), terminal attempts are out of scope; scenario 5 gains the `unknown` case |
-| N12 (`report_unaccepted` exists nowhere; wrong epoch code named) | section 7 cites `cohort_node_not_accepted` and `owner_epoch_mismatch` |
-| N13 (keep-list "epoch-stale plan" made the mode unable to go ready) | restated: block when the plan epoch is **not in the lineage**, relax `owner_epoch_mismatch` when it is |
-| N14 (claim relaxation depends on optional claim stamping) | stated: workflow-prepared claims are stamped; a hand-made unstamped claim keeps blocking with the next action |
-| N15 (imprecise pane wording; late ACKs) | section 2 reworded; late ACKs stay valid and must not be refused |
-| Also, from implementing 4a | section 4 states the identity-chain and completion-step rules the code enforces |
+1. **The `ASK` channel.** Left unchanged on purpose. Gating `ASK` on the current coordinator would alter
+   behaviour for tasks that never had a succession.
+2. **Unsupported surfaces.** Role plans, managed Pi, rollover and session transition keep strict
+   current-epoch checks (section 8). `adopt` reports role artifacts it can find by name or by the
+   optional `extra_paths`.
+3. **Codex coordinator delivery.** A Codex coordinator cannot reach the Herdr socket, so `accept` reports
+   a `delivery_fallback` and the worker uses `collab workflow await` (section 9).

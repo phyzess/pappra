@@ -20,7 +20,7 @@ which guarantee was and was not obtained.
 
 Non-goals: a role daemon, hooks that start models or write checkpoints, treating
 idle/settled/`abort()` as proof that a process stopped
-([pi-transition-capability](pi-transition-capability.md) rejects that for good reason),
+(an extension-bound Pi session could not supply replay-safe quiescence evidence),
 or inventing identities and capabilities from prose.
 
 ## Decompose "handoff" into five capabilities

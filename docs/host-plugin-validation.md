@@ -105,38 +105,6 @@ accepted `/compact` and `/clear`. `PostCompact` completed successfully; native r
 `clear`. Only these events are verified for this host; other lifecycle events and other
 installed-plugin combinations remain unobserved.
 
-## Real-host acceptance pass (beta.16 build, recorded)
-
-The beta.16 build was exercised with Pi `1.4.0`, Claude Code `2.1.308` and Codex `0.164.0`, in
-disposable workspaces whose paths contain spaces and Unicode. Recorded observations:
-
-- Installing the Claude integration with one Node minor, then verifying and reinstalling with a
-  later Node minor, preserved the exact hook configuration bytes. Commands resolved `node`
-  through PATH and did not duplicate managed entries.
-- The real Pi loader loaded the installed `index.ts` and adjacent `runtime.mjs`, registered
-  `pappra-checkpoint` and recorded `session_start`. This loader check was offline and sent no
-  model prompt.
-- A separate admitted `collab run --controller pi-rpc`, using normal native Pi configuration and
-  capabilities derived from a real read-only handshake, completed in about 136 seconds. Its real
-  Bash call waited 130 seconds. The owned process exited successfully and the completed report
-  was classified `applied`.
-- Real managed Pi TUI processes received SIGTERM and SIGHUP in separate PTYs. Both runs restored
-  canonical input and echo, and both the owned Pi process and bridge exited. This signal check
-  sent no model prompt and makes no claim about arbitrary descendants or external writers.
-
-Temporary interactive trust was explicitly authorized. Daily host configuration files were not
-edited; copied credentials used for the temporary host home were removed during cleanup. Native
-transcripts and detailed receipts remain private rather than being published with this guide.
-
-The frozen build also passed `pnpm check` in that recording: 1,108 tests, 1,103 passed, five
-skipped, zero failed, followed by the installed-package smoke. Those counts are a historical
-observation of that build, not a claim about the current checkout.
-
-The beta.16 tag subsequently failed Linux CI because two CLI tests relied on globally installed
-Pi/Codex executables; npm publication was skipped. Beta.17 keeps the tested runtime behaviour and
-makes those CLI fixtures hermetic. An independent review ran both affected cases with only Node
-and system binaries on PATH, and verified that missing or unsupported native versions still fail.
-
 ## Pi bootstrap bundle (opt-in, unverified load)
 
 `host bundle --host pi --transition-extension`/`--bootstrap-config` exports additional opt-in

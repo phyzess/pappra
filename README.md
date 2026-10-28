@@ -175,7 +175,7 @@ happens next.
 
 Pappra is beta software (`0.1.0-beta.23`), published as `@phyzess/pappra` under the `beta` dist-tag.
 Pin `beta` or an exact version, because pre-release versions are never republished. What is supported is in
-[support and limitations](docs/support.md); tracked findings in [review closeout](docs/review-closeout.md).
+[support and limitations](docs/support.md).
 
 ## License
 

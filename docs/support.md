@@ -63,13 +63,6 @@ by itself proof that a live integration will work.
 `.claude`/`.codex`/`.pi` directories and `$CODEX_HOME`. A Pi package installed with
 `pi install` has no manifest in those locations, so only a real session proves it.
 
-## Review state
-
-The 84 findings from the two review rounds, with current status and evidence
-locators, are in [review closeout](review-closeout.md). What the cold-start cases
-did and did not show is in [cold-start acceptance](cold-start-acceptance.md).
-Neither page is a test report.
-
 ## Reporting a problem
 
 Include the Pappra version, Node/pnpm versions, command, exit status, whether the
