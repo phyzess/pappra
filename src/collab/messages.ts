@@ -23,15 +23,96 @@ import {
   writeResultEvidence,
 } from './lifecycle.js';
 import { beginHandoff } from './handoff.js';
+import {
+  coordinatorLineage,
+  hasSuccession,
+  lineageContains,
+} from './lineage.js';
 import { nowIso, transact } from './store.js';
 
 // Applying a registered message to the record. Registration is atomic and separate;
 // this step is a transaction. A message never restarts native work and never releases
 // resources on its own.
 
-// An ANSWER to a clarification is a reply, not a dispatch: it must already correlate with
-// a stored ASK or BLOCK, so it carries no owner_epoch of its own.
-const DISPATCH_TYPES = new Set(['ASSIGN', 'HANDOFF', 'CANCEL', 'CANCELLED']);
+export type MessageType =
+  | 'ASSIGN'
+  | 'ACK'
+  | 'ASK'
+  | 'ANSWER'
+  | 'REPORT'
+  | 'STATUS_QUERY'
+  | 'STATUS'
+  | 'HANDOFF'
+  | 'BLOCK'
+  | 'CANCEL'
+  | 'CANCELLED';
+
+/**
+ * Who a message type comes from, and whether applying it checks the epoch it carries.
+ *
+ * `origin` is `coordinator`, `participant`, or `either`; a decision `ANSWER` comes from the
+ * coordinator and a clarification `ANSWER` from the asked party, so it is `either`. This table is
+ * the single source for the epoch gate below: a new message type must be given an entry (a test
+ * fails otherwise) so nobody adds a type without deciding how a coordinator succession treats it
+ * (docs/mid-cohort-succession-spec.md, section 6).
+ *
+ * An ANSWER to a clarification is a reply, not a dispatch: it must already correlate with a stored
+ * ASK or BLOCK, so it carries no owner_epoch of its own.
+ */
+export const MESSAGE_ROLES: Readonly<
+  Record<
+    MessageType,
+    {
+      readonly origin: 'coordinator' | 'participant' | 'either';
+      readonly epochGated: boolean;
+    }
+  >
+> = Object.freeze({
+  ASSIGN: { origin: 'coordinator', epochGated: true },
+  CANCEL: { origin: 'coordinator', epochGated: true },
+  HANDOFF: { origin: 'either', epochGated: true },
+  CANCELLED: { origin: 'participant', epochGated: true },
+  ACK: { origin: 'participant', epochGated: false },
+  BLOCK: { origin: 'participant', epochGated: false },
+  REPORT: { origin: 'participant', epochGated: false },
+  ANSWER: { origin: 'either', epochGated: false },
+  ASK: { origin: 'either', epochGated: false },
+  STATUS: { origin: 'either', epochGated: false },
+  STATUS_QUERY: { origin: 'either', epochGated: false },
+});
+
+const DISPATCH_TYPES: ReadonlySet<string> = new Set(
+  Object.entries(MESSAGE_ROLES)
+    .filter(([, role]) => role.epochGated)
+    .map(([type]) => type),
+);
+
+/**
+ * A participant's message answers an attempt it was given, so after a coordinator succession it
+ * legitimately carries the epoch that attempt was registered under. Of the participant types only
+ * `CANCELLED` is epoch-gated today. It is accepted under an earlier epoch when, and only when, a
+ * succession is on record: the epoch is in the lineage and below the current one, the attempt it
+ * names exists and was registered under exactly that epoch, and the sender is that attempt's
+ * assignee. With no succession on record this never applies, so behaviour is unchanged.
+ */
+function participantEpochAccepted(
+  record: TaskRecord,
+  message: Message,
+): boolean {
+  if (message.type !== 'CANCELLED') return false;
+  const lineage = coordinatorLineage(record);
+  if (!hasSuccession(lineage)) return false;
+  const epoch = message.owner_epoch;
+  if (typeof epoch !== 'number' || epoch >= lineage.current!) return false;
+  if (!lineageContains(lineage, epoch)) return false;
+  if (!message.subtask_id || !message.attempt) return false;
+  const attempt = findAttempt(record, message.subtask_id, message.attempt);
+  return (
+    attempt !== null &&
+    attempt.owner_epoch === epoch &&
+    sameSender(message.from, attempt.assignee)
+  );
+}
 
 function alreadyApplied(record: TaskRecord, message: Message) {
   const previous = (record.messages ?? []).find(
@@ -252,7 +333,7 @@ export function applyMessage(
       };
     }
     const epoch = checkOwnerEpoch(record, message.owner_epoch);
-    if (!epoch.ok) {
+    if (!epoch.ok && !participantEpochAccepted(record, message)) {
       openUncertainty(record, {
         kind: 'stale_epoch',
         subtaskId: message.subtask_id ?? null,

@@ -2126,3 +2126,32 @@ test('C1: plan-only notify validates bindings without querying Herdr', async () 
     cleanup(value.root);
   }
 });
+
+test('MESSAGE_ROLES covers every message type and pins the epoch-gated set', async () => {
+  const { MESSAGE_ROLES } = await import('../../src/collab/messages.js');
+  assert.deepEqual(
+    Object.entries(MESSAGE_ROLES)
+      .filter(([, role]) => role.epochGated)
+      .map(([type]) => type)
+      .sort(),
+    ['ASSIGN', 'CANCEL', 'CANCELLED', 'HANDOFF'],
+  );
+  const { MESSAGE_TYPES } = await import('../../src/collab/envelope.js');
+  assert.deepEqual(
+    Object.keys(MESSAGE_ROLES).sort(),
+    [...MESSAGE_TYPES].sort(),
+  );
+  assert.deepEqual(Object.keys(MESSAGE_ROLES).sort(), [
+    'ACK',
+    'ANSWER',
+    'ASK',
+    'ASSIGN',
+    'BLOCK',
+    'CANCEL',
+    'CANCELLED',
+    'HANDOFF',
+    'REPORT',
+    'STATUS',
+    'STATUS_QUERY',
+  ]);
+});

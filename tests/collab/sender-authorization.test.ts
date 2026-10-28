@@ -322,3 +322,95 @@ test('the pending coordinator receiver can acknowledge a handoff without a write
   );
   assert.deepEqual(value, before);
 });
+
+/** The record after one completed coordinator handoff from `coordinator` (epoch 1) to `successor`. */
+function succeeded(value: ReturnType<typeof record>) {
+  const successor: Identity = {
+    agent_id: 'successor',
+    session_id: 'successor-session',
+    harness: 'claude',
+  };
+  const ended = '2026-10-24T01:00:00Z';
+  const before = {
+    agent_id: coordinator.agent_id,
+    session_id: coordinator.session_id,
+    owner_epoch: 1,
+  };
+  value.coordinator = {
+    ...successor,
+    owner_epoch: 2,
+    since: ended,
+    previous: before,
+  };
+  value.handoffs = [
+    {
+      schema: 'pappra/collaboration-handoff/1',
+      handoff_id: 'h1',
+      kind: 'coordinator',
+      subtask_id: null,
+      attempt: null,
+      from: coordinator,
+      to: successor,
+      resources: [],
+      ownership_snapshot: [],
+      state: 'completed',
+      owner_epoch: 2,
+      created_at: ended,
+      updated_at: ended,
+      reason: null,
+      steps: [{ state: 'completed', at: ended }],
+      partial_outputs: [],
+      inflight: [],
+      pending_approvals: [],
+      confirmation_message_id: null,
+      previous_coordinator: { ...coordinator, ...before },
+    } as never,
+  ];
+  return successor;
+}
+
+test('after a succession only the assignee may stop an attempt registered under an earlier epoch', () => {
+  const stopped = (overrides: Partial<MessageInput> = {}) =>
+    message('CANCELLED', {
+      to: coordinator,
+      from: worker,
+      reply_to: 'message-CANCEL',
+      body: { stop_evidence: 'stop' },
+      ...overrides,
+    });
+  const prepared = () => {
+    const value = record();
+    assert('record' in applyMessage(value, message('CANCEL'), { clock }));
+    return value;
+  };
+
+  const accepted = prepared();
+  const successor = succeeded(accepted);
+  assert('record' in applyMessage(accepted, stopped(), { clock }));
+  assert.equal(accepted.attempts[0]?.state, 'cancelled');
+  assert.ok(
+    !accepted.uncertainty.some((entry) => entry.kind === 'stale_epoch'),
+  );
+
+  const wrongParty = prepared();
+  succeeded(wrongParty);
+  assert.deepEqual(
+    applyMessage(wrongParty, stopped({ from: successor }), { clock }),
+    { ok: false, reason: 'unauthorized_sender' },
+  );
+
+  const outside = prepared();
+  succeeded(outside);
+  const refused = applyMessage(outside, stopped({ owner_epoch: 5 }), {
+    clock,
+  });
+  assert.equal(refused.ok, false);
+  assert.notEqual(outside.attempts[0]?.state, 'cancelled');
+
+  // Without a succession the strict epoch gate is today's.
+  const strict = prepared();
+  strict.coordinator = { ...coordinator, owner_epoch: 2 };
+  const strictOutcome = applyMessage(strict, stopped(), { clock });
+  assert.equal(strictOutcome.ok, false);
+  assert.notEqual(strict.attempts[0]?.state, 'cancelled');
+});

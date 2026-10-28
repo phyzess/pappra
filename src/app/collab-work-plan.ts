@@ -1,3 +1,8 @@
+import {
+  coordinatorLineage,
+  hasSuccession,
+  lineageContains,
+} from '../collab/lineage.js';
 import { readBoundedFile } from './bounded-file.js';
 import { assertTaskStoreCurrent, openTaskStore } from './collab-task-store.js';
 import type {
@@ -633,7 +638,10 @@ export async function inspectWorkPlan(
   }
 
   const coordinatorEpoch = task.record.coordinator?.owner_epoch ?? null;
-  const stale = plan.owner_epoch !== coordinatorEpoch;
+  const lineage = coordinatorLineage(task.record);
+  const stale = hasSuccession(lineage)
+    ? !lineageContains(lineage, plan.owner_epoch)
+    : plan.owner_epoch !== coordinatorEpoch;
   const incomplete = loaded.unreadable.length > 0 || loaded.overBudget;
   return {
     ...report,

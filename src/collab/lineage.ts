@@ -290,6 +290,14 @@ export function coordinatorLineage(record: TaskRecord): CoordinatorLineage {
   return { valid: true, current: coordinator.owner_epoch, entries };
 }
 
+/**
+ * True only when a valid lineage records at least one succession. Every caller branches on this so
+ * that, with none, it runs exactly the code it ran before lineage existed.
+ */
+export function hasSuccession(lineage: CoordinatorLineage): boolean {
+  return lineage.valid && lineage.entries.length > 1;
+}
+
 export function lineageEntry(
   lineage: CoordinatorLineage,
   epoch: number,

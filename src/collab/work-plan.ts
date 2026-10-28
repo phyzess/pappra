@@ -1,3 +1,9 @@
+import {
+  coordinatorLineage,
+  hasSuccession,
+  judgeEvidence,
+  lineageContains,
+} from './lineage.js';
 import { object as isRecord } from '../infra/validation.js';
 import path from 'node:path';
 import { pathRelation } from './canonical.js';
@@ -808,8 +814,14 @@ export function evaluateWorkPlan(
   }
 
   const coordinator = record.coordinator ?? null;
-  const epochCurrent =
-    coordinator !== null && coordinator.owner_epoch === plan.owner_epoch;
+  // With no succession on record the original, strict code paths below run unchanged. After one,
+  // an artifact counts when its own epoch is in the same authority line (docs/mid-cohort-
+  // succession-spec.md, sections 5 and 7).
+  const lineage = coordinatorLineage(record);
+  const succession = hasSuccession(lineage);
+  const epochCurrent = succession
+    ? lineageContains(lineage, plan.owner_epoch)
+    : coordinator !== null && coordinator.owner_epoch === plan.owner_epoch;
   const byId = new Map(plan.nodes.map((node) => [node.node_id, node]));
   const memo = new Map<string, WorkNodeEvaluation>();
   const acceptanceMemo = new Map<string, AcceptanceOutcome>();
@@ -943,7 +955,22 @@ export function evaluateWorkPlan(
         (registrationIndex.get(left.entry.message_id) ?? 0) -
         (registrationIndex.get(right.entry.message_id) ?? 0),
     );
-    const witness = resolved[resolved.length - 1]!;
+    // After a succession a decision counts only as evidence of its own epoch: signed by that
+    // epoch's coordinator and, for an ended epoch, applied before it ended. One that fails does
+    // not count and does not block the successor's own decision; when none counts, the last is
+    // judged below so the refusal names the real reason. Today's last-wins rule is unchanged.
+    const counts = (item: Resolved): boolean =>
+      typeof item.envelope.owner_epoch === 'number' &&
+      item.envelope.owner_epoch >= plan.owner_epoch &&
+      judgeEvidence(lineage, {
+        epoch: item.envelope.owner_epoch,
+        signer: item.envelope.from,
+        appliedAt: item.entry.applied_at,
+      }).valid;
+    const counted = succession ? resolved.filter(counts) : resolved;
+    const witness = (counted.length > 0 ? counted : resolved)[
+      (counted.length > 0 ? counted : resolved).length - 1
+    ]!;
     if (
       witness.acceptance['plan_id'] !== plan.plan_id ||
       witness.acceptance['node_id'] !== node.node_id
@@ -984,7 +1011,12 @@ export function evaluateWorkPlan(
         'acceptance envelope does not reply to this report for this attempt',
       );
     }
-    if (envelope.owner_epoch !== plan.owner_epoch) {
+    const envelopeEpochOk = succession
+      ? typeof envelope.owner_epoch === 'number' &&
+        lineageContains(lineage, envelope.owner_epoch) &&
+        envelope.owner_epoch >= plan.owner_epoch
+      : envelope.owner_epoch === plan.owner_epoch;
+    if (!envelopeEpochOk) {
       return denied(
         'acceptance_stale',
         'acceptance was issued under a different owner epoch',
@@ -1014,7 +1046,22 @@ export function evaluateWorkPlan(
         'the record has no coordinator, so no acceptance can be current',
       );
     }
-    if (
+    if (succession) {
+      const verdict = judgeEvidence(lineage, {
+        epoch: envelope.owner_epoch as number,
+        signer: envelope.from,
+        appliedAt: witness.entry.applied_at,
+      });
+      if (!verdict.valid)
+        return denied(
+          verdict.reason === 'signer_not_coordinator_of_epoch'
+            ? 'acceptance_not_coordinator'
+            : 'acceptance_stale',
+          verdict.reason === 'signer_not_coordinator_of_epoch'
+            ? 'acceptance must come from the coordinator of the epoch it was issued under'
+            : 'acceptance was applied after the epoch it was issued under had ended',
+        );
+    } else if (
       envelope.from.agent_id !== coordinator.agent_id ||
       envelope.from.session_id !== coordinator.session_id
     ) {
@@ -1104,7 +1151,12 @@ export function evaluateWorkPlan(
       }
       if (
         attempt.owner_epoch !== null &&
-        attempt.owner_epoch !== plan.owner_epoch
+        (succession
+          ? !(
+              lineageContains(lineage, attempt.owner_epoch) &&
+              attempt.owner_epoch >= plan.owner_epoch
+            )
+          : attempt.owner_epoch !== plan.owner_epoch)
       ) {
         add(
           'owner_epoch_mismatch',
