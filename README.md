@@ -140,7 +140,7 @@ and decide what to run.
 | Move the workspace to another machine        | [Portability](docs/portability.md)                                  |
 | Coordinate several agents on one task        | [Collaboration workflow](docs/collaboration-workflow.md)            |
 | Hand a coordinator to a new session          | [Coordinator continuity](docs/cross-host-coordinator-continuity.md) |
-| Start a managed Pi session that Pappra owns  | [Managed Pi sessions](docs/managed-pi-session.md)                   |
+| Start a managed Pi session that Pappra owns  | [Managed Pi sessions](docs/managed-pi.md)                           |
 | Check supported versions and limits          | [Support and limitations](docs/support.md)                          |
 | Build against the API                        | [API boundaries](docs/api.md)                                       |
 | Work on Pappra itself                        | [Development](docs/development.md)                                  |

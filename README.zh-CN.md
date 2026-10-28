@@ -129,7 +129,7 @@ Agent，都用 `pappra resume` 读这个文件，或者在任务用 `pappra task
 | 把工作区搬到另一台机器                  | [可移植性](docs/portability.md)                           |
 | 协调多个 Agent 完成同一项任务           | [协作工作流](docs/collaboration-workflow.md)              |
 | 把协调者交接给新的会话                  | [协调者连续性](docs/cross-host-coordinator-continuity.md) |
-| 启动由 Pappra 拥有的受管 Pi 会话        | [受管的 Pi 会话](docs/managed-pi-session.md)              |
+| 启动由 Pappra 拥有的受管 Pi 会话        | [受管的 Pi 会话](docs/managed-pi.md)                      |
 | 查看支持的版本与限制                    | [支持范围与限制](docs/support.md)                         |
 | 基于 API 开发                           | [API 边界](docs/api.md)                                   |
 | 参与 Pappra 本身的开发                  | [开发](docs/development.md)                               |
