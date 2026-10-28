@@ -1,8 +1,9 @@
 # Mid-cohort coordinator succession (specification)
 
-Status: specification only, revision 3. No code implements it, and no code may until this
+Status: specification only, revision 4. No code implements it, and no code may until this
 document has been approved. Revisions 1 and 2 were each independently reviewed against the real
-code and found not implementable as written; this revision answers both reviews (section 15). It is phase 4
+code and found not implementable as written; revision 3 was found implementable with four
+corrections, which this revision makes (sections 15 to 17). It is phase 4
 of [cross-host coordinator continuity](cross-host-coordinator-continuity.md).
 
 ## 1. Problem
@@ -56,12 +57,16 @@ Non-goals:
 - Re-issuing or re-delivering an ASSIGN for an attempt that is already registered, across a
   succession. Today a never-started reviewer attempt can be retried by re-delivering its existing
   ASSIGN (`canRetryReviewClaims`, `dispatch.ts:812-861,1176-1213`), but only by the coordinator that
-  sent it: the notifier requires the **caller's pane to equal the sender's bound pane**
-  (`collab-notify.ts:1488-1494`), and the base protocol refuses a different ASSIGN for an existing
-  attempt (`lifecycle.ts:202-221`, `attempt_in_flight`). A successor therefore cannot finish such an
-  attempt. The rule is to **never enter that state**: an attempt that is `assigned` and has not been
-  acknowledged is not transferable, and the outgoing coordinator must deliver or cancel it before
-  handing off (section 7, `check` and `adopt`).
+  sent it. The ASSIGN is delivered to the **worker's** pane, and what a successor cannot do is
+  re-notify it (the notifier requires the caller's pane to equal the **sender's** bound pane,
+  `collab-notify.ts:1488-1494`) or re-issue it (a different ASSIGN under the same id fails at
+  registration with `content_conflict`, `envelope.ts:236-244`). A successor therefore cannot finish an
+  attempt whose ASSIGN may never have reached the worker. The rule is to **never enter that state**:
+  an attempt that is `assigned` and has not been acknowledged is not transferable, and the outgoing
+  coordinator must deliver or cancel it before handing off (section 7, `check` and `adopt`). "Never
+  acknowledged" means "possibly never delivered": a worker that did receive the prompt can still ACK
+  late, ACK is not epoch-gated (`messages.ts:329-350`) and such an ACK stays valid; implementations
+  must not "fix" the state by refusing late ACKs.
 
 ## 3. Principles
 
@@ -98,7 +103,9 @@ Derivation from `record.handoffs`:
 3. The lineage maps `h.previous_coordinator.owner_epoch` to the previous identity and `h.owner_epoch`
    to `h.to`. The `until` of an epoch is the completion instant of the handoff that created the
    **next** epoch (the time of that handoff's `completed` step). The current epoch has no `until`.
-   Times are compared as parsed instants (milliseconds), never as strings; evidence applied at
+   Times are compared as parsed instants (milliseconds), never as strings, and only full ISO-8601
+   instants with an offset (what `nowIso` writes) are trusted: a bare date or a locale format that
+   `Date.parse` would accept is treated as unparseable; evidence applied at
    exactly `until` is valid (`applied_at <= until`). All records of one task are written by processes
    on one machine, so clock skew between writers is not modelled; a step time that cannot be parsed
    makes the lineage invalid.
@@ -110,6 +117,10 @@ Validity (all required, otherwise the lineage is `[current]` only):
 - no two entries claim the same epoch;
 - the last entry's `to` equals `record.coordinator` (agent id and session id) and its
   `owner_epoch` equals `record.coordinator.owner_epoch`;
+- each handoff after the first was made by the coordinator the earlier handoff installed (agent id and
+  session id), so a chain with a stranger in the middle is invalid;
+- every completed handoff has a usable completion time: the last of its steps whose state is
+  `completed`, parseable as a time;
 - `record.coordinator.previous` (kept by `completeHandoff`) equals the last entry's
   `previous_coordinator`; any disagreement invalidates the lineage.
 
@@ -129,6 +140,13 @@ and an **anchor** (the epoch it compares). A comparison not listed keeps today's
 | **E. Evidence** | is this historic artifact valid | the artifact's own epoch is in the lineage, its signer equals the lineage identity of that epoch, and if that epoch is not current it was applied at or before that epoch's `until` |
 | **N. New artifact** | the successor creates it | carries the current epoch and is signed by the current coordinator; validators later treat it as E |
 | **P. Participant** | a worker acts on its own attempt | see section 6 |
+
+**Identity comparison drops `harness`, on purpose.** The lineage and the evidence rule identify a
+coordinator by agent id and session id only. Today `sameCoordinator` (`collab-workflow/context.ts`)
+and the release correlation (`participant.ts:689-691`) also compare `harness` when one is recorded.
+Converting the evidence checks to the lineage rule in 4c drops that comparison deliberately: a session
+id already belongs to exactly one harness session, and the harness of a historic coordinator is not
+recorded in every artifact. Authority checks (class A) keep comparing exactly what they compare today.
 
 Anchors used below: **own** = the epoch recorded inside the artifact being judged; **attempt** =
 `attempt.owner_epoch`; **current** = `record.coordinator.owner_epoch`.
@@ -209,12 +227,34 @@ Consequences, which differ from revision 1:
   that the worker itself can carry on: acknowledged (`accepted`), running, or finished with a report
   that has not been decided. It is **not** supported for an attempt that is `assigned` with no ACK, no
   native binding and no results: its delivery depends on the outgoing coordinator's own pane. Such an
-  attempt must be delivered (and acknowledged) or cancelled before the handoff.
+  attempt must be delivered (and acknowledged) or cancelled before the handoff. Every attempt is
+  classified: `accepted` and `running` are transferable; `completed` with no valid applied decision for
+  its report is transferable (the successor decides it); an attempt in state `unknown`, **including one
+  with a bound native session whose observation could not be proven**, is non-transferable and blocks
+  with a reconcile next action; `needs_input` is non-transferable (below); `assigned` with no ACK is
+  non-transferable; attempts that are `completed` with a valid applied decision, `failed` or `cancelled`
+  are terminal and out of scope for the classification.
   `collab handoff check` therefore gains a **mid-cohort mode** that does not block on in-flight work
   but lists, per attempt, whether it is transferable, and blocks on every non-transferable one with
   the exact next action; `workflow adopt` runs the same classification and refuses on one that
   slipped through (for example one dispatched under the old coordinator and never acknowledged).
   Re-issuing or re-delivering an existing attempt's ASSIGN stays refused with the codes it has today.
+- **What the mid-cohort mode of `check` relaxes and keeps.** The mode exists so a coordinator can learn
+  whether handing off *now* is safe, so it must say precisely what changes against the boundary check,
+  using the codes the check really emits (`handoff.ts`, `collab-handoff.ts`). Relaxed, because the
+  successor can handle it: `attempt_in_flight` for transferable attempts; `cohort_node_not_accepted`,
+  since the successor decides the reports; the evaluation's `owner_epoch_mismatch` **when the plan's
+  epoch is in the lineage** (class E); `claims_unreleased` for a claim held by the assignee of a
+  transferable attempt and stamped with that attempt's `subtask_id` and `attempt` (the claims
+  `workflow prepare` makes are stamped, `resources.ts:462-463`; a hand-made claim without the stamp
+  keeps blocking, with the next action to release it and claim it tied to its attempt). Still blocking:
+  a non-transferable attempt (new blocker `attempt_not_transferable`, naming the attempt and the next
+  action); `attempt_needs_input` (an answer to a `BLOCK` is authorized against the party the question
+  was addressed to, which is the outgoing coordinator, `messages.ts:145-152`, so the successor could not
+  unblock it); `source_holds_claims`; any other open handoff; `uncertainty_open`; a plan that is
+  unreadable or invalid, a plan whose epoch is **not in the lineage**, or a decision without a readable
+  envelope; any unsupported surface of section 8; and an invalid lineage. The mode never turns a
+  blocker into a warning silently: the result lists every relaxed item with the reason.
 - **Decision lookup is by `reply_to`, never by constructed id.** Every reader that decides whether a
   report has been decided, or which decision applies, finds it as: type `ANSWER`, `reply_to` equal to
   the report's message id, state applied, passing the evidence rules of section 5. Readers known to
@@ -251,12 +291,18 @@ Consequences, which differ from revision 1:
   `registered-to-earlier-coordinator` and does not pretend a fresh delivery: the registered copy
   addresses the earlier coordinator, and notifying it fails closed after adoption. An `ASSIGN`, a
   decision or any other coordinator-created message, and a `to` pointing at a different worker, are
-  never subject to this rule.
+  never subject to this rule. The rule lives at **two sites**: `registerMessage` (reached by the `ACK`
+  and `REPORT` paths through `submitMessage`, `participant.ts:405-411,536-542`) and the release flow's
+  pre-registration digest comparison (`participant.ts:816-843`, `release_status_conflict`), which
+  compares before any registration and must treat a `to`-only or `created_at`-only difference as the
+  same duplicate.
 - **The successor's startup sequence** is explicit: `collab handoff release-dispatch` (dispatch stays
   frozen after `complete`, `handoff.ts:558`; `accept` is not blocked by the freeze, every dispatch is),
   then `collab workflow adopt` (section 9).
 - `collab handoff check` keeps its meaning. After succession it becomes `ready` once the cohort is
-  accepted and released and no longer reports an epoch mismatch as `plan_epoch_stale`.
+  accepted and released: the plan evaluation no longer reports `owner_epoch_mismatch` when the plan's
+  epoch is in the lineage (the accept path's `plan_epoch_stale` and `acceptance_stale` follow the same
+  rule).
 - A task whose lineage is invalid keeps today's behaviour for every check, and `workflow adopt`
   refuses.
 
@@ -376,10 +422,13 @@ Scenarios, with real workflow fixtures:
    and delivery proceeds (the H1 case);
 4. a deferred reviewer is activated for the first time by the successor, reports, and is accepted;
 5. an attempt that is `assigned` and never acknowledged is **non-transferable**: `check` in mid-cohort mode
-   blocks on it with the exact next action, `adopt` refuses it, and re-issuing or re-delivering its
-   ASSIGN after succession is refused with the same codes as before it (`attempt_in_flight`,
-   `dispatch_already_attempted`); no suffixed `assign` id ever appears; acknowledged, running and
-   reported attempts are transferable;
+   blocks on it with the exact next action and `adopt` refuses it; so does an attempt in state `unknown`
+   (with and without a bound native session) and a `needs_input` attempt; re-issuing or re-delivering its
+   ASSIGN after succession is refused with the codes it has before succession (`content_conflict` for a
+   direct re-submit, `dispatch_already_attempted` for a writer re-dispatch,
+   `review_activation_not_retryable` for a reviewer re-activation whose notification exists); no suffixed
+   `assign` id ever appears; a late ACK is still applied; acknowledged, running and reported attempts are
+   transferable, and terminal ones are not classified;
 6. an accept registered under epoch 1 but never applied, then the successor's accept registers as
    `accept-<subtask>-<attempt>-e<epoch>`, is applied, and decides the report;
 7. a byte difference alone (a different `created_at`) between two registrations of the base accept id
@@ -457,7 +506,7 @@ first.
 
 | Finding | Change |
 | --- | --- |
-| H2 not resolved, N1 (reviewer retry has no working encoding) | both encodings the reviewer named are refused by the protocol (re-issue: `attempt_in_flight`; re-delivery: the notifier needs the caller pane to equal the sender's bound pane, so even a retained old-coordinator row would not help). A cheap fix does not exist, so the spec stops the state from being entered instead: an `assigned`, never-acknowledged attempt is **non-transferable**, enforced by a mid-cohort mode of `check` and by `adopt` (sections 2, 7). The `assign` suffix is removed; scenario 5 |
+| H2 not resolved, N1 (reviewer retry has no working encoding) | both encodings the reviewer named are refused by the protocol (re-issue: the suffixed ASSIGN registers and is then refused at apply by `lifecycle.ts` with `attempt_in_flight`, which is why the suffix idea was dropped, while an unsuffixed re-issue fails at registration with `content_conflict`; re-delivery: the notifier needs the caller pane to equal the sender's bound pane, so even a retained old-coordinator row would not help). A cheap fix does not exist, so the spec stops the state from being entered instead: an `assigned`, never-acknowledged attempt is **non-transferable**, enforced by a mid-cohort mode of `check` and by `adopt` (sections 2, 7). The `assign` suffix is removed; scenario 5 pins the refusal codes the paths really produce |
 | N2 (byte-based suffix trigger fires on `created_at` drift) | the trigger is epoch-based and applies to the accept id only (section 7); scenario 7 |
 | N3 (finality lacks detection, validity predicate and tie-break) | section 7: scan by `reply_to`; the evidence rules decide what counts; today's last-by-registration witness rule is kept so nothing changes; a new decision is prevented rather than re-ordered; scenario 8 |
 | N4 (readers of the base id miss suffixed ids) | section 7: lookup by `reply_to`; 4c must enumerate and convert every reader; scenario 13 |
@@ -466,3 +515,16 @@ first.
 | N7 (vacuous `native.manager` clause) | removed from section 8 |
 | N8 (authority-path ids not suffixed) | confirmed intended: only the accept id can collide because of succession |
 | Verified correct by the reviewer | anchors, the role table, the record-field names for detection, and `adopt`'s plan outputs |
+
+## 17. What the review of revision 3 changed
+
+| Finding | Change |
+| --- | --- |
+| N9 (scenario 5 cited `attempt_in_flight`, unreachable without the removed suffix) | scenario 5 and section 16 now cite the codes the paths produce: `content_conflict`, `dispatch_already_attempted`, `review_activation_not_retryable` |
+| N10 (the `to`-only rule bypassed on the release `STATUS` path) | section 7 names both sites: `registerMessage` and the release flow's pre-registration comparison (`participant.ts:816-843`) |
+| N11 (no bucket for `unknown`, terminal attempts unplaced) | section 7 classifies every attempt: `unknown` is non-transferable (reconcile first), terminal attempts are out of scope; scenario 5 gains the `unknown` case |
+| N12 (`report_unaccepted` exists nowhere; wrong epoch code named) | section 7 cites `cohort_node_not_accepted` and `owner_epoch_mismatch` |
+| N13 (keep-list "epoch-stale plan" made the mode unable to go ready) | restated: block when the plan epoch is **not in the lineage**, relax `owner_epoch_mismatch` when it is |
+| N14 (claim relaxation depends on optional claim stamping) | stated: workflow-prepared claims are stamped; a hand-made unstamped claim keeps blocking with the next action |
+| N15 (imprecise pane wording; late ACKs) | section 2 reworded; late ACKs stay valid and must not be refused |
+| Also, from implementing 4a | section 4 states the identity-chain and completion-step rules the code enforces |
