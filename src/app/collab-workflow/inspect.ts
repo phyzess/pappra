@@ -1,6 +1,11 @@
+import path from 'node:path';
 import { currentBindingFile } from './binding-generation.js';
 import { readBoundedJson, digestFile, openWorkflowTask } from './context.js';
-import { workflowManifestPath } from '../../schemas/collab-workflow.js';
+import {
+  workflowIntentsDir,
+  workflowManifestPath,
+} from '../../schemas/collab-workflow.js';
+import fs from 'node:fs';
 import { emptyResult, type WorkflowResult } from './types.js';
 import { findAttempt } from '../../collab/lifecycle.js';
 import { resolveUserDataDir } from '../../install/data-dir.js';
@@ -69,6 +74,27 @@ function bound<T>(
   if (limit === undefined || total <= limit)
     return { items: [...items], total, truncated: false };
   return { items: items.slice(total - limit), total, truncated: true };
+}
+
+function ackRegistered(
+  record: {
+    messages?: {
+      type: string;
+      subtask_id?: string | null;
+      attempt?: number | null;
+      state: string;
+    }[];
+  },
+  subtaskId: string,
+  attempt: number,
+): boolean {
+  return (record.messages ?? []).some(
+    (message) =>
+      message.type === 'ACK' &&
+      message.subtask_id === subtaskId &&
+      message.attempt === attempt &&
+      message.state === 'applied',
+  );
 }
 
 export async function inspectWorkflow(
@@ -150,6 +176,20 @@ export async function inspectWorkflow(
     truncationNotes.push(
       `context: coordinator context is ${String(advice.used_percent)}% full (advisory at ${String(advice.threshold_percent)}%). ${advice.next_action ?? ''}`,
     );
+  const ackWarnings: string[] = [];
+  for (const attempt of record.attempts ?? []) {
+    const intentFile = path.join(
+      workflowIntentsDir(task.taskRoot),
+      `dispatch-${attempt.subtask_id}-${attempt.attempt}.json`,
+    );
+    if (
+      fs.existsSync(intentFile) &&
+      !ackRegistered(record, attempt.subtask_id, attempt.attempt)
+    )
+      ackWarnings.push(
+        `${attempt.subtask_id}#${attempt.attempt}: ack_not_registered`,
+      );
+  }
   const base = emptyResult<Record<string, unknown>>('inspect', false);
   // Inspect is a read-only projection: with no sealed manifest there is no cohort to
   // report, so the honest result is blocked (with the reason in warnings), not "applied".
@@ -170,6 +210,7 @@ export async function inspectWorkflow(
         ? []
         : ['No sealed workflow manifest is present for this task.']),
       ...truncationNotes,
+      ...ackWarnings,
     ],
     detail: {
       manifest: manifestRead.ok

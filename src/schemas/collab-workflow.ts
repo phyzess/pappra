@@ -133,10 +133,22 @@ export const workflowCoordinatorSchema = workflowParticipantSchema.extend({
   since: boundedText(64).optional(),
 });
 
+const herdrAgentName = z
+  .string()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/, 'must be a safe Herdr agent name');
+
 export const workflowBindingSchema = z.strictObject({
   agent_id: agentId,
   pane_id: paneId,
   native_session_id: sessionId.nullable(),
+  /**
+   * Optional live Herdr agent name when it differs from the agent id. An absent name
+   * keeps the sealed default (the agent id itself), so existing requests and their
+   * derived sealed bytes stay byte-identical.
+   */
+  herdr_agent: herdrAgentName.optional(),
 });
 
 export const WORKFLOW_RESOURCE_SCOPES = ['file', 'tree'] as const;

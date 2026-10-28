@@ -115,7 +115,7 @@ function accepted(
   // candidate is the base id judged against the current coordinator, exactly as before.
   const lineage = coordinatorLineage(record);
   const succession = hasSuccession(lineage);
-  // Decisions are found by `reply_to`, never by constructed id: any applied ANSWER that replies to
+  // Decisions are found by `reply_to`, never by constructed id: every applied ANSWER that replies to
   // a REPORT of this attempt. Without a succession the only candidate is the base id.
   const reportIds = new Set(
     record.messages

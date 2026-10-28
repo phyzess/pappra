@@ -49,7 +49,14 @@ stays `process_affiliation: "not-established"`.
 ## 2. Decide participants and bootstrap the receiving instance
 
 Pick participants, roles, harness, and configuration from the task rather than a
-fixed agent count. Everyone can implement, review, or verify; assign by need.
+fixed agent count. Participants implement, review, or verify; assign by need.
+The coordinator does not write implementation itself: it assesses, plans,
+writes briefs, dispatches, accepts or rejects reports, and runs the single
+final integration gate. Implementation and review are done by other
+participants, visible Pi peers by default. Small trivially-local edits are not
+exempt for repository source; the coordinator edits only coordination
+artifacts (briefs, request JSON, scratch) directly, and if no capable
+participant can be launched it reports the blocker rather than implementing.
 
 Which roles and how many participants are needed follows the real work split, and
 that choice belongs to the host agent reading the objective and change surface;
@@ -66,6 +73,40 @@ the task's cwd and the installed layout/`--no-focus` options you verified above,
 start the intended interactive agent there, and keep the user's focus unchanged.
 Do not add worktrees, workspaces, or tabs just to get a pane, and never take over
 an arbitrary idle pane.
+
+When `pappra collab bootstrap` splits a sibling pane for the task, placement is
+adaptive and keeps the coordinator pane large. `--ratio` is the fraction the
+original pane keeps; the new pane takes the rest. A task-owned sibling is a
+pane the task's own launch reservations created (the bootstrap's recorded
+`created_pane_id`) that is still present in the current layout. The rules:
+
+1. The first split of the caller pane goes `right` with ratio 0.6, keeping the
+   coordinator at roughly half the tab width or more. Once a task-owned
+   sibling exists, the coordinator pane is never split again.
+2. With one or more task-owned siblings, the next sibling splits the largest
+   existing sibling (by area; ties go to the earliest created) along its
+   longer visual dimension (`right` when its width exceeds twice its height,
+   else `down`) at ratio 0.5.
+3. Refuse to pick an anchor whose result would be narrower than 40 columns or
+   shorter than 10 rows. When no sibling can host another pane and the
+   coordinator is at its protected floor, the launch reports
+   `pane_layout_exhausted` with a short message telling the host to close or
+   reclaim finished panes, or reuse one; it never squeezes the coordinator.
+4. An explicit `target.direction` in the request keeps the legacy behaviour
+   exactly: split the caller pane in that direction with no ratio. Absence of
+   `direction` selects the adaptive policy; no request field is added or
+   renamed.
+5. Geometry that cannot be read (a Herdr error or an unparsable layout) falls
+   back to the legacy caller split with `--ratio 0.6` and direction `right`;
+   the launch never fails only because the layout was unreadable.
+
+The same rules guide manual sibling creation: keep the coordinator pane large
+and split task-owned siblings instead of the coordinator. When the coordinator
+starts a Pi participant it picks a suitable GLM or Kimi model explicitly rather
+than accepting a silent default: pass `--provider openrouter --model
+moonshotai/kimi-k2.7-code` for code work, `~z-ai/glm-latest` for general work,
+or `moonshotai/kimi-k3` for long-context review; a bootstrap request pins the
+same choice through `selected_model.openrouter_model`.
 
 ### One-time bounded discovery contact
 
@@ -96,7 +137,7 @@ child as a stand-in for the visible participant.
 Starting and contacting the interactive instance is not a readiness check and
 not permission to dispatch source work. Do not send an implementation prompt at
 this point, and do not substitute the isolated pilot launcher or bypass host
-approvals. Preserve the daily native model, tools, MCP, hooks, and permission
+approvals. Preserve the participant's model, tools, MCP, hooks, and permission
 settings.
 
 ## 3. Bind routing metadata

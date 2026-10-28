@@ -26,6 +26,7 @@ import {
   workflowManifestPath,
   workflowBindingPath,
   type WorkflowAssignmentDeclaration,
+  type WorkflowBinding,
   type WorkflowParticipant,
   type WorkflowPrepareRequest,
 } from '../../schemas/collab-workflow.js';
@@ -103,11 +104,7 @@ function participantFor(
 function bindingFor(
   request: WorkflowPrepareRequest,
   agentId: string,
-): {
-  agent_id: string;
-  pane_id: string;
-  native_session_id: string | null;
-} | null {
+): WorkflowBinding | null {
   return request.bindings.find((item) => item.agent_id === agentId) ?? null;
 }
 
@@ -301,22 +298,64 @@ export function deriveCohort(
     });
   }
 
+  // A Herdr agent name routes exactly one participant, and the notifier refuses a duplicate
+  // name only when delivering. Refuse the same duplicate here, before any artifact is
+  // sealed; an absent name defaults to the agent id, so a declared name colliding with
+  // another participant's default is caught as well.
+  const herdrAgentOwners = new Map<string, string>();
+  const herdrAgentOf = (agentId: string): string =>
+    bindingFor(request, agentId)?.herdr_agent ?? agentId;
+  for (const item of request.participants) {
+    const name = herdrAgentOf(item.agent_id);
+    const held = herdrAgentOwners.get(name);
+    if (held !== undefined)
+      return workflowFailure(
+        'binding_herdr_agent_duplicate',
+        `Herdr agent name ${name} is declared for both ${held} and ${item.agent_id}.`,
+        'Give each participant a distinct Herdr agent name; the notifier routes by that name.',
+      );
+    herdrAgentOwners.set(name, item.agent_id);
+  }
+  if (
+    bindingFor(request, request.coordinator.agent_id) !== null &&
+    participantFor(request, request.coordinator.agent_id) === null
+  ) {
+    const name = herdrAgentOf(request.coordinator.agent_id);
+    if (herdrAgentOwners.has(name))
+      return workflowFailure(
+        'binding_herdr_agent_duplicate',
+        `Herdr agent name ${name} is declared for both a participant and the coordinator ${request.coordinator.agent_id}.`,
+        'Give each participant a distinct Herdr agent name; the notifier routes by that name.',
+      );
+  }
+
   // Disjoint writer scopes are a property of the request, so they are checked here rather
-  // than discovered as a claim conflict after artifacts were sealed.
+  // than discovered as a claim conflict after artifacts were sealed. A read of one
+  // non-deferred assignment that overlaps another non-deferred assignment's write is refused
+  // here too: the domain scan below cannot see claims of this same, not-yet-applied request,
+  // so apply would otherwise take the first assignment's claims and fail the second
+  // half-applied. Read/read stays allowed, and deferred reviewers stay exempt as before.
   const writers = assignments.filter((item) => !item.deferred);
   for (let left = 0; left < writers.length; left += 1) {
     for (let right = left + 1; right < writers.length; right += 1) {
       const one = writers[left]!;
       const two = writers[right]!;
       for (const first of one.declaration.resources) {
-        if (first.access !== 'write') continue;
         for (const second of two.declaration.resources) {
-          if (second.access !== 'write') continue;
-          if (pathsOverlap(first.path, second.path))
+          if (!pathsOverlap(first.path, second.path)) continue;
+          if (first.access === 'write' && second.access === 'write')
             return workflowFailure(
               'assignment_scope_overlap',
               `Assignments ${one.declaration.subtask_id} and ${two.declaration.subtask_id} both write ${first.path} and ${second.path}.`,
               'Give each writer a disjoint footprint; overlapping writers are refused before any effect.',
+            );
+          if (first.access === 'write' || second.access === 'write')
+            return workflowFailure(
+              'assignment_scope_overlap',
+              first.access === 'write'
+                ? `Assignment ${one.declaration.subtask_id} writes ${first.path} while assignment ${two.declaration.subtask_id} reads ${second.path}.`
+                : `Assignment ${one.declaration.subtask_id} reads ${first.path} while assignment ${two.declaration.subtask_id} writes ${second.path}.`,
+              'Drop the read declaration (a writer can still read an unclaimed file) or move the read to a deferred reviewer.',
             );
         }
       }
@@ -1083,7 +1122,7 @@ export async function applyPrepare(
       agent_id: item.agent_id,
       harness: item.harness,
       cwd: item.cwd,
-      herdr_agent: item.agent_id,
+      herdr_agent: binding?.herdr_agent ?? item.agent_id,
       pane_id: binding?.pane_id ?? null,
       native_session_id: item.session_id,
     };
@@ -1099,7 +1138,8 @@ export async function applyPrepare(
         agent_id: request.coordinator.agent_id,
         harness: request.coordinator.harness,
         cwd: request.coordinator.cwd,
-        herdr_agent: request.coordinator.agent_id,
+        herdr_agent:
+          coordinatorBinding.herdr_agent ?? request.coordinator.agent_id,
         pane_id: coordinatorBinding.pane_id,
         native_session_id: request.coordinator.session_id,
       });

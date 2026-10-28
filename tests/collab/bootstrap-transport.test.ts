@@ -214,6 +214,50 @@ test('split preserves focus and start passes only the exact Pi session and gate 
   assert.equal(start.ok && start.value.interactiveReady, true);
 });
 
+test('splitPane emits --ratio when supplied and rejects invalid ratios', async () => {
+  const calls: { args: readonly string[] }[] = [];
+  const run: CommandRunner = async (_command, args, _timeoutMs) => {
+    calls.push({ args });
+    if (args[0] === 'pane' && args[1] === 'split')
+      return commandResult(envelope('pane_info', { pane: basePane }));
+    return commandResult('');
+  };
+  const ops = makeOps(run);
+  const split = await ops.splitPane({
+    paneId: 'w1:p1',
+    cwd: '/workspace/project',
+    direction: 'right',
+    ratio: 0.7,
+  });
+  assert.equal(split.ok, true);
+  assert.deepEqual(calls[0]?.args, [
+    'pane',
+    'split',
+    '--pane',
+    'w1:p1',
+    '--cwd',
+    '/workspace/project',
+    '--no-focus',
+    '--direction',
+    'right',
+    '--ratio',
+    '0.7',
+  ]);
+  for (const bad of [0, 0.05, 0.95, 1, NaN, Infinity, -0.5]) {
+    const refused = await ops.splitPane({
+      paneId: 'w1:p1',
+      cwd: '/workspace/project',
+      ratio: bad,
+    });
+    assert.equal(
+      refused.ok,
+      false,
+      `expected refusal for ratio ${String(bad)}`,
+    );
+    assert.equal(refused.ok ? null : refused.code, 'ratio_invalid');
+  }
+  assert.equal(calls.length, 1);
+});
 test('unknown effect outcome retains a bounded receipt and is not reported as a typed failure', async () => {
   const ops = makeOps(async () =>
     commandResult('', { timedOut: true, code: null, signal: 'SIGKILL' }),

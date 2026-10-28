@@ -65,6 +65,11 @@ import {
   type HerdrBootstrapOps,
 } from './collab-bootstrap-transport.js';
 import {
+  parsePaneLayout,
+  selectPanePlacement,
+  type PanePlacement,
+} from './collab-pane-layout.js';
+import {
   verifyAvailableShell,
   type ShellReadinessEvidence,
 } from './shell-readiness.js';
@@ -2034,6 +2039,103 @@ function participantSummary(
   };
 }
 
+function splitReportArgv(input: {
+  readonly anchorPaneId: string;
+  readonly cwd: string;
+  readonly direction: 'right' | 'down';
+  readonly ratio: number | undefined;
+}): readonly string[] {
+  const argv: string[] = [
+    'herdr',
+    'pane',
+    'split',
+    '--pane',
+    input.anchorPaneId,
+    '--cwd',
+    input.cwd,
+    '--no-focus',
+    '--direction',
+    input.direction,
+  ];
+  if (input.ratio !== undefined) argv.push('--ratio', String(input.ratio));
+  return argv;
+}
+
+function siblingPaneIdsForPlacement(
+  context: BootstrapContext,
+): readonly string[] {
+  const reservations = context.task.record.launch_reservations ?? [];
+  const siblings: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of reservations) {
+    const bootstrap = isRecord(entry['bootstrap']) ? entry['bootstrap'] : null;
+    const created =
+      bootstrap === null ? null : (bootstrap['created_pane_id'] ?? null);
+    if (
+      typeof created === 'string' &&
+      created !== context.caller.paneId &&
+      !seen.has(created)
+    ) {
+      seen.add(created);
+      siblings.push(created);
+    }
+  }
+  return siblings;
+}
+
+async function resolvePanePlacement(
+  context: BootstrapContext,
+): Promise<
+  | { readonly ok: true; readonly placement: PanePlacement }
+  | { readonly ok: false; readonly code: string; readonly message: string }
+> {
+  const request = context.request;
+  if (request.target.direction !== undefined) {
+    return {
+      ok: true,
+      placement: {
+        ok: true,
+        anchorPaneId: context.caller.paneId,
+        direction: request.target.direction,
+      },
+    };
+  }
+  const layoutResult = await context.ops.paneLayout(context.caller.paneId);
+  if (!layoutResult.ok) {
+    return {
+      ok: true,
+      placement: {
+        ok: true,
+        anchorPaneId: context.caller.paneId,
+        direction: 'right',
+        ratio: 0.6,
+      },
+    };
+  }
+  const layout = layoutResult.value;
+  const parsed = parsePaneLayout(layout);
+  if (parsed === null) {
+    return {
+      ok: true,
+      placement: {
+        ok: true,
+        anchorPaneId: context.caller.paneId,
+        direction: 'right',
+        ratio: 0.6,
+      },
+    };
+  }
+  const siblings = siblingPaneIdsForPlacement(context);
+  return {
+    ok: true,
+    placement: selectPanePlacement({
+      callerPaneId: context.caller.paneId,
+      layout: parsed,
+      siblingPaneIds: siblings,
+    }),
+  };
+}
+
 function planReport(
   context: BootstrapContext,
   action: BootstrapAction,
@@ -2093,29 +2195,44 @@ function planReport(
     state_revision: context.task.record.state_revision,
     caller: callerSummary(context),
     participant: participantSummary(context),
-    target: {
-      choice: request.target.choice,
-      cwd: request.target.cwd,
-      preserve_focus: true,
-      pane_id: paneId,
-      direction: request.target.direction ?? 'right',
-      split_argv:
-        request.target.choice === 'sibling'
-          ? [
-              'herdr',
-              'pane',
-              'split',
-              '--pane',
-              context.caller.paneId,
-              '--cwd',
-              request.target.cwd,
-              '--no-focus',
-              '--direction',
-              request.target.direction ?? 'right',
-            ]
-          : null,
-      launch_argv: startArgv,
-    },
+    target: (() => {
+      if (request.target.choice !== 'sibling') {
+        return {
+          choice: request.target.choice,
+          cwd: request.target.cwd,
+          preserve_focus: true,
+          pane_id: paneId,
+          split_argv: null,
+          launch_argv: startArgv,
+        };
+      }
+      if (request.target.direction === undefined) {
+        return {
+          choice: request.target.choice,
+          cwd: request.target.cwd,
+          preserve_focus: true,
+          pane_id: paneId,
+          direction: null,
+          placement: 'adaptive',
+          split_argv: null,
+          launch_argv: startArgv,
+        };
+      }
+      return {
+        choice: request.target.choice,
+        cwd: request.target.cwd,
+        preserve_focus: true,
+        pane_id: paneId,
+        direction: request.target.direction,
+        split_argv: splitReportArgv({
+          anchorPaneId: context.caller.paneId,
+          cwd: request.target.cwd,
+          direction: request.target.direction,
+          ratio: undefined,
+        }),
+        launch_argv: startArgv,
+      };
+    })(),
     bootstrap: {
       config_digest: context.configDigest,
       bundle_manifest_digest: context.bundle.digest,
@@ -3616,10 +3733,69 @@ async function applySibling(
     );
   }
   revision = pending.revision;
+  const placementResult = await resolvePanePlacement(context);
+  if (!placementResult.ok) {
+    const released = phase({
+      phase: 'split_intent_refused',
+      outcome: 'not_started',
+      release: true,
+      detail: placementResult.code,
+    });
+    return terminalReport(
+      context,
+      'failed',
+      placementResult.code,
+      placementResult.message,
+      'Close or reclaim finished panes, or reuse an existing participant before retrying.',
+      {
+        state_revision: released.ok ? released.revision : revision,
+        reservation: {
+          reservation_id: reservationId,
+          phase: 'not_started',
+          outcome: 'not_started',
+        },
+        effects: [
+          {
+            step: 'split',
+            status: 'not_started',
+            detail: placementResult.code,
+          },
+        ],
+      },
+    );
+  }
+  const placement = placementResult.placement;
+  if (!placement.ok) {
+    const released = phase({
+      phase: 'pane_layout_exhausted',
+      outcome: 'not_started',
+      release: true,
+      detail: placement.code,
+    });
+    return terminalReport(
+      context,
+      'failed',
+      placement.code,
+      placement.message,
+      'Close or reclaim finished panes, or reuse an existing participant before retrying.',
+      {
+        state_revision: released.ok ? released.revision : revision,
+        reservation: {
+          reservation_id: reservationId,
+          phase: 'not_started',
+          outcome: 'not_started',
+        },
+        effects: [
+          { step: 'split', status: 'not_started', detail: placement.code },
+        ],
+      },
+    );
+  }
   const split = await context.ops.splitPane({
-    paneId: context.caller.paneId,
+    paneId: placement.anchorPaneId,
     cwd: request.target.cwd,
-    direction: request.target.direction ?? 'right',
+    direction: placement.direction,
+    ...(placement.ratio === undefined ? {} : { ratio: placement.ratio }),
     onReceipt: persistReceipt(context, reservationId, now),
   });
   if (!split.ok) {
@@ -3650,6 +3826,7 @@ async function applySibling(
   if (
     !PANE_ID.test(pane.paneId) ||
     pane.paneId === context.caller.paneId ||
+    pane.paneId === placement.anchorPaneId ||
     pane.workspaceId !== context.caller.workspaceId ||
     pane.agent !== null ||
     pane.cwd === null ||
@@ -3683,6 +3860,9 @@ async function applySibling(
       created_terminal_id: pane.terminalId,
       created_tab_id: pane.tabId,
       created_cwd: pane.cwd,
+      anchor_pane_id: placement.anchorPaneId,
+      split_direction: placement.direction,
+      split_ratio: placement.ratio ?? null,
     },
   });
   if (!created.ok)
@@ -3700,7 +3880,7 @@ async function applySibling(
   steps.push({
     step: 'split',
     status: 'completed',
-    detail: `owned pane ${pane.paneId}`,
+    detail: `owned pane ${pane.paneId} from anchor ${placement.anchorPaneId} (${placement.direction}${placement.ratio === undefined ? '' : ` ratio ${String(placement.ratio)}`})`,
   });
 
   const readiness = await verifyAvailableShell(
@@ -4546,7 +4726,21 @@ async function applySibling(
     state_revision: final.ok ? final.revision : revision,
     caller: callerSummary(context),
     participant: participantSummary(context),
-    target: { ...request.target, pane_id: pane.paneId },
+    target: {
+      ...request.target,
+      pane_id: pane.paneId,
+      anchor_pane_id: placement.anchorPaneId,
+      direction: placement.direction,
+      split_ratio: placement.ratio ?? null,
+      placement:
+        request.target.direction === undefined ? 'adaptive' : 'explicit',
+      split_argv: splitReportArgv({
+        anchorPaneId: placement.anchorPaneId,
+        cwd: request.target.cwd,
+        direction: placement.direction,
+        ratio: placement.ratio,
+      }),
+    },
     bootstrap: {
       config_digest: context.configDigest,
       bundle_manifest_digest: context.bundle.digest,

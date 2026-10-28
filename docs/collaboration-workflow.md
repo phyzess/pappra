@@ -13,6 +13,23 @@ made, no message is registered, nothing is notified) or an explicit `--apply`
 write, and no action ever launches a session, consumes a notification or proves
 execution.
 
+## Cohort roles
+
+The coordinator assesses the work, plans, writes briefs, dispatches, accepts
+or rejects reports, and runs the single final integration gate. It does not
+implement repository source itself: implementation and review are done by
+other participants, visible Pi peers by default, and small trivially-local
+edits are not exempt for repository source. The coordinator edits only
+coordination artifacts (briefs, request JSON, scratch) directly; if no capable
+participant can be launched it reports the exact blocker instead of
+implementing.
+
+When the coordinator starts Pi participants it picks a suitable GLM or Kimi
+model explicitly (`--provider openrouter --model moonshotai/kimi-k2.7-code`
+for code work, `~z-ai/glm-latest` for general work, or `moonshotai/kimi-k3`
+for long-context review) and never falls back to a default model silently. A
+bootstrap request pins the same choice through `selected_model.openrouter_model`.
+
 ## Commands
 
 ```sh
@@ -86,6 +103,7 @@ exactly one coordinator entry (never a second one when the coordinator is also a
 declared participant). Without it dispatch refuses every ASSIGN with
 `binding_sender_missing`, because the notifier requires the sender to be
 described by the binding.
+A binding entry may optionally carry `herdr_agent`: the live Herdr agent name for that participant when it differs from `agent_id`. The default is `agent_id`, so existing requests stay byte-identical. Duplicate `herdr_agent` values across bindings are refused at plan time.
 
 A minimal prepare request with placeholders only — no real identity, path or
 observed evidence is implied:
@@ -129,7 +147,10 @@ observed evidence is implied:
       "objective": "Update the declared document.",
       "acceptance": ["The declared document is updated."],
       "resources": [
-        { "path": "/absolute/path/to/repository/docs/example.md", "access": "write" }
+        {
+          "path": "/absolute/path/to/repository/docs/example.md",
+          "access": "write"
+        }
       ],
       "required_skills": [],
       "required_tools": [],
@@ -172,10 +193,10 @@ with the identities and paths of your own cohort.
 
 This workflow keeps two digests apart on purpose:
 
-| Digest | Covers | Used for |
-| --- | --- | --- |
-| declaration identity | the normalized document, with `resource_epoch` projected out | plan ↔ sealed ↔ rerun idempotence, before any claim exists |
-| wire pin | the SHA-256 of the exact sealed file bytes, epochs included | `assignment_digest` in the ASSIGN body, the stored attempt, the applied manifest, and every admission comparison |
+| Digest               | Covers                                                       | Used for                                                                                                         |
+| -------------------- | ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| declaration identity | the normalized document, with `resource_epoch` projected out | plan ↔ sealed ↔ rerun idempotence, before any claim exists                                                       |
+| wire pin             | the SHA-256 of the exact sealed file bytes, epochs included  | `assignment_digest` in the ASSIGN body, the stored attempt, the applied manifest, and every admission comparison |
 
 The ASSIGN's `assignment_digest` is the wire pin. Launch admission re-reads the
 sealed file through a bounded, no-follow read and compares those exact bytes, so
@@ -187,7 +208,11 @@ and `message_digest` until the bytes are sealed.
 Each declared resource may also carry an explicit `scope`:
 
 ```json
-{ "path": "/absolute/path/repo/src/module.ts", "access": "write", "scope": "file" }
+{
+  "path": "/absolute/path/repo/src/module.ts",
+  "access": "write",
+  "scope": "file"
+}
 ```
 
 `scope` is optional and conservative. Absent means `tree`: a write claim on that
@@ -221,6 +246,8 @@ Apply re-derives the plan and refuses when anything is wrong, before writing:
 - any claim in the domain conflicts, including derived Git resources and
   unreadable task records (unknown ownership is never treated as free).
 
+Prepare also refuses read/write overlap between different non-deferred assignments at plan time (`assignment_scope_overlap`): if one assignment writes a path and another non-deferred assignment reads the same path, the plan is blocked with both subtasks, both paths and which side reads/writes in the message. Read/read overlap stays allowed, and deferred reviewers are exempt. Apply never takes any claim when the plan would have refused.
+
 Only then does it initialize the task, seal documents, stamp the input revision,
 register ASSIGN messages and claim footprints. A partial run reports
 `needs-reconciliation` with a concrete next action; a later apply reuses what is
@@ -246,6 +273,8 @@ Each attempt gets one durable intent under `workflow/intents/`. A second
 dispatch sees the intent and reports `dispatch_already_attempted`; a possibly
 delivered notification is never replayed. Delivery status is reported as
 recorded, and never implies consumption, execution or acceptance.
+
+Dispatch also derives ready-to-run participant request files for each dispatched attempt under `workflow/participant-requests/<subtask>-<attempt>/`: `ack.json`, `report.json` and `release.json`. They are valid `pappra/collab-workflow-participant-request/1` documents with the assignee as caller, the bound pane as `caller_pane`, the write resources as report `outputs` and the deterministic accept message id as `release.correlates_to`. They are created once with an exclusive write, are digest-stable on rerun, and are never overwritten once present. Edit only the `summary` field of `report.json`; never hand-write a `COLLAB_MESSAGE` line in chat, because that is not a registered message and is never accepted.
 
 A refusal that is provably pre-effect also records a typed
 `dispatch-<subtask>-<attempt>.outcome.json` with `effect: "none"` beside the
@@ -281,6 +310,8 @@ and nothing is delivered.
 must equal the registered attempt assignee on agent id, session id and harness;
 anything else is `sender_denied`. There is no on-behalf-of path: a coordinator
 that submitted a peer identity would fabricate a participant.
+
+For each dispatched attempt the coordinator has already written `workflow/participant-requests/<subtask>-<attempt>/{ack,report,release}.json`. Use those files exactly as given: `node dist/cli/main.js collab workflow ack|report|release --request <file> --apply --json`. A typed `COLLAB_MESSAGE` line in chat is not registered and is never accepted.
 
 - `report` computes output digests from the files that actually exist inside the
   attempt's own write claims. An output outside the claim, or an unreadable
@@ -420,12 +451,12 @@ after an extra decision sent through the lower-level message path. Dependent
 work is unlocked only when the work plan re-evaluates the decision (see
 [Acceptance](#acceptance)).
 
-| `status` | `ok` | Exit | Meaning |
-| --- | --- | --- | --- |
-| `decided` | `true` | `0` | A valid accept decision exists. `detail.decision` names it and `messages` lists it; the next action is `release`. |
-| `timeout` | `false` | `1` | No valid decision appeared within `timeout_seconds` (one `await_timeout` blocker). Not a refusal and not a decision: run `await` again or ask the coordinator. |
-| `refused` | `false` | `1` | The caller is not the attempt's participant, or the attempt is not registered. |
-| `invalid` | `false` | `1` | The task could not be read, or changed during the wait. An invalid document or argument is exit `2` and never reaches the wait. |
+| `status`  | `ok`    | Exit | Meaning                                                                                                                                                        |
+| --------- | ------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `decided` | `true`  | `0`  | A valid accept decision exists. `detail.decision` names it and `messages` lists it; the next action is `release`.                                              |
+| `timeout` | `false` | `1`  | No valid decision appeared within `timeout_seconds` (one `await_timeout` blocker). Not a refusal and not a decision: run `await` again or ask the coordinator. |
+| `refused` | `false` | `1`  | The caller is not the attempt's participant, or the attempt is not registered.                                                                                 |
+| `invalid` | `false` | `1`  | The task could not be read, or changed during the wait. An invalid document or argument is exit `2` and never reaches the wait.                                |
 
 Only `decided` exits `0`, so `await && release` stops at a timeout instead of
 releasing without a decision. `timeout`, `refused` and `invalid` all exit `1`:
@@ -458,6 +489,40 @@ Panes started by hand, reused panes and anything that fails a check are kept and
 reported in `detail.pane_reclaim` with a reason. The close intent is recorded
 first; an ambiguous close is reconciled, never replayed, while a definite
 failure stays retryable.
+
+## Adaptive pane placement
+
+`collab bootstrap` splits panes adaptively so the coordinator pane stays large
+instead of being halved for every extra participant. `--ratio` is the fraction
+the original pane keeps; the new pane takes the rest. A task-owned sibling is
+a pane the task's own launch reservations created (the bootstrap's recorded
+`created_pane_id`) that is still present in the current layout.
+
+1. The first split of the caller pane goes `right` with ratio 0.6, keeping the
+   coordinator at roughly half the tab width or more. Once a task-owned
+   sibling exists, the coordinator pane is never split again.
+2. With one or more task-owned siblings, the next sibling splits the largest
+   existing sibling (by area; ties go to the earliest created) along its
+   longer visual dimension (`right` when its width exceeds twice its height,
+   else `down`) at ratio 0.5.
+3. Refuse to pick an anchor whose result would be narrower than 40 columns or
+   shorter than 10 rows. When no sibling can host another pane and the
+   coordinator is at its protected floor, the bootstrap reports
+   `pane_layout_exhausted` with a short message telling the host to close or
+   reclaim finished panes, or reuse one; it never squeezes the coordinator.
+4. An explicit `target.direction` in the request keeps the legacy behaviour
+   exactly: split the caller pane in that direction with no ratio. Absence of
+   `direction` selects the adaptive policy; no request field is added or
+   renamed.
+5. Geometry that cannot be read (a Herdr error or an unparsable layout) falls
+   back to the legacy caller split with `--ratio 0.6` and direction `right`;
+   the launch never fails only because the layout was unreadable.
+
+The post-split identity checks keep holding with any anchor: the new pane must
+stay in the caller's workspace, differ from the caller and from the anchor,
+have no agent, and match the target cwd. Pane reclaim keeps closing only panes
+Pappra itself created; closing a sibling that anchored a later sibling is fine
+because Herdr re-flows the tree.
 
 ## Coordinator succession and adoption
 
@@ -514,6 +579,8 @@ and binding digests, attempts with their state, native observation, active claim
 count and applied result, deferred assignments, open uncertainty and registered
 messages. A missing manifest or binding is reported as absent, never
 reconstructed from the request that once produced it.
+
+`inspect` warns `ack_not_registered` for every dispatched attempt whose dispatch intent exists but has no applied ACK message. The warning is read-only, never a blocker, and never starts a timer.
 
 `inspect --limit <1-500>` keeps only the last entries of each projected list
 (attempts, messages, open uncertainty, deferred) in record order — the newest

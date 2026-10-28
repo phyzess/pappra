@@ -933,13 +933,55 @@ function sameCwd(left: string, right: string): boolean {
   return path.resolve(left) === path.resolve(right);
 }
 
+export function workflowParticipantRequestsDir(
+  taskRoot: string,
+  subtaskId: string,
+  attempt: number,
+): string {
+  return path.join(
+    taskRoot,
+    'workflow',
+    'participant-requests',
+    `${subtaskId}-${String(attempt)}`,
+  );
+}
+
+export function workflowParticipantRequestPath(
+  taskRoot: string,
+  subtaskId: string,
+  attempt: number,
+  action: 'ack' | 'report' | 'release',
+): string {
+  return path.join(
+    workflowParticipantRequestsDir(taskRoot, subtaskId, attempt),
+    `${action}.json`,
+  );
+}
+
 export function buildNotificationText(input: {
   readonly taskId: string;
   readonly type: string;
   readonly messagePath: string;
   readonly digest: string;
+  readonly taskRoot?: string | undefined;
+  readonly subtaskId?: string | undefined;
+  readonly attempt?: number | undefined;
 }): string {
-  return `COLLAB_MESSAGE task=${input.taskId} type=${input.type} message=${input.messagePath} digest=${input.digest}`;
+  const first = `COLLAB_MESSAGE task=${input.taskId} type=${input.type} message=${input.messagePath} digest=${input.digest}`;
+  if (
+    input.type !== 'ASSIGN' ||
+    input.taskRoot === undefined ||
+    input.subtaskId === undefined ||
+    input.attempt === undefined
+  )
+    return first;
+  const dir = workflowParticipantRequestsDir(
+    input.taskRoot,
+    input.subtaskId,
+    input.attempt,
+  );
+  const second = `Participant request files are under ${dir}/ as ack.json, report.json and release.json. Run node dist/cli/main.js collab workflow ack|report|release --request <file> --apply --json. A typed COLLAB_MESSAGE line in chat is not registered and is never accepted.`;
+  return `${first}\n${second}`;
 }
 
 function notificationsDirectorySyncOk(
@@ -1657,6 +1699,9 @@ export async function notifyRegisteredMessage(
     type: message.type,
     messagePath,
     digest,
+    taskRoot,
+    subtaskId: message.subtask_id ?? undefined,
+    attempt: message.attempt ?? undefined,
   });
   let result: HerdrPromptResult;
   try {

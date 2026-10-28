@@ -13,6 +13,10 @@ import type {
   HerdrTransport,
 } from './collab-notify.js';
 
+import {
+  parsePaneLayout,
+  type PaneLayoutGeometry,
+} from './collab-pane-layout.js';
 const READ_TIMEOUT_MS = 10_000;
 const SPLIT_TIMEOUT_MS = 20_000;
 const START_TIMEOUT_MS = 180_000;
@@ -202,10 +206,15 @@ export interface HerdrBootstrapOps {
     paneId: string,
     timeoutMs?: number,
   ): Promise<BootstrapOperationResult<BootstrapProcessSnapshot>>;
+  paneLayout(
+    paneId: string,
+    timeoutMs?: number,
+  ): Promise<BootstrapOperationResult<PaneLayoutGeometry>>;
   splitPane(input: {
     readonly paneId: string;
     readonly cwd: string;
     readonly direction?: 'right' | 'down';
+    readonly ratio?: number;
     readonly timeoutMs?: number;
     readonly onReceipt?: BootstrapReceiptWriter;
   }): Promise<BootstrapOperationResult<BootstrapPaneSnapshot>>;
@@ -746,10 +755,21 @@ export function createHerdrBootstrapOps(
           };
         },
       }),
+    paneLayout: (paneId, timeoutMs = READ_TIMEOUT_MS) =>
+      invoke({
+        run,
+        bin,
+        operation: 'pane.layout',
+        args: ['pane', 'layout', '--pane', paneId],
+        timeoutMs,
+        expectedType: 'pane_layout',
+        select: (result) => parsePaneLayout(result['layout']),
+      }),
     splitPane: ({
       paneId,
       cwd,
       direction,
+      ratio,
       timeoutMs = SPLIT_TIMEOUT_MS,
       onReceipt,
     }) => {
@@ -773,6 +793,19 @@ export function createHerdrBootstrapOps(
             emptyReceipt('pane.split'),
           ),
         );
+      if (
+        ratio !== undefined &&
+        (!Number.isFinite(ratio) || ratio < 0.1 || ratio > 0.9)
+      )
+        return Promise.resolve(
+          fail(
+            'failed',
+            'ratio_invalid',
+            'Split ratio must be a finite number between 0.1 and 0.9',
+            null,
+            emptyReceipt('pane.split'),
+          ),
+        );
       const args = [
         'pane',
         'split',
@@ -783,6 +816,7 @@ export function createHerdrBootstrapOps(
         '--no-focus',
       ];
       if (direction !== undefined) args.push('--direction', direction);
+      if (ratio !== undefined) args.push('--ratio', String(ratio));
       return invoke({
         run,
         bin,

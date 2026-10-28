@@ -48,9 +48,11 @@ import {
   workflowIntentsDir,
   workflowManifestPath,
   workflowWorkPlanPath,
+  WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
   type WorkflowDispatchRequest,
   type WorkflowDispatchTarget,
 } from '../../schemas/collab-workflow.js';
+import { workflowParticipantRequestPath } from '../collab-notify.js';
 import {
   digestFile,
   assertRealChain,
@@ -610,10 +612,25 @@ export function evaluateCohortPlan(
 export interface DispatchPlanReport {
   readonly nodes: readonly DispatchNodeState[];
   readonly blockers: readonly WorkflowBlocker[];
+  readonly warnings: readonly string[];
   readonly deferred: readonly {
     readonly subtask_id: string;
     readonly reason: string;
   }[];
+}
+
+function ackRegistered(
+  record: TaskRecord,
+  subtaskId: string,
+  attempt: number,
+): boolean {
+  return (record.messages ?? []).some(
+    (message) =>
+      message.type === 'ACK' &&
+      message.subtask_id === subtaskId &&
+      message.attempt === attempt &&
+      message.state === 'applied',
+  );
 }
 
 function collectNodes(
@@ -784,7 +801,151 @@ function collectNodes(
     });
     blockers.push(...nodeBlockers);
   }
-  return { nodes, blockers, deferred };
+  const warnings: string[] = [];
+  for (const node of nodes) {
+    const intentFile = path.join(
+      workflowIntentsDir(record.task_root),
+      `dispatch-${node.subtask_id}-${node.attempt}.json`,
+    );
+    if (
+      fs.existsSync(intentFile) &&
+      !ackRegistered(record, node.subtask_id, node.attempt)
+    ) {
+      warnings.push(`${node.subtask_id}#${node.attempt}: ack_not_registered`);
+    }
+  }
+  return { nodes, blockers, deferred, warnings };
+}
+
+interface WorkflowManifestSnapshot {
+  readonly participants?: readonly {
+    readonly agent_id: string;
+    readonly session_id: string;
+    readonly harness: string;
+    readonly cwd: string;
+  }[];
+  readonly bindings?: readonly {
+    readonly agent_id: string;
+    readonly pane_id: string;
+  }[];
+  readonly assignments?: readonly {
+    readonly subtask_id: string;
+    readonly resources?: readonly {
+      readonly path: string;
+      readonly access: string;
+    }[];
+  }[];
+}
+
+function deriveParticipantRequestFiles(
+  taskRoot: string,
+  subtaskId: string,
+  attempt: number,
+  assignee: {
+    readonly agent_id: string;
+    readonly session_id: string;
+    readonly harness: string;
+  },
+  manifest: WorkflowManifestSnapshot,
+  coordinatorFallbackCwd: string,
+):
+  | { readonly ok: true }
+  | { readonly ok: false; readonly blocker: WorkflowBlocker } {
+  const participant = manifest.participants?.find(
+    (item) => item.agent_id === assignee.agent_id,
+  );
+  const binding = manifest.bindings?.find(
+    (item) => item.agent_id === assignee.agent_id,
+  );
+  const assignment = manifest.assignments?.find(
+    (item) => item.subtask_id === subtaskId,
+  );
+  const caller = {
+    agent_id: assignee.agent_id,
+    session_id: assignee.session_id,
+    harness: assignee.harness,
+    cwd: participant?.cwd ?? coordinatorFallbackCwd,
+  };
+  const callerPane = binding?.pane_id ?? null;
+  const outputs =
+    assignment?.resources
+      ?.filter((resource) => resource.access === 'write')
+      .map((resource) => resource.path) ?? [];
+  const base = {
+    schema: WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
+    task_root: taskRoot,
+    caller,
+    subtask_id: subtaskId,
+    attempt,
+    caller_pane: callerPane,
+  };
+  const files = [
+    {
+      file: workflowParticipantRequestPath(taskRoot, subtaskId, attempt, 'ack'),
+      value: { ...base, action: 'ack' },
+    },
+    {
+      file: workflowParticipantRequestPath(
+        taskRoot,
+        subtaskId,
+        attempt,
+        'report',
+      ),
+      value: {
+        ...base,
+        action: 'report',
+        report: {
+          status: 'running',
+          summary: 'Replace this placeholder summary before running report.',
+          blockers: [],
+          outputs,
+        },
+      },
+    },
+    {
+      file: workflowParticipantRequestPath(
+        taskRoot,
+        subtaskId,
+        attempt,
+        'release',
+      ),
+      value: {
+        ...base,
+        action: 'release',
+        release: {
+          reason: 'Released after coordinator acceptance.',
+          cancel_attempt: false,
+          correlates_to: `accept-${subtaskId}-${attempt}`,
+        },
+      },
+    },
+  ];
+  for (const { file, value } of files) {
+    const written = writeJsonExclusive(taskRoot, file, value);
+    if (written.status === 'unsafe') {
+      return {
+        ok: false,
+        blocker: {
+          code: 'participant_request_unsafe',
+          detail: `Cannot write participant request ${file}: ${written.detail}.`,
+          next_action:
+            'Inspect the workflow/participant-requests directory; nothing was notified.',
+        },
+      };
+    }
+    if (written.status === 'conflict') {
+      return {
+        ok: false,
+        blocker: {
+          code: 'participant_request_conflict',
+          detail: `Participant request ${file} already exists with different content.`,
+          next_action:
+            'Edit only the summary field of the provided report.json; never edit derived request files directly.',
+        },
+      };
+    }
+  }
+  return { ok: true };
 }
 
 export function planDispatch(
@@ -1119,6 +1280,7 @@ export async function applyDispatch(
       state_revision: task.record.state_revision,
       principal: { ...request.caller, role: 'coordinator' },
       blockers: planned.blockers,
+      warnings: planned.warnings,
       next_action: planned.blockers[0]?.next_action ?? null,
       detail: {
         ...type,
@@ -1143,6 +1305,7 @@ export async function applyDispatch(
         card: node.card_state,
       })),
       blockers: planned.blockers,
+      warnings: planned.warnings,
       next_action:
         planned.blockers[0]?.next_action ??
         'Plan only: no intent was recorded and nothing was notified.',
@@ -1154,6 +1317,7 @@ export async function applyDispatch(
 
   const blockers: WorkflowBlocker[] = [];
   const warnings: string[] = [];
+  warnings.push(...planned.warnings);
   const unadopted = unadoptedWarning(task.taskRoot);
   if (unadopted !== null) warnings.push(unadopted);
   const notified: string[] = [];
@@ -1161,6 +1325,37 @@ export async function applyDispatch(
   const activationOnly: string[] = [];
   const messages: WorkflowResult['messages'][number][] = [];
   const native: WorkflowResult['native'][number][] = [];
+  const manifestRead = readBoundedJson(
+    workflowManifestPath(task.taskRoot),
+    'workflow manifest',
+  );
+  if (!manifestRead.ok) {
+    return {
+      ...base,
+      status: 'blocked',
+      task_id: task.record.task_id,
+      task_root: task.taskRoot,
+      domain_root: task.record.domain_root,
+      state_revision: task.record.state_revision,
+      principal: { ...request.caller, role: 'coordinator' },
+      blockers: [
+        {
+          code: 'workflow_manifest_unreadable',
+          detail: manifestRead.message,
+          next_action:
+            'Inspect the sealed workflow manifest; dispatch cannot derive participant requests without it.',
+        },
+      ],
+      warnings: planned.warnings,
+      next_action:
+        'Inspect the sealed workflow manifest; dispatch cannot derive participant requests without it.',
+      detail: {
+        ...type,
+        intents: planned.deferred.map((item) => item.subtask_id),
+      },
+    };
+  }
+  const manifest = manifestRead.value as WorkflowManifestSnapshot;
 
   const deliverNode = async (node: {
     readonly subtask_id: string;
@@ -1169,6 +1364,11 @@ export async function applyDispatch(
     readonly card_file: string | null;
     readonly card_state: string;
     readonly evidence_checked: number;
+    readonly assignee: {
+      readonly agent_id: string;
+      readonly session_id: string;
+      readonly harness: string;
+    };
   }): Promise<void> => {
     const intentFile = path.join(
       workflowIntentsDir(task.taskRoot),
@@ -1221,6 +1421,18 @@ export async function applyDispatch(
       return;
     }
     intents.push(intentFile);
+    const derived = deriveParticipantRequestFiles(
+      task.taskRoot,
+      node.subtask_id,
+      node.attempt,
+      node.assignee,
+      manifest,
+      request.caller.cwd,
+    );
+    if (!derived.ok) {
+      blockers.push(derived.blocker);
+      return;
+    }
     if (!acquireOutcomeLock(outcomeLockFile)) {
       blockers.push({
         code: 'dispatch_already_attempted',
@@ -1826,6 +2038,11 @@ export async function applyDispatch(
               reviewTarget.capabilities_file ?? reviewTarget.session_file,
             card_state: resolvedReview.state,
             evidence_checked: 0,
+            assignee: {
+              agent_id: String(assignee.agent_id),
+              session_id: String(assignee.session_id),
+              harness: String(assignee.harness),
+            },
           });
       }
     }

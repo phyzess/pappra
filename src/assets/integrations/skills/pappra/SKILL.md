@@ -105,16 +105,37 @@ surface: complexity, dependency blast radius, disjoint write scopes, and risk.
 There is no backend role inferencer, no fixed participant count, and no repeated
 permission prompt once the user authorized the work.
 
-Make the choice explicit before implementation. A cohesive writer may stay in
-the primary session, but changes to authorization, resource ownership, durable
-state/recovery or release execution need independent review before completion.
-Use this workflow to assign that review to an observed native participant; a
-single write scope is not a reason to skip it. A review-only assignment can
-itself satisfy independent review and needs no recursive reviewer. Delegate
-disjoint implementation scopes when that reduces the critical path. If identity,
-the native channel or a required capability is unavailable, record the specific
-blocker and keep review outstanding; never silently substitute self-review or
-another harness. Ordinary local reversible edits remain direct work.
+Make the choice explicit before implementation. The coordinator does not write
+implementation itself: it assesses, plans, writes briefs, dispatches, accepts
+or rejects reports, and runs the single final integration gate, while
+implementation and review are done by other participants, visible Pi peers by
+default. Small trivially-local edits are not exempt for repository source; the
+coordinator edits only coordination artifacts (briefs, request JSON, scratch)
+directly, and if no capable participant can be launched it reports the blocker
+rather than implementing. Changes to authorization, resource ownership, durable
+state/recovery or release execution still need independent review before
+completion; use this workflow to assign that review to an observed native
+participant, and a single write scope is not a reason to skip it. A
+review-only assignment can itself satisfy independent review and needs no
+recursive reviewer. Delegate disjoint implementation scopes when that reduces
+the critical path. If identity, the native channel or a required capability is
+unavailable, record the specific blocker and keep the work outstanding; never
+silently substitute self-review, self-implementation or another harness.
+
+When a cohort bootstraps a visible sibling pane, placement keeps the
+coordinator readable: the first split of the caller pane goes `right` with
+`--ratio 0.6` (the fraction the original pane keeps), the coordinator pane is
+never split again once a task-owned sibling exists, and later siblings split
+the largest task-owned sibling along its longer visual dimension at ratio 0.5.
+A candidate that would be narrower than 40 columns or shorter than 10 rows is
+refused, an exhausted layout reports `pane_layout_exhausted` instead of
+squeezing the coordinator, an explicit `target.direction` keeps the legacy
+caller split, and unreadable geometry falls back to a right split of the
+caller at ratio 0.6 (see `references/environment.md`). When starting Pi
+participants the coordinator picks a suitable GLM or Kimi model explicitly,
+for example `--provider openrouter --model moonshotai/kimi-k2.7-code` for
+code, `~z-ai/glm-latest` for general work, or `moonshotai/kimi-k3` for
+long-context review, and never falls back silently.
 
 Use the installed commands in this order; roles never grant authority:
 

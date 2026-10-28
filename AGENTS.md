@@ -35,24 +35,29 @@ work: current behaviour, callers and tests in the blast radius, whether the chan
 is one write scope or several disjoint ones, and whether risk (release, protocol,
 security, persistence, cross-cutting behaviour) warrants an independent reviewer.
 
-- Simple, reversible, local change: implement it directly. Do not add
-  coordination ceremony to small work.
-- Cohesive work without an independent slice can stay with the current agent.
-  Use Pappra's role commands when independent implementation or review is
-  justified by the assessment.
+- Coordination artifacts (briefs, request JSON, scratch) are the coordinator's
+  direct work; keep those edits simple, reversible and free of ceremony.
+- Repository source is implemented by participants, never by the coordinator
+  itself. The coordinator assesses, plans, writes briefs, dispatches, accepts
+  or rejects reports, and runs the single final integration gate;
+  implementation and review are done by other participants, visible Pi peers
+  by default. Small trivially-local edits are not exempt for repository source
+  in this project.
 
 A single write scope does not remove the need for independent review. Changes
 to authorization, resource ownership, persisted state/recovery or release
-execution require an independent review before completion. The primary agent
-may implement a cohesive change itself; then arrange a separate reviewer through
-Pappra's workflow using observed native participants. For disjoint implementation
-scopes, delegate them when doing so reduces the critical path. Record this choice
-before implementation. A review-only assignment can itself be that independent
+execution require an independent review before completion, performed by a
+separate reviewer participant through Pappra's workflow using observed native
+participants. For disjoint implementation scopes, delegate them to different
+writers when doing so reduces the critical path. Record this choice before
+implementation. A review-only assignment can itself be that independent
 review; it does not need another reviewer recursively.
 
-If the native channel, identity or required capability is unavailable, report
-the exact blocker and retain the outstanding review requirement. Do not silently
-replace it with self-review, a different harness or an unrelated global tool.
+If no capable participant can be launched, the coordinator reports the exact
+blocker instead of implementing itself. If the native channel, identity or
+required capability is unavailable, report the exact blocker and retain the
+outstanding review requirement. Do not silently substitute self-review,
+self-implementation, a different harness or an unrelated global tool.
 
 ## Independent implementation and review
 
@@ -90,6 +95,27 @@ node dist/cli/main.js collab role-plan aggregate --request <abs role-plan.json> 
   observed evidence. Never invent them from prose, and never substitute a
   different harness (for a Codex subagent, for example) for a participant the task
   named.
+
+When the workflow bootstraps a visible sibling pane, placement is adaptive and
+keeps the coordinator readable. `--ratio` is the fraction the original pane
+keeps. The first split of the caller pane goes `right` with ratio 0.6, so the
+coordinator keeps roughly half the tab width or more, and once a task-owned
+sibling exists the coordinator pane is never split again. Later siblings split
+the largest task-owned sibling (ties go to the earliest created) along its
+longer visual dimension (`right` when its width exceeds twice its height,
+else `down`) at ratio 0.5. Refuse an anchor whose result would be narrower
+than 40 columns or shorter than 10 rows; when no sibling can host another
+pane, the bootstrap reports `pane_layout_exhausted` and tells the host to
+close or reclaim finished panes instead of squeezing the coordinator. An
+explicit `target.direction` keeps the legacy caller split exactly, and
+geometry that cannot be read falls back to a right split of the caller with
+ratio 0.6 rather than failing the launch. A task-owned sibling is a pane the
+task's own launch reservations created that is still present in the layout.
+
+When the coordinator starts Pi participants it picks a suitable GLM or Kimi
+model explicitly (`--provider openrouter --model moonshotai/kimi-k2.7-code`
+for code work, `~z-ai/glm-latest` for general work, `moonshotai/kimi-k3` for
+long-context review) and never falls back to a default model silently.
 
 ## Authorization and safety
 

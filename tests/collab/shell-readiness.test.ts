@@ -98,6 +98,9 @@ function opsFor(
       const value = values[Math.min(processIndex++, values.length - 1)]!;
       return ok('pane.process-info', value);
     },
+    paneLayout: async () => {
+      throw new Error('not used');
+    },
     splitPane: async () => {
       throw new Error('not used');
     },

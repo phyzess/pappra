@@ -567,6 +567,7 @@ function fakeOps(
     readonly readiness?: 'ready' | 'timeout';
     readonly foreignProcess?: boolean;
     readonly splitUnknown?: boolean;
+    readonly paneLayoutFail?: boolean;
     readonly onVerifyCaller?: (call: number) => void | Promise<void>;
     readonly onPaneGet?: (call: number) => void | Promise<void>;
     readonly onTransportVerify?: () => void | Promise<void>;
@@ -675,6 +676,26 @@ function fakeOps(
             : [{ pid: 51, name: 'zsh' }],
       };
       return operationOk('pane.process-info', value);
+    },
+    paneLayout: async (paneId) => {
+      if (options.paneLayoutFail)
+        return {
+          ok: false,
+          status: 'unavailable' as const,
+          code: 'herdr_command_failed',
+          detail: 'layout unreadable',
+          correlationId: null,
+          receipt: commandReceipt('pane.layout'),
+        };
+      return operationOk('pane.layout', {
+        area: { width: 230, height: 68 },
+        panes: [
+          {
+            paneId,
+            rect: { x: 0, y: 0, width: 230, height: 68 },
+          },
+        ],
+      });
     },
     splitPane: async (input) => {
       counts.split += 1;
@@ -1212,6 +1233,34 @@ test('apply composes reserve, visible sibling, readiness, exact gate start, bind
   }
 });
 
+test('adaptive apply falls back to caller split with ratio 0.6 when layout is unreadable', async () => {
+  const value = fixture('bootstrap-apply');
+  try {
+    const host = fakeOps(value, { paneLayoutFail: true });
+    const deps = dependencies(value, host);
+    const adaptiveTarget = { ...value.request.target } as Record<
+      string,
+      unknown
+    >;
+    delete adaptiveTarget['direction'];
+    const request = {
+      ...value.request,
+      target: adaptiveTarget,
+    } as VisibleBootstrapRequest;
+    const report = await applyVisibleBootstrap(request, deps);
+    assert.equal(report.status, 'applied');
+    assert.equal(report.ok, true);
+    assert.equal(host.counts.split, 1);
+    const target = report.target as Record<string, unknown>;
+    assert.equal(target['anchor_pane_id'], 'w1:p1');
+    assert.equal(target['direction'], 'right');
+    assert.equal(target['split_ratio'], 0.6);
+    assert.ok(Array.isArray(target['split_argv']));
+    assert.ok((target['split_argv'] as string[]).includes('--ratio'));
+  } finally {
+    value.cleanup();
+  }
+});
 test('ambiguous notification is durably reconciled and never retried on duplicate apply', async () => {
   const value = fixture('bootstrap-ambiguous-notify');
   try {
