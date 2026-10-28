@@ -1529,7 +1529,7 @@ export function submitResultReport(
   const appliedMessage = record?.messages?.find(
     (entry) => entry.message_id === messageId,
   );
-  const effect = submitted.applied.result as {
+  const effect = submitted.applied?.result as {
     classification?: unknown;
   } | null;
   const classification =

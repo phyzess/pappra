@@ -593,3 +593,77 @@ test('sealed byte drift and native observation prevent an otherwise undelivered 
     }
   }
 });
+
+test('a successor coordinator activates a deferred reviewer sealed under the earlier epoch', async () => {
+  const f = await fixture();
+  try {
+    const next = {
+      agent_id: 'next-coordinator',
+      session_id: 'next-session',
+      harness: 'claude',
+    };
+    const endedAt = '2099-01-01T00:00:00Z';
+    const done = transact<null>(f.taskRoot, {
+      actor: 'fixture',
+      purpose: 'succeed',
+      apply: (record) => {
+        const before = {
+          agent_id: owner.agent_id,
+          session_id: owner.session_id,
+          owner_epoch: 1,
+        };
+        record.coordinator = {
+          ...next,
+          owner_epoch: 2,
+          since: endedAt,
+          previous: before,
+        };
+        record.handoffs = [
+          ...record.handoffs,
+          {
+            schema: 'harness-collab/handoff/1',
+            handoff_id: 'h1',
+            kind: 'coordinator',
+            subtask_id: null,
+            attempt: null,
+            from: owner,
+            to: next,
+            resources: [],
+            ownership_snapshot: [],
+            state: 'completed',
+            owner_epoch: 2,
+            created_at: endedAt,
+            updated_at: endedAt,
+            reason: null,
+            steps: [{ state: 'completed', at: endedAt, actor: 'fixture' }],
+            partial_outputs: [],
+            inflight: [],
+            pending_approvals: [],
+            confirmation_message_id: null,
+            previous_coordinator: { ...owner, ...before },
+          },
+        ];
+        return { record, op: 'succeed', summary: {}, result: null };
+      },
+    });
+    assert.equal(done.ok, true, JSON.stringify(done));
+    const successor = await applyDispatch(
+      { ...f.request, caller: { ...next, cwd: f.request.caller.cwd } },
+      { adapter: f.adapter },
+    );
+    // The sealed reviewer assignment names the earlier coordinator's epoch; the successor is the
+    // current coordinator and may activate it. Nothing about the old identity may block that.
+    assert.ok(
+      !successor.blockers.some(
+        (item) => item.code === 'review_activation_identity_mismatch',
+      ),
+      JSON.stringify(successor.blockers),
+    );
+    const attempt = readRecord(f.taskRoot)!.attempts.find(
+      (item) => item.subtask_id === 'review',
+    );
+    assert.equal(attempt?.owner_epoch, 2);
+  } finally {
+    f.cleanup();
+  }
+});

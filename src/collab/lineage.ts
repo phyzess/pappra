@@ -312,6 +312,16 @@ export function lineageContains(
   return lineageEntry(lineage, epoch) !== null;
 }
 
+/** True when `identity` is the lineage's coordinator for exactly `epoch` (session included). */
+export function lineageHolds(
+  lineage: CoordinatorLineage,
+  epoch: number,
+  identity: LineageIdentity,
+): boolean {
+  const entry = lineageEntry(lineage, epoch);
+  return entry !== null && sameIdentity(entry.identity, identity);
+}
+
 export interface EvidenceVerdict {
   readonly valid: boolean;
   readonly reason:

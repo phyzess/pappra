@@ -1,4 +1,9 @@
 import { findAttempt } from '../collab/lifecycle.js';
+import {
+  coordinatorLineage,
+  hasSuccession,
+  judgeEvidence,
+} from '../collab/lineage.js';
 import { contentDigest, readRegisteredMessage } from '../collab/envelope.js';
 import { readRecord, transact } from '../collab/store.js';
 import type { LaunchReservation, TaskRecord } from '../collab/types.js';
@@ -103,26 +108,75 @@ function accepted(
 ): boolean {
   const coordinator = record.coordinator;
   if (coordinator === null) return false;
-  const applied = record.messages.some(
+  const baseId = `accept-${subtaskId}-${attempt}`;
+  // After a succession the decision may carry an epoch-qualified id (`...-e<epoch>`) and may have
+  // been made by an earlier coordinator of the same authority line, so every applied decision of
+  // this attempt is a candidate and each is judged by the lineage. Without one, the only
+  // candidate is the base id judged against the current coordinator, exactly as before.
+  const lineage = coordinatorLineage(record);
+  const succession = hasSuccession(lineage);
+  // Decisions are found by `reply_to`, never by constructed id: any applied ANSWER that replies to
+  // a REPORT of this attempt. Without a succession the only candidate is the base id.
+  const reportIds = new Set(
+    record.messages
+      .filter(
+        (message) =>
+          message.type === 'REPORT' &&
+          message.subtask_id === subtaskId &&
+          message.attempt === attempt,
+      )
+      .map((message) => message.message_id),
+  );
+  const candidates = record.messages.filter(
     (message) =>
       message.type === 'ANSWER' &&
-      message.message_id === `accept-${subtaskId}-${attempt}` &&
-      message.state !== 'rejected',
+      message.state !== 'rejected' &&
+      (succession
+        ? message.reply_to !== null && reportIds.has(message.reply_to)
+        : message.message_id === baseId),
   );
-  if (!applied) return false;
-  const answer = readRegisteredMessage(
-    taskRoot,
-    `accept-${subtaskId}-${attempt}`,
+  return candidates.some((entry) =>
+    decisionHolds(taskRoot, record, lineage, succession, entry, {
+      subtaskId,
+      attempt,
+    }),
   );
+}
+
+function decisionHolds(
+  taskRoot: string,
+  record: TaskRecord,
+  lineage: ReturnType<typeof coordinatorLineage>,
+  succession: boolean,
+  entry: TaskRecord['messages'][number],
+  target: { readonly subtaskId: string; readonly attempt: number },
+): boolean {
+  const coordinator = record.coordinator;
+  if (coordinator === null) return false;
+  const { subtaskId, attempt } = target;
+  const answer = readRegisteredMessage(taskRoot, entry.message_id);
   if (
     answer === null ||
     answer.type !== 'ANSWER' ||
-    answer.from.agent_id !== coordinator.agent_id ||
-    answer.owner_epoch !== coordinator.owner_epoch ||
     answer.subtask_id !== subtaskId ||
     answer.attempt !== attempt ||
     answer.reply_to === null ||
     answer.reply_to === undefined
+  )
+    return false;
+  if (succession) {
+    if (
+      typeof answer.owner_epoch !== 'number' ||
+      !judgeEvidence(lineage, {
+        epoch: answer.owner_epoch,
+        signer: answer.from,
+        appliedAt: entry.applied_at,
+      }).valid
+    )
+      return false;
+  } else if (
+    answer.from.agent_id !== coordinator.agent_id ||
+    answer.owner_epoch !== coordinator.owner_epoch
   )
     return false;
   const decision = (answer.body as Record<string, unknown> | undefined)?.[

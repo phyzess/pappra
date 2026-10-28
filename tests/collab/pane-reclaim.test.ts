@@ -481,3 +481,95 @@ test('a shared pane with an unresolved sibling close, or a pane without a record
     noCwd.cleanup();
   }
 });
+
+/** Installs one completed coordinator handoff on disk, ending epoch 1 at `endedAt`. */
+function succeed(taskRoot: string, endedAt: string): void {
+  const done = transact<null>(taskRoot, {
+    actor: 'fixture',
+    purpose: 'succeed',
+    clock,
+    apply: (record) => {
+      const before = {
+        agent_id: coordinator.agent_id,
+        session_id: coordinator.session_id,
+        owner_epoch: 1,
+      };
+      const next = {
+        agent_id: 'next-coordinator',
+        session_id: 'next-session',
+        harness: 'claude',
+      };
+      record.coordinator = {
+        ...next,
+        owner_epoch: 2,
+        since: endedAt,
+        previous: before,
+      };
+      record.handoffs = [
+        ...record.handoffs,
+        {
+          schema: 'harness-collab/handoff/1',
+          handoff_id: 'h1',
+          kind: 'coordinator',
+          subtask_id: null,
+          attempt: null,
+          from: coordinator,
+          to: next,
+          resources: [],
+          ownership_snapshot: [],
+          state: 'completed',
+          owner_epoch: 2,
+          created_at: endedAt,
+          updated_at: endedAt,
+          reason: null,
+          steps: [{ state: 'completed', at: endedAt, actor: 'fixture' }],
+          partial_outputs: [],
+          inflight: [],
+          pending_approvals: [],
+          confirmation_message_id: null,
+          previous_coordinator: {
+            ...coordinator,
+            ...before,
+            since: '2026-10-25T00:00:00Z',
+          },
+        },
+      ];
+      return { record, op: 'succeed', summary: {}, result: null };
+    },
+  });
+  assert.equal(done.ok, true, JSON.stringify(done));
+}
+
+test('a decision of the earlier coordinator still counts for reclaim after a succession', async () => {
+  const f = await fixture();
+  try {
+    succeed(f.taskRoot, '2099-01-01T00:00:00Z');
+    const result = await reclaimOwnedPanes({
+      taskRoot: f.taskRoot,
+      clock,
+      ops: f.ops(),
+    });
+    assert.deepEqual(
+      result.map((e) => [e.state, e.code]),
+      [['closed', null]],
+    );
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('a decision applied after its epoch ended never lets reclaim close a pane', async () => {
+  const f = await fixture();
+  try {
+    succeed(f.taskRoot, '2000-01-01T00:00:00Z');
+    const result = await reclaimOwnedPanes({
+      taskRoot: f.taskRoot,
+      clock,
+      ops: f.ops(),
+    });
+    assert.notEqual(result[0]?.state, 'closed');
+    assert.deepEqual(f.closed, []);
+  } finally {
+    f.cleanup();
+  }
+});

@@ -35,7 +35,13 @@ import { activeClaims, claimResources } from '../../collab/resources.js';
 import { claimCovers } from '../../collab/admission.js';
 import { describeResource } from '../../collab/canonical.js';
 import { digestText, readRecord } from '../../collab/store.js';
-import type { Message } from '../../collab/types.js';
+import type { Attempt, Message } from '../../collab/types.js';
+import {
+  coordinatorLineage,
+  hasSuccession,
+  lineageContains,
+  lineageHolds,
+} from '../../collab/lineage.js';
 import {
   workflowAssignmentPath,
   workflowBindingPath,
@@ -808,6 +814,73 @@ interface ManifestDeferredEntry {
   }[];
 }
 
+type EpochIdentity = {
+  readonly agent_id: string;
+  readonly session_id: string;
+  readonly owner_epoch: number;
+};
+
+/**
+ * An attempt's epoch is current when it equals the coordinator's epoch; after a coordinator
+ * succession it is enough that it belongs to the same authority line
+ * (docs/mid-cohort-succession-spec.md, section 5).
+ */
+function attemptEpochCurrent(
+  lineage: ReturnType<typeof coordinatorLineage>,
+  succession: boolean,
+  attempt: Attempt,
+  record: TaskRecord,
+): boolean {
+  if (succession)
+    return (
+      attempt.owner_epoch !== null &&
+      lineageContains(lineage, attempt.owner_epoch)
+    );
+  return attempt.owner_epoch === (record.coordinator?.owner_epoch ?? null);
+}
+
+/**
+ * A sealed assignment's `coordinator` block is evidence of its own epoch. Without a succession
+ * it must equal the attempt's epoch as before; with one, it must name the lineage coordinator of
+ * its own epoch, whatever the attempt's or the current epoch is.
+ */
+function sealedBlockHolds(
+  lineage: ReturnType<typeof coordinatorLineage>,
+  succession: boolean,
+  block: EpochIdentity,
+  attempt: Attempt,
+): boolean {
+  if (succession) return lineageHolds(lineage, block.owner_epoch, block);
+  return block.owner_epoch === attempt.owner_epoch;
+}
+
+function registeredFromHolds(
+  lineage: ReturnType<typeof coordinatorLineage>,
+  succession: boolean,
+  registered: Message,
+  record: TaskRecord,
+): boolean {
+  if (succession)
+    return (
+      typeof registered.owner_epoch === 'number' &&
+      lineageHolds(lineage, registered.owner_epoch, registered.from)
+    );
+  return (
+    registered.from.agent_id === record.coordinator?.agent_id &&
+    registered.from.session_id === record.coordinator.session_id
+  );
+}
+
+function activationBlockHolds(
+  record: TaskRecord,
+  block: EpochIdentity,
+): boolean {
+  const lineage = coordinatorLineage(record);
+  if (hasSuccession(lineage))
+    return lineageHolds(lineage, block.owner_epoch, block);
+  return block.owner_epoch === record.coordinator?.owner_epoch;
+}
+
 /** Re-enter claim acquisition only before any possible native delivery or consumption. */
 function canRetryReviewClaims(
   taskRoot: string,
@@ -884,6 +957,8 @@ function canRetryReviewClaims(
   } catch {
     return false;
   }
+  const lineage = coordinatorLineage(record);
+  const succession = hasSuccession(lineage);
   if (
     record.coordinator === null ||
     assignment.task_id !== record.task_id ||
@@ -891,13 +966,14 @@ function canRetryReviewClaims(
     assignment.attempt !== entry.attempt ||
     !assignment.roles.includes('reviewer') ||
     assignment.roles.includes('writer') ||
-    attempt.owner_epoch !== record.coordinator.owner_epoch ||
-    assignment.coordinator.owner_epoch !== attempt.owner_epoch ||
+    !attemptEpochCurrent(lineage, succession, attempt, record) ||
+    !sealedBlockHolds(lineage, succession, assignment.coordinator, attempt) ||
     assignment.assignee.agent_id !== attempt.assignee.agent_id ||
     assignment.assignee.session_id !== attempt.assignee.session_id ||
     assignment.assignee.harness !== attempt.assignee.harness ||
-    assignment.coordinator.agent_id !== record.coordinator.agent_id ||
-    assignment.coordinator.session_id !== record.coordinator.session_id ||
+    (!succession &&
+      (assignment.coordinator.agent_id !== record.coordinator.agent_id ||
+        assignment.coordinator.session_id !== record.coordinator.session_id)) ||
     attempt.input_revision !== record.input_revision ||
     assignment.inputs[0]?.digest !== record.input_revision ||
     registered.type !== 'ASSIGN' ||
@@ -908,8 +984,7 @@ function canRetryReviewClaims(
     registered.to?.session_id !== attempt.assignee.session_id ||
     registered.to?.harness !== attempt.assignee.harness ||
     registered.owner_epoch !== attempt.owner_epoch ||
-    registered.from.agent_id !== record.coordinator.agent_id ||
-    registered.from.session_id !== record.coordinator.session_id ||
+    !registeredFromHolds(lineage, succession, registered, record) ||
     registered.body.input_revision !== record.input_revision ||
     !record.messages.some(
       (entry) =>
@@ -1251,11 +1326,17 @@ export async function applyDispatch(
         if (!sealedDoc.ok) return { ok: false, reason: sealedDoc.code };
         if (sealedDoc.value.digest !== attempt.assignment_digest)
           return { ok: false, reason: 'assignment_digest_mismatch' };
+        const freshLineage = coordinatorLineage(fresh);
+        const freshSuccession = hasSuccession(freshLineage);
         if (
-          fresh.coordinator?.owner_epoch !== attempt.owner_epoch ||
+          !attemptEpochCurrent(freshLineage, freshSuccession, attempt, fresh) ||
           (isAssignment(sealedDoc.value.value) &&
-            sealedDoc.value.value.coordinator.owner_epoch !==
-              attempt.owner_epoch)
+            !sealedBlockHolds(
+              freshLineage,
+              freshSuccession,
+              sealedDoc.value.value.coordinator,
+              attempt,
+            ))
         )
           return { ok: false, reason: 'owner_epoch_changed' };
         if (
@@ -1545,7 +1626,7 @@ export async function applyDispatch(
         sealed.value.assignee.agent_id !== assignee.agent_id ||
         sealed.value.assignee.session_id !== assignee.session_id ||
         sealed.value.assignee.harness !== assignee.harness ||
-        sealed.value.coordinator.owner_epoch !== record.coordinator.owner_epoch
+        !activationBlockHolds(record, sealed.value.coordinator)
       ) {
         blockers.push({
           code: 'review_activation_identity_mismatch',

@@ -305,7 +305,7 @@ function succeeded(
   copy.handoffs = [
     ...(copy.handoffs ?? []),
     {
-      schema: 'pappra/collaboration-handoff/1',
+      schema: 'harness-collab/handoff/1',
       handoff_id: 'h1',
       kind: 'coordinator',
       subtask_id: null,
@@ -319,7 +319,7 @@ function succeeded(
       created_at: endedAt,
       updated_at: endedAt,
       reason: null,
-      steps: [{ state: 'completed', at: endedAt }],
+      steps: [{ state: 'completed', at: endedAt, actor: 'fixture' }],
       partial_outputs: [],
       inflight: [],
       pending_approvals: [],

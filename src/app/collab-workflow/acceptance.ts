@@ -3,6 +3,12 @@ import {
   contentDigest,
   readRegisteredMessage,
 } from '../../collab/envelope.js';
+import {
+  coordinatorLineage,
+  hasSuccession,
+  judgeEvidence,
+  lineageContains,
+} from '../../collab/lineage.js';
 import { submitMessage } from '../../collab/messages.js';
 import { notifyRegisteredMessage } from '../collab-notify.js';
 import {
@@ -86,6 +92,10 @@ export async function applyAccept(
       next_action:
         'Inspect the record; acceptance never addresses an attempt that does not exist.',
     });
+  // After a coordinator succession the epochs of the same authority line are all current evidence
+  // (docs/mid-cohort-succession-spec.md); without one, every check below is today's equality.
+  const lineage = coordinatorLineage(record);
+  const succession = hasSuccession(lineage);
   if (!sameCoordinator(record.coordinator, request.caller))
     blockers.push({
       code: 'accept_not_coordinator',
@@ -101,7 +111,12 @@ export async function applyAccept(
     });
   if (attempt !== null && record.coordinator !== null) {
     const epoch = record.coordinator.owner_epoch;
-    if (attempt.owner_epoch !== null && attempt.owner_epoch !== epoch)
+    if (
+      attempt.owner_epoch !== null &&
+      (succession
+        ? !lineageContains(lineage, attempt.owner_epoch)
+        : attempt.owner_epoch !== epoch)
+    )
       blockers.push({
         code: 'acceptance_stale',
         detail: `Attempt was registered under epoch ${attempt.owner_epoch}, current epoch is ${epoch}.`,
@@ -148,7 +163,10 @@ export async function applyAccept(
             'Accept only a node the sealed plan declares; the plan is derived by prepare, not by the request.',
         });
       else if (
-        validated.plan.owner_epoch !== (record.coordinator?.owner_epoch ?? 0)
+        succession
+          ? !lineageContains(lineage, validated.plan.owner_epoch)
+          : validated.plan.owner_epoch !==
+            (record.coordinator?.owner_epoch ?? 0)
       )
         blockers.push({
           code: 'plan_epoch_stale',
@@ -198,6 +216,51 @@ export async function applyAccept(
       });
   }
 
+  // A valid applied decision for a report is final after a succession: the successor does not
+  // re-decide it, and a decision that fails the evidence rules does not count.
+  if (succession && report !== null) {
+    for (const entry of record.messages) {
+      if (
+        entry.type !== 'ANSWER' ||
+        entry.state !== 'applied' ||
+        entry.reply_to !== report.message_id
+      )
+        continue;
+      const decided = readRegisteredMessage(task.taskRoot, entry.message_id);
+      if (decided === null) {
+        blockers.push({
+          code: 'acceptance_decision_unreadable',
+          detail: `Applied decision ${entry.message_id} has no readable registered envelope.`,
+          next_action:
+            'Inspect the registered decision set before deciding again.',
+        });
+        break;
+      }
+      if (
+        (decided.body as Record<string, unknown> | undefined)?.[
+          'acceptance'
+        ] === undefined
+      )
+        continue;
+      if (
+        typeof entry.owner_epoch === 'number' &&
+        judgeEvidence(lineage, {
+          epoch: entry.owner_epoch,
+          signer: entry.from,
+          appliedAt: entry.applied_at,
+        }).valid
+      ) {
+        blockers.push({
+          code: 'acceptance_already_decided',
+          detail: `Report ${report.message_id} already has the valid applied decision ${entry.message_id}.`,
+          next_action:
+            'A valid decision made under an earlier coordinator stands; the successor does not decide it again.',
+        });
+        break;
+      }
+    }
+  }
+
   if (
     blockers.length > 0 ||
     attempt === null ||
@@ -233,6 +296,18 @@ export async function applyAccept(
     };
 
   const reportDigest = contentDigest(report);
+  const baseId = `accept-${request.subtask_id}-${request.attempt}`;
+  // The only collision a succession causes is a message with the base id registered under another
+  // epoch that never became a valid applied decision (its coordinator stopped between register and
+  // apply). Only then is the id epoch-qualified; with no succession it never is.
+  const registeredBase = succession
+    ? readRegisteredMessage(task.taskRoot, baseId)
+    : null;
+  const messageId =
+    registeredBase !== null &&
+    registeredBase.owner_epoch !== record.coordinator.owner_epoch
+      ? `${baseId}-e${record.coordinator.owner_epoch}`
+      : baseId;
   const message = buildMessage({
     type: 'ANSWER',
     task_id: record.task_id,
@@ -247,7 +322,7 @@ export async function applyAccept(
       harness: attempt.assignee.harness,
     },
     reply_to: report.message_id,
-    message_id: `accept-${request.subtask_id}-${request.attempt}`,
+    message_id: messageId,
     subtask_id: request.subtask_id,
     attempt: request.attempt,
     owner_epoch: record.coordinator.owner_epoch,

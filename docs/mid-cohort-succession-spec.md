@@ -276,10 +276,13 @@ Consequences, which differ from revision 1:
   valid applied decision (the old coordinator stopped between register and apply). The trigger is
   epoch-based, not byte-based, and is decided by reading the registered message file itself (a
   registered-but-unapplied message is not in `record.messages`): only then is the successor's accept created as
-  `accept-<subtask>-<attempt>-e<current epoch>`. A difference in bytes alone (for example
-  `created_at`) never triggers it and stays today's `content_conflict`, so with a one-entry lineage the
-  suffix cannot appear (principle 6). The creator also falls back to the suffix when its exclusive
-  create loses to a message with the base id under a different epoch. Authority-path ids are never suffixed: `handoff-ack-<request id>` is created before the epoch changes,
+  `accept-<subtask>-<attempt>-e<current epoch>`. A difference in content alone (for example
+  a different `reason`) never triggers it and stays today's `content_conflict`, and a `created_at`-only
+  difference is not even that: the content digest excludes it, so it is a plain duplicate. With a
+  one-entry lineage the suffix therefore cannot appear (principle 6). The accept decides the id once,
+  from the registered file it read; if its exclusive create then loses a race with a base-id message
+  it did not see, the result is today's `content_conflict` or duplicate and a re-run, which reads the
+  now registered file, takes the suffix. Authority-path ids are never suffixed: `handoff-ack-<request id>` is created before the epoch changes,
   and the managed-Pi ids are out of scope (section 8). Two successor processes creating the same suffixed id with identical bytes are
   duplicates, and with different bytes `content_conflict` as today (registration is exclusive-create).
 - **Participant duplicates.** `participant.ts` stamps `to` with the coordinator at action time, so a
@@ -431,7 +434,7 @@ Scenarios, with real workflow fixtures:
    transferable, and terminal ones are not classified;
 6. an accept registered under epoch 1 but never applied, then the successor's accept registers as
    `accept-<subtask>-<attempt>-e<epoch>`, is applied, and decides the report;
-7. a byte difference alone (a different `created_at`) between two registrations of the base accept id
+7. a content difference alone (a different `reason`) between two registrations of the base accept id
    never produces a suffixed id, and with a one-entry lineage the suffix cannot appear;
 8. a valid decision applied before succession stays final: the successor's `accept` is refused with a
    clear code; a decision that fails the evidence rules (signer, time, or skewed past `until`) neither

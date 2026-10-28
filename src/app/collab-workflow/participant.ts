@@ -8,7 +8,13 @@ import {
 import { transitionAttempt } from '../../collab/lifecycle.js';
 import { isAssignment } from '../../collab/contracts.js';
 import { releaseClaim } from '../../collab/resources.js';
-import { submitMessage } from '../../collab/messages.js';
+import {
+  coordinatorLineage,
+  hasSuccession,
+  judgeEvidence,
+  lineageContains,
+} from '../../collab/lineage.js';
+import { isToOnlyDuplicate, submitMessage } from '../../collab/messages.js';
 import { notifyRegisteredMessage } from '../collab-notify.js';
 import { workflowBindingPath } from '../../schemas/collab-workflow.js';
 import { digestText, readRecord, transact } from '../../collab/store.js';
@@ -34,7 +40,13 @@ import {
   type WorkflowBlocker,
   type WorkflowResult,
 } from './types.js';
-import type { Attempt, Claim, Identity, Message } from '../../collab/types.js';
+import type {
+  Attempt,
+  Claim,
+  Identity,
+  Message,
+  TaskRecord,
+} from '../../collab/types.js';
 
 /**
  * Participant actions: ack, report and release.
@@ -658,6 +670,10 @@ export async function applyParticipant(
   // The correlation is verified against the registered record before any claim is released.
   let correlated: { id: string; digest: string } | null = null;
   const correlatesTo = declaration.correlates_to ?? null;
+  // After a coordinator succession the decision a release answers may have been made by an earlier
+  // coordinator of the same authority line; without one the checks below are today's.
+  const lineage = coordinatorLineage(record);
+  const succession = hasSuccession(lineage);
   if (correlatesTo !== null) {
     const registered = isSafeMessageId(correlatesTo)
       ? readReleaseMessage(task.taskRoot, correlatesTo)
@@ -678,9 +694,11 @@ export async function applyParticipant(
       });
     else if (
       record.coordinator === null ||
-      registered.from.agent_id !== record.coordinator.agent_id ||
-      registered.from.session_id !== record.coordinator.session_id ||
-      registered.from.harness !== record.coordinator.harness
+      (succession
+        ? !correlationIsLineageEvidence(lineage, record, registered)
+        : registered.from.agent_id !== record.coordinator.agent_id ||
+          registered.from.session_id !== record.coordinator.session_id ||
+          registered.from.harness !== record.coordinator.harness)
     )
       blockers.push({
         code: 'release_correlation_sender',
@@ -692,7 +710,10 @@ export async function applyParticipant(
       registered.to === null ||
       registered.to === undefined ||
       !sameIdentity(registered.to, request.caller) ||
-      registered.owner_epoch !== record.coordinator.owner_epoch ||
+      (succession
+        ? typeof registered.owner_epoch !== 'number' ||
+          !lineageContains(lineage, registered.owner_epoch)
+        : registered.owner_epoch !== record.coordinator.owner_epoch) ||
       (registered.subtask_id !== null &&
         registered.subtask_id !== request.subtask_id) ||
       (registered.attempt !== null && registered.attempt !== request.attempt) ||
@@ -840,7 +861,8 @@ export async function applyParticipant(
       }
       if (
         existing !== null &&
-        contentDigest(existing) !== contentDigest(releaseMessage)
+        contentDigest(existing) !== contentDigest(releaseMessage) &&
+        !isToOnlyDuplicate(record, existing, releaseMessage)
       )
         blockers.push({
           code: 'release_status_conflict',
@@ -1032,4 +1054,27 @@ export async function applyParticipant(
       released: writing ? released : claims.map((claim) => claim.claim_id),
     },
   };
+}
+
+/**
+ * A release correlates to a decision of the coordinator of the decision's own epoch, applied
+ * while that epoch was current (docs/mid-cohort-succession-spec.md, section 5).
+ */
+function correlationIsLineageEvidence(
+  lineage: ReturnType<typeof coordinatorLineage>,
+  record: TaskRecord,
+  registered: Message,
+): boolean {
+  const entry = record.messages.find(
+    (message) => message.message_id === registered.message_id,
+  );
+  return (
+    entry !== undefined &&
+    typeof registered.owner_epoch === 'number' &&
+    judgeEvidence(lineage, {
+      epoch: registered.owner_epoch,
+      signer: registered.from,
+      appliedAt: entry.applied_at,
+    }).valid
+  );
 }

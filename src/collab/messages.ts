@@ -8,6 +8,7 @@ import type {
 } from './types.js';
 import {
   contentDigest,
+  readRegisteredMessage,
   registerMessage,
   validateEnvelope,
 } from './envelope.js';
@@ -27,8 +28,9 @@ import {
   coordinatorLineage,
   hasSuccession,
   lineageContains,
+  lineageEntry,
 } from './lineage.js';
-import { nowIso, transact } from './store.js';
+import { nowIso, readRecord, transact } from './store.js';
 
 // Applying a registered message to the record. Registration is atomic and separate;
 // this step is a transaction. A message never restarts native work and never releases
@@ -151,6 +153,70 @@ function findMessage(record: TaskRecord, messageId: string) {
   return (
     (record.messages ?? []).find((item) => item.message_id === messageId) ??
     null
+  );
+}
+
+const TO_ONLY_DUPLICATE_TYPES: ReadonlySet<string> = new Set([
+  'ACK',
+  'REPORT',
+  'STATUS',
+]);
+
+/**
+ * After a coordinator succession a worker re-sending an identical ACK, REPORT or release STATUS
+ * stamps `to` with the coordinator of the moment, so the bytes differ from the registered copy in
+ * `to` alone. That is a protocol duplicate, not a conflict, when the registered copy was addressed
+ * to the coordinator of its own epoch and both were sent by the attempt's assignee. Scope is
+ * deliberately narrow: other types, other fields and other recipients stay `content_conflict`.
+ * Without a succession it is never true.
+ */
+export function isToOnlyDuplicate(
+  record: TaskRecord,
+  existing: Message,
+  message: Message,
+): boolean {
+  if (
+    !TO_ONLY_DUPLICATE_TYPES.has(message.type) ||
+    existing.type !== message.type ||
+    existing.message_id !== message.message_id
+  )
+    return false;
+  const lineage = coordinatorLineage(record);
+  if (!hasSuccession(lineage)) return false;
+  if (
+    existing.subtask_id === null ||
+    existing.subtask_id === undefined ||
+    existing.attempt === null ||
+    existing.attempt === undefined
+  )
+    return false;
+  const attempt = record.attempts.find(
+    (item) =>
+      item.subtask_id === existing.subtask_id &&
+      item.attempt === existing.attempt,
+  );
+  if (
+    attempt === undefined ||
+    !sameSender(existing.from, attempt.assignee) ||
+    !sameSender(message.from, attempt.assignee)
+  )
+    return false;
+  const entry =
+    typeof existing.owner_epoch === 'number'
+      ? lineageEntry(lineage, existing.owner_epoch)
+      : null;
+  if (entry === null || existing.to === null || existing.to === undefined)
+    return false;
+  // The re-send must address the coordinator of the moment, which is all the participant flow
+  // ever stamps; any other address is not this duplicate.
+  if (!sameSender(message.to, record.coordinator)) return false;
+  if (
+    existing.to.agent_id !== entry.identity.agent_id ||
+    existing.to.session_id !== entry.identity.session_id
+  )
+    return false;
+  return (
+    contentDigest({ ...existing, to: message.to }) === contentDigest(message)
   );
 }
 
@@ -896,6 +962,22 @@ export function submitMessage(
 ) {
   const registered = registerMessage(taskRoot, message, { clock });
   if (registered.status === 'content_conflict') {
+    const record = readRecord(taskRoot);
+    const existing = readRegisteredMessage(taskRoot, message.message_id);
+    if (
+      record !== null &&
+      existing !== null &&
+      isToOnlyDuplicate(record, existing, message)
+    )
+      return {
+        ok: true as const,
+        registration: {
+          status: 'registered-to-earlier-coordinator',
+          message_id: message.message_id,
+          content_digest: contentDigest(existing),
+        },
+        duplicate: true,
+      };
     return {
       ok: false as const,
       reason: 'content_conflict',

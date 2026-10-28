@@ -344,7 +344,7 @@ function succeeded(value: ReturnType<typeof record>) {
   };
   value.handoffs = [
     {
-      schema: 'pappra/collaboration-handoff/1',
+      schema: 'harness-collab/handoff/1',
       handoff_id: 'h1',
       kind: 'coordinator',
       subtask_id: null,
@@ -358,7 +358,7 @@ function succeeded(value: ReturnType<typeof record>) {
       created_at: ended,
       updated_at: ended,
       reason: null,
-      steps: [{ state: 'completed', at: ended }],
+      steps: [{ state: 'completed', at: ended, actor: 'fixture' }],
       partial_outputs: [],
       inflight: [],
       pending_approvals: [],
