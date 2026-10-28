@@ -43,7 +43,7 @@ one full integration gate at the release boundary and avoid shared build races.
 
 ## Typed workflow (preferred entry)
 
-Use `pappra collab workflow <prepare|dispatch|ack|report|accept|release|inspect>`
+Use `pappra collab workflow <prepare|dispatch|ack|report|accept|release|reclaim|adopt|await|inspect>`
 for a task-scoped cohort. One declared request per step replaces hand-built
 envelopes and manual digest bookkeeping: prepare derives the sealed assignment
 documents, digests, deterministic message ids and correlated ASSIGN envelopes,

@@ -54,7 +54,7 @@ const globalUsage =
   'pappra host <detect|describe|probe|plan|install|verify|uninstall|bundle|mcp> --host <name> [options] [--json]\n' +
   'pappra runtime <install|status|verify|remove|gc|archive> [options] [--json]\n' +
   'pappra session <plan|start|status|fence|stop> --config <abs managed-pi.json> [--json]\n' +
-  'pappra collab workflow <prepare|dispatch|ack|report|accept|release|inspect> [options]\n' +
+  'pappra collab workflow <prepare|dispatch|ack|report|accept|release|reclaim|adopt|await|inspect> [options]\n' +
   'pappra context <usage|statusline-plan> [options]\n' +
   `${collaborationCommandLine}`;
 

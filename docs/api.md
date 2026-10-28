@@ -83,8 +83,9 @@ importable on their own from `@phyzess/pappra/experimental/pi`. Work-plan
 validation stays reachable from `@phyzess/pappra/collab` as the `workPlan`
 namespace; this barrel re-exports the same module as `collabWorkPlan`.
 
-`collabWorkflow` provides typed preparation, dispatch, participant actions,
-explicit coordinator acceptance and inspection for a declared cohort. The CLI
+`collabWorkflow` provides typed preparation, dispatch, participant actions (including the
+read-only `await` for a coordinator's decision), explicit coordinator acceptance, pane reclaim,
+successor adoption and inspection for a declared cohort. The CLI
 entry is `pappra collab workflow`; see [the workflow contract](collaboration-workflow.md).
 It composes existing protocol authority and never chooses identities or accepts
 worker output automatically.

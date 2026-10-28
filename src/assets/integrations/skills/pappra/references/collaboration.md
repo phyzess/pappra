@@ -347,6 +347,14 @@ The successor runs one command, `collab handoff ack`, which acknowledges and pri
 digest-pinned briefing; you then run `confirm` and `complete`. Identity is observed evidence, not
 authentication, and the old session is neither stopped nor observed.
 
+To hand over while attempts are still in flight, use the mid-cohort path: `handoff check-mid-cohort`
+(or `handoff successor` with `mode: mid_cohort`) relaxes only what a successor can safely inherit and
+lists the rest, and an acknowledged-only attempt gets a `reconcile` entry naming the exact
+`collab recovery reconcile` request to complete. After `complete`, the successor runs `collab workflow
+adopt` (optionally listing role plans and journals in `extra_paths`) to bind its own pane. A Codex
+coordinator cannot reach the Herdr socket from its sandbox, so `accept` then reports a
+`detail.delivery_fallback` and the worker runs `collab workflow await` and then `release`.
+
 `pappra context usage --host <claude|codex> --session <id>` reports how full a session's
 context is, as an advisory only. `workflow inspect` includes it for the coordinator and warns
 past 70%. An unavailable observation is never a low one, and nothing here starts a handoff.
@@ -666,7 +674,8 @@ same message identity.
    correlated message. Acceptance remains a separate decision.
 
 No polling, timers, repeated status reads, or `herdr agent prompt --wait` are
-part of this loop. If no reply arrives, the outcome is uncertain; inspect the
+part of this loop. The one bounded exception is `collab workflow await`: a participant's
+read-only, file-only wait for the coordinator's accept decision when delivery is unavailable. If no reply arrives, the outcome is uncertain; inspect the
 record before retrying rather than sending another wakeup.
 
 ## Direct mode and receiver verification

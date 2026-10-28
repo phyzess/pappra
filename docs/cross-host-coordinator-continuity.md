@@ -1,6 +1,7 @@
 # Cross-host coordinator continuity (design proposal)
 
-Status: proposal, not implemented. Nothing here changes behaviour until a phase below lands.
+Status: phases 0-4 are implemented (see the phase table); phase 5 (digest projection and report bounds) is
+still a proposal. Sections below that describe a design keep their original wording.
 
 ## Problem
 

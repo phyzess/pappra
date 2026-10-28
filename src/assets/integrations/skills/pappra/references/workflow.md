@@ -19,6 +19,8 @@ pappra collab workflow report   --request <abs participant.json>   [--apply] [--
 pappra collab workflow await    --request <abs await.json>                   [--json]
 pappra collab workflow release  --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow accept   --request <abs accept.json>        [--apply] [--json]
+pappra collab workflow reclaim  --request <abs reclaim.json>        [--apply] [--json]
+pappra collab workflow adopt    --request <abs adopt.json>          [--apply] [--json]
 pappra collab workflow inspect  --task-root <abs task root> [--limit <n>] [--json]
 ```
 
@@ -334,6 +336,16 @@ work-plan evaluator stays the authority that unlocks dependent work.
   blocker: no valid decision within the bound; run `await` again or ask the coordinator).
   `refused` and `invalid` also exit `1`: read `status` to tell a timeout (wait again) from them
   (stop). Only `decided` exits `0`, so `await && release` never releases without a decision.
+
+## Reclaim and adopt
+
+`reclaim` closes only panes Pappra created for accepted, released work, after re-checking live pane
+identity; `accept` and `dispatch` run the same check automatically. `adopt` is run by a successor
+coordinator after a mid-cohort coordinator succession: it writes the next binding generation so
+notifications reach the successor. Role plans, role orchestration requests and journals live at
+caller-chosen paths; list them in the optional `extra_paths` (absolute, unique, at most 16) and
+`adopt` warns per file whether it pins the current epoch. See `docs/collaboration-workflow.md` and
+`docs/mid-cohort-succession-spec.md`.
 
 ## Inspect
 

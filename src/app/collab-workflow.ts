@@ -45,6 +45,7 @@ export { applyParticipant } from './collab-workflow/participant.js';
 export { applyAccept, applyAcceptBatch } from './collab-workflow/acceptance.js';
 export { applyReclaim } from './collab-workflow/reclaim.js';
 export { applyAdopt } from './collab-workflow/adopt.js';
+export { applyAwait } from './collab-workflow/await.js';
 export { currentBindingFile } from './collab-workflow/binding-generation.js';
 export { inspectWorkflow } from './collab-workflow/inspect.js';
 export {

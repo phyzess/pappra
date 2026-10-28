@@ -27,6 +27,8 @@ them, and none of it is lost with the chat.
   them instead of asking you to paste them again.
 - **Code navigation.** Look up code without handing over the whole repository. Text and structure
   search work with no extra tools installed.
+- **Coordinate several agents.** Split one task between agents with a visible, recorded workflow, and
+  hand a running coordinator role to a fresh Claude Code or Codex session without losing the thread.
 - **Connect your agents.** Claude Code, Codex and Pi can read checkpoints through Pappra's skill and
   hook, and the skill saves one when you ask.
 
@@ -129,18 +131,19 @@ and decide what to run.
 
 ## Where to go next
 
-| I want to…                                   | Read                                                     |
-| -------------------------------------------- | -------------------------------------------------------- |
-| Run every command and flag                   | [Operations](docs/operations.md)                         |
-| Connect Claude Code, Codex or Pi, with hooks | [Quick start](docs/quickstart.md)                        |
-| Use Pappra from an agent over MCP            | [Agent-native usage](docs/agent-native.md)               |
-| Adopt an existing multi-repository workspace | [Quick start](docs/quickstart.md)                        |
-| Move the workspace to another machine        | [Portability](docs/portability.md)                       |
-| Coordinate several agents on one task        | [Collaboration workflow](docs/collaboration-workflow.md) |
-| Start a managed Pi session that Pappra owns  | [Managed Pi sessions](docs/managed-pi-session.md)        |
-| Check supported versions and limits          | [Support and limitations](docs/support.md)               |
-| Build against the API                        | [API boundaries](docs/api.md)                            |
-| Work on Pappra itself                        | [Development](docs/development.md)                       |
+| I want to…                                   | Read                                                                |
+| -------------------------------------------- | ------------------------------------------------------------------- |
+| Run every command and flag                   | [Operations](docs/operations.md)                                    |
+| Connect Claude Code, Codex or Pi, with hooks | [Quick start](docs/quickstart.md)                                   |
+| Use Pappra from an agent over MCP            | [Agent-native usage](docs/agent-native.md)                          |
+| Adopt an existing multi-repository workspace | [Quick start](docs/quickstart.md)                                   |
+| Move the workspace to another machine        | [Portability](docs/portability.md)                                  |
+| Coordinate several agents on one task        | [Collaboration workflow](docs/collaboration-workflow.md)            |
+| Hand a coordinator to a new session          | [Coordinator continuity](docs/cross-host-coordinator-continuity.md) |
+| Start a managed Pi session that Pappra owns  | [Managed Pi sessions](docs/managed-pi-session.md)                   |
+| Check supported versions and limits          | [Support and limitations](docs/support.md)                          |
+| Build against the API                        | [API boundaries](docs/api.md)                                       |
+| Work on Pappra itself                        | [Development](docs/development.md)                                  |
 
 ## FAQ
 

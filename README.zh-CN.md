@@ -21,6 +21,8 @@ Pappra 把当前任务的状态——目标、已经做过的决定、试过什�
 - **在任何 Agent 里接着做。** 一个会话保存的检查点，下一个会话都能读，不论它跑在哪个 Agent 里。
 - **项目知识。** 把 Agent 该读的文档登记进来，下一次会话能自己找到，不必让你再贴一遍。
 - **代码导航。** 查找代码时不必把整个仓库都交给 Agent。即使不安装额外工具，文本与结构搜索也能用。
+- **协调多个 Agent。** 用可见、可追溯的工作流把一项任务拆给多个 Agent，并能把进行中的协调者角色交接给新的
+  Claude Code 或 Codex 会话，而不丢失进度。
 - **接入你的 Agent。** 通过 Pappra 的技能和钩子，Claude Code、Codex 和 Pi 可以读取检查点，而保存检查点
   是在你要求时才由技能执行。
 
@@ -118,18 +120,19 @@ Agent，都用 `pappra resume` 读这个文件，或者在任务用 `pappra task
 
 ## 接下来看什么
 
-| 我想要…                                 | 看这篇                                       |
-| --------------------------------------- | -------------------------------------------- |
-| 运行每条命令、查看每个标志              | [运维参考](docs/operations.md)               |
-| 接入 Claude Code、Codex 或 Pi（含钩子） | [快速开始](docs/quickstart.zh-CN.md)         |
-| 让 Agent 通过 MCP 使用 Pappra           | [Agent 原生用法](docs/agent-native.md)       |
-| 接管已有的多仓库工作区                  | [快速开始](docs/quickstart.zh-CN.md)         |
-| 把工作区搬到另一台机器                  | [可移植性](docs/portability.md)              |
-| 协调多个 Agent 完成同一项任务           | [协作工作流](docs/collaboration-workflow.md) |
-| 启动由 Pappra 拥有的受管 Pi 会话        | [受管的 Pi 会话](docs/managed-pi-session.md) |
-| 查看支持的版本与限制                    | [支持范围与限制](docs/support.md)            |
-| 基于 API 开发                           | [API 边界](docs/api.md)                      |
-| 参与 Pappra 本身的开发                  | [开发](docs/development.md)                  |
+| 我想要…                                 | 看这篇                                                    |
+| --------------------------------------- | --------------------------------------------------------- |
+| 运行每条命令、查看每个标志              | [运维参考](docs/operations.md)                            |
+| 接入 Claude Code、Codex 或 Pi（含钩子） | [快速开始](docs/quickstart.zh-CN.md)                      |
+| 让 Agent 通过 MCP 使用 Pappra           | [Agent 原生用法](docs/agent-native.md)                    |
+| 接管已有的多仓库工作区                  | [快速开始](docs/quickstart.zh-CN.md)                      |
+| 把工作区搬到另一台机器                  | [可移植性](docs/portability.md)                           |
+| 协调多个 Agent 完成同一项任务           | [协作工作流](docs/collaboration-workflow.md)              |
+| 把协调者交接给新的会话                  | [协调者连续性](docs/cross-host-coordinator-continuity.md) |
+| 启动由 Pappra 拥有的受管 Pi 会话        | [受管的 Pi 会话](docs/managed-pi-session.md)              |
+| 查看支持的版本与限制                    | [支持范围与限制](docs/support.md)                         |
+| 基于 API 开发                           | [API 边界](docs/api.md)                                   |
+| 参与 Pappra 本身的开发                  | [开发](docs/development.md)                               |
 
 ## 常见问题
 
