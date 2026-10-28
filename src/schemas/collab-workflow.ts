@@ -18,6 +18,8 @@ export const WORKFLOW_PARTICIPANT_REQUEST_SCHEMA =
   'pappra/collab-workflow-participant-request/1';
 export const WORKFLOW_RECLAIM_REQUEST_SCHEMA =
   'pappra/collab-workflow-reclaim-request/1';
+export const WORKFLOW_ADOPT_REQUEST_SCHEMA =
+  'pappra/collab-workflow-adopt-request/1';
 export const WORKFLOW_ACCEPT_REQUEST_SCHEMA =
   'pappra/collab-workflow-accept-request/1';
 export const WORKFLOW_ACCEPT_BATCH_REQUEST_SCHEMA =
@@ -494,6 +496,18 @@ export const workflowReclaimRequestSchema = z.strictObject({
   caller_pane: paneId.nullable().default(null),
 });
 
+/**
+ * The successor coordinator adopts a task after a coordinator succession: it names the pane it
+ * runs in, and the facade writes the next binding generation. It changes nothing else.
+ */
+export const workflowAdoptRequestSchema = z.strictObject({
+  schema: z.literal(WORKFLOW_ADOPT_REQUEST_SCHEMA),
+  task_root: absolutePath,
+  caller: workflowCallerSchema,
+  /** The coordinator's own pane; it must be observed through Herdr as this session. */
+  caller_pane: paneId,
+});
+
 export type WorkflowCaller = z.infer<typeof workflowCallerSchema>;
 export type WorkflowParticipant = z.infer<typeof workflowParticipantSchema>;
 export type WorkflowCoordinator = z.infer<typeof workflowCoordinatorSchema>;
@@ -532,6 +546,7 @@ export type WorkflowAcceptRequest = z.infer<typeof workflowAcceptRequestSchema>;
 export type WorkflowAcceptBatchRequest = z.infer<
   typeof workflowAcceptBatchRequestSchema
 >;
+export type WorkflowAdoptRequest = z.infer<typeof workflowAdoptRequestSchema>;
 export type WorkflowReclaimRequest = z.infer<
   typeof workflowReclaimRequestSchema
 >;
@@ -649,6 +664,12 @@ export function parseWorkflowAcceptBatchRequest(
     input,
     'accept batch request',
   );
+}
+
+export function parseWorkflowAdoptRequest(
+  input: unknown,
+): WorkflowValid<WorkflowAdoptRequest> {
+  return parseWith(workflowAdoptRequestSchema, input, 'adopt request');
 }
 
 export function parseWorkflowReclaimRequest(

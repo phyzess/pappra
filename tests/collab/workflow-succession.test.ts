@@ -1,15 +1,25 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
   applyAccept,
+  applyAdopt,
+  currentBindingFile,
+  type WorkflowAdoptRequest,
   applyParticipant,
   applyPrepare,
   type WorkflowAcceptRequest,
   type WorkflowParticipantRequest,
   type WorkflowPrepareRequest,
 } from '../../src/app/collab-workflow.js';
+import { readCoordinatorHandoffCheck } from '../../src/app/collab-handoff.js';
 import { transact } from '../../src/collab/store.js';
 import { notifyRegisteredMessage } from '../../src/app/collab-notify.js';
 import { makeTaskDomain } from './task-resources-fixtures.js';
@@ -441,6 +451,400 @@ test('a release cannot answer a decision applied after its epoch ended', async (
         (item) => item.code === 'release_correlation_sender',
       ),
       JSON.stringify(released.blockers),
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+async function boundFixture(label: string) {
+  const fixture = makeTaskDomain(label, ['cohort'], { initialize: [] });
+  const prepared = await applyPrepare(
+    prepareRequest(
+      fixture.domainRoot,
+      fixture.root,
+      baseAssignments(fixture.root),
+      [
+        {
+          agent_id: COORDINATOR.agent_id,
+          pane_id: 'w1:p1',
+          native_session_id: COORDINATOR.session_id,
+        },
+        {
+          agent_id: WRITER_A.agent_id,
+          pane_id: 'w1:p2',
+          native_session_id: WRITER_A.session_id,
+        },
+        {
+          agent_id: WRITER_B.agent_id,
+          pane_id: 'w1:p3',
+          native_session_id: WRITER_B.session_id,
+        },
+        {
+          agent_id: REVIEWER.agent_id,
+          pane_id: 'w1:p4',
+          native_session_id: REVIEWER.session_id,
+        },
+      ],
+    ),
+  );
+  assert.equal(prepared.status, 'applied', JSON.stringify(prepared.blockers));
+  const taskRoot = join(fixture.domainRoot, 'tasks', 'cohort');
+  const adopt = (
+    overrides: Partial<WorkflowAdoptRequest> = {},
+  ): WorkflowAdoptRequest => ({
+    schema: 'pappra/collab-workflow-adopt-request/1',
+    task_root: taskRoot,
+    caller: { ...NEXT, cwd: fixture.root },
+    caller_pane: 'w1:p9',
+    ...overrides,
+  });
+  const observed = async () => ({
+    ok: true as const,
+    agents: [
+      {
+        name: 'next-agent',
+        harness: NEXT.harness,
+        paneId: 'w1:p9',
+        cwd: fixture.root,
+        sessionKind: 'id',
+        sessionValue: NEXT.session_id,
+        status: 'idle',
+        focused: true,
+      },
+    ],
+  });
+  return { fixture, taskRoot, adopt, observed };
+}
+
+test('adopt writes the next binding generation and routing follows it', async () => {
+  const { fixture, taskRoot, adopt, observed } = await boundFixture('adopt-ok');
+  try {
+    assert.equal(currentBindingFile(taskRoot), join(taskRoot, 'binding.json'));
+    succeed(taskRoot, '2099-01-01T00:00:00Z');
+    // Not adopted yet: routing still reads the sealed generation.
+    assert.equal(currentBindingFile(taskRoot), join(taskRoot, 'binding.json'));
+    const planned = await applyAdopt(adopt(), {
+      apply: false,
+      listAgents: observed,
+    });
+    assert.equal(planned.status, 'planned', JSON.stringify(planned.blockers));
+    assert.equal(existsSync(join(taskRoot, 'binding.e2.json')), false);
+    const applied = await applyAdopt(adopt(), { listAgents: observed });
+    assert.equal(applied.status, 'applied', JSON.stringify(applied.blockers));
+    const file = join(taskRoot, 'binding.e2.json');
+    assert.equal(currentBindingFile(taskRoot), file);
+    const generation = JSON.parse(readFileSync(file, 'utf8')) as {
+      participants: { agent_id: string; pane_id: string }[];
+    };
+    assert.deepEqual(
+      generation.participants.map((item) => [item.agent_id, item.pane_id]),
+      [
+        [WRITER_A.agent_id, 'w1:p2'],
+        [WRITER_B.agent_id, 'w1:p3'],
+        [REVIEWER.agent_id, 'w1:p4'],
+        [NEXT.agent_id, 'w1:p9'],
+      ],
+    );
+    const again = await applyAdopt(adopt(), { listAgents: observed });
+    assert.equal(again.status, 'applied');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('adopt refuses a non-coordinator, a missing succession and an unobserved pane', async () => {
+  const { fixture, taskRoot, adopt, observed } = await boundFixture('adopt-no');
+  try {
+    const none = await applyAdopt(
+      adopt({ caller: { ...COORDINATOR, cwd: fixture.root } }),
+      { listAgents: observed },
+    );
+    assert.deepEqual(
+      none.blockers.map((item) => item.code),
+      ['adopt_no_succession'],
+    );
+    succeed(taskRoot, '2099-01-01T00:00:00Z');
+    const stranger = await applyAdopt(
+      adopt({ caller: { ...WRITER_A, cwd: fixture.root } }),
+      { listAgents: observed },
+    );
+    assert.ok(
+      stranger.blockers.some((item) => item.code === 'adopt_not_coordinator'),
+    );
+    const wrongPane = await applyAdopt(adopt({ caller_pane: 'w1:p7' }), {
+      listAgents: observed,
+    });
+    assert.ok(
+      wrongPane.blockers.some((item) => item.code === 'adopt_pane_unobserved'),
+    );
+    const unavailable = await applyAdopt(adopt(), {
+      listAgents: async () => ({
+        ok: false as const,
+        status: 'unavailable' as const,
+        detail: 'no herdr',
+      }),
+    });
+    assert.ok(
+      unavailable.blockers.some(
+        (item) => item.code === 'adopt_pane_unobserved',
+      ),
+    );
+    assert.equal(existsSync(join(taskRoot, 'binding.e2.json')), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('adopt refuses an invalid lineage and a task that uses an unsupported surface', async () => {
+  const { fixture, taskRoot, adopt, observed } =
+    await boundFixture('adopt-bad');
+  try {
+    succeed(taskRoot, '2099-01-01T00:00:00Z');
+    const broken = transact(taskRoot, {
+      actor: 'fixture',
+      purpose: 'break',
+      apply: (record) => {
+        record.handoffs[record.handoffs.length - 1]!.steps = [];
+        return { record, op: 'break', summary: {}, result: { ok: true } };
+      },
+    });
+    assert.ok(broken.ok);
+    const invalid = await applyAdopt(adopt(), { listAgents: observed });
+    assert.ok(
+      invalid.blockers.some((item) => item.code === 'adopt_lineage_invalid'),
+    );
+    const restored = transact(taskRoot, {
+      actor: 'fixture',
+      purpose: 'restore',
+      apply: (record) => {
+        record.handoffs[record.handoffs.length - 1]!.steps = [
+          { state: 'completed', at: '2099-01-01T00:00:00Z', actor: 'fixture' },
+        ];
+        (record as unknown as Record<string, unknown>)[
+          'managed_pi_runtime_registry'
+        ] = [{}];
+        return { record, op: 'restore', summary: {}, result: { ok: true } };
+      },
+    });
+    assert.ok(restored.ok);
+    const unsupported = await applyAdopt(adopt(), { listAgents: observed });
+    assert.ok(
+      unsupported.blockers.some(
+        (item) => item.code === 'adopt_unsupported_surface',
+      ),
+      JSON.stringify(unsupported.blockers),
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('mid-cohort check blocks an attempt that was only assigned, and relaxes acknowledged ones', async () => {
+  const fixture = makeTaskDomain('check-mid', ['cohort'], { initialize: [] });
+  try {
+    const prepared = await applyPrepare(
+      prepareRequest(
+        fixture.domainRoot,
+        fixture.root,
+        baseAssignments(fixture.root),
+      ),
+    );
+    assert.equal(prepared.status, 'applied', JSON.stringify(prepared.blockers));
+    const taskRoot = join(fixture.domainRoot, 'tasks', 'cohort');
+    const codes = (value: Record<string, unknown>) =>
+      (value['blockers'] as { code: string }[]).map((item) => item.code);
+
+    const assigned = await readCoordinatorHandoffCheck(taskRoot, {
+      mode: 'mid_cohort',
+    });
+    assert.ok(assigned.ok);
+    assert.equal(assigned.value['status'], 'blocked');
+    assert.equal(
+      codes(assigned.value).filter(
+        (code) => code === 'attempt_not_transferable',
+      ).length,
+      2,
+    );
+
+    for (const [writer, subtask] of [
+      [WRITER_A, 'writer-one'],
+      [WRITER_B, 'writer-two'],
+    ] as const) {
+      const acked = await applyParticipant(
+        ackRequest(taskRoot, writer, subtask, 1),
+        { notify: silentNotify },
+      );
+      assert.equal(acked.status, 'applied', JSON.stringify(acked.blockers));
+    }
+    // A confirmed native observation answers "registered but not started"; an ACK alone does not.
+    const open = await readCoordinatorHandoffCheck(taskRoot, {
+      mode: 'mid_cohort',
+    });
+    assert.ok(open.ok);
+    assert.ok(
+      (open.value['blockers'] as { code: string }[]).every(
+        (item) =>
+          item.code === 'attempt_not_transferable' ||
+          item.code === 'claims_unreleased',
+      ),
+      JSON.stringify(open.value['blockers']),
+    );
+    const confirmed = transact(taskRoot, {
+      actor: 'fixture',
+      purpose: 'confirm',
+      apply: (record) => {
+        for (const item of record.uncertainty)
+          item.resolved_at = '2026-10-28T00:00:00Z';
+        return { record, op: 'confirm', summary: {}, result: { ok: true } };
+      },
+    });
+    assert.ok(confirmed.ok);
+    const running = await readCoordinatorHandoffCheck(taskRoot, {
+      mode: 'mid_cohort',
+    });
+    assert.ok(running.ok);
+    assert.equal(
+      running.value['status'],
+      'ready',
+      JSON.stringify(running.value['blockers']),
+    );
+    assert.equal(running.value['mode'], 'mid_cohort');
+    const relaxed = (running.value['relaxed'] as { code: string }[]).map(
+      (item) => item.code,
+    );
+    assert.ok(relaxed.includes('attempt_in_flight'));
+    assert.ok(relaxed.includes('claims_unreleased'));
+    assert.ok(relaxed.includes('cohort_node_not_accepted'));
+
+    // The boundary check keeps its meaning.
+    const boundary = await readCoordinatorHandoffCheck(taskRoot);
+    assert.ok(boundary.ok);
+    assert.equal(boundary.value['status'], 'blocked');
+    assert.ok(codes(boundary.value).includes('attempt_in_flight'));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('mid-cohort check keeps blocking an unsupported surface and a needs_input attempt', async () => {
+  const fixture = makeTaskDomain('check-mid-block', ['cohort'], {
+    initialize: [],
+  });
+  try {
+    const prepared = await applyPrepare(
+      prepareRequest(
+        fixture.domainRoot,
+        fixture.root,
+        baseAssignments(fixture.root),
+      ),
+    );
+    assert.equal(prepared.status, 'applied', JSON.stringify(prepared.blockers));
+    const taskRoot = join(fixture.domainRoot, 'tasks', 'cohort');
+    for (const [writer, subtask] of [
+      [WRITER_A, 'writer-one'],
+      [WRITER_B, 'writer-two'],
+    ] as const)
+      assert.equal(
+        (
+          await applyParticipant(ackRequest(taskRoot, writer, subtask, 1), {
+            notify: silentNotify,
+          })
+        ).status,
+        'applied',
+      );
+    const marked = transact(taskRoot, {
+      actor: 'fixture',
+      purpose: 'surface',
+      apply: (record) => {
+        (record as unknown as Record<string, unknown>)[
+          'managed_pi_runtime_registry'
+        ] = [{}];
+        const attempt = record.attempts.find(
+          (item) => item.subtask_id === 'writer-two',
+        )!;
+        attempt.state = 'needs_input';
+        return { record, op: 'surface', summary: {}, result: { ok: true } };
+      },
+    });
+    assert.ok(marked.ok);
+    const result = await readCoordinatorHandoffCheck(taskRoot, {
+      mode: 'mid_cohort',
+    });
+    assert.ok(result.ok);
+    const codes = (result.value['blockers'] as { code: string }[]).map(
+      (item) => item.code,
+    );
+    assert.equal(result.value['status'], 'blocked');
+    assert.ok(codes.includes('adopt_unsupported_surface'));
+    assert.ok(codes.includes('attempt_needs_input'));
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('adopt refuses instead of truncating a full binding, and a malformed generation never routes', async () => {
+  const { fixture, taskRoot, adopt, observed } =
+    await boundFixture('adopt-full');
+  try {
+    succeed(taskRoot, '2099-01-01T00:00:00Z');
+    // A generation that is not a valid binding is not a usable generation.
+    writeFileSync(join(taskRoot, 'binding.e2.json'), '{"nope":true}\n');
+    assert.equal(currentBindingFile(taskRoot), join(taskRoot, 'binding.json'));
+    rmSync(join(taskRoot, 'binding.e2.json'));
+    // Fill the sealed binding to the cap so the successor entry would not fit.
+    const sealed = join(taskRoot, 'binding.json');
+    const document = JSON.parse(readFileSync(sealed, 'utf8')) as {
+      participants: Record<string, unknown>[];
+    };
+    for (let index = document.participants.length; index < 16; index += 1)
+      document.participants.push({
+        agent_id: `filler-${index}`,
+        harness: 'pi',
+        cwd: fixture.root,
+        herdr_agent: `filler-${index}`,
+        pane_id: `w1:p${20 + index}`,
+        native_session_id: null,
+      });
+    writeFileSync(sealed, `${JSON.stringify(document, null, 2)}\n`);
+    const refused = await applyAdopt(adopt(), { listAgents: observed });
+    // The previous coordinator is dropped, so one slot frees up and adoption still fits.
+    assert.equal(refused.status, 'applied', JSON.stringify(refused.blockers));
+    rmSync(join(taskRoot, 'binding.e2.json'));
+    // If the previous coordinator also holds an attempt its entry stays and the binding is full.
+    const kept = transact(taskRoot, {
+      actor: 'fixture',
+      purpose: 'worker',
+      apply: (record) => {
+        record.attempts[0]!.assignee = {
+          agent_id: COORDINATOR.agent_id,
+          session_id: COORDINATOR.session_id,
+          harness: COORDINATOR.harness,
+        };
+        return { record, op: 'worker', summary: {}, result: { ok: true } };
+      },
+    });
+    assert.ok(kept.ok);
+    const full = await applyAdopt(adopt(), { listAgents: observed });
+    assert.ok(
+      full.blockers.some((item) => item.code === 'adopt_binding_full'),
+      JSON.stringify(full.blockers),
+    );
+    assert.equal(existsSync(join(taskRoot, 'binding.e2.json')), false);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('accept and dispatch warn, never refuse, before the successor adopts', async () => {
+  const { fixture, taskRoot, accept } = await reportedFixture('succ-warn');
+  try {
+    succeed(taskRoot, '2099-01-01T00:00:00Z');
+    const decision = await applyAccept(accept(NEXT), { notify: silentNotify });
+    assert.equal(decision.status, 'applied', JSON.stringify(decision.blockers));
+    assert.ok(
+      decision.warnings.some((item) => item.includes('not adopted')),
+      JSON.stringify(decision.warnings),
     );
   } finally {
     fixture.cleanup();

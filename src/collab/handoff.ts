@@ -1,5 +1,6 @@
 import type { TaskRecord, Identity, Message, Handoff } from './types.js';
 import { text } from './validation.js';
+import { coordinatorLineage } from './lineage.js';
 import { createNonce, nowIso } from './store.js';
 import {
   ACTIVE_STATES,
@@ -850,4 +851,205 @@ export function coordinatorHandoffReadiness(
       next_action: 'The incoming coordinator must release it explicitly.',
     });
   return { ready: blockers.length === 0, blockers, warnings };
+}
+
+export interface AttemptTransferability {
+  readonly subtask_id: string;
+  readonly attempt: number;
+  readonly state: string;
+  readonly transferable: boolean;
+  readonly next_action: string | null;
+}
+
+export interface MidCohortHandoffReadiness extends CoordinatorHandoffReadiness {
+  readonly attempts: readonly AttemptTransferability[];
+  /** Every blocker of the boundary check that this mode does not enforce, and why. */
+  readonly relaxed: readonly HandoffReadinessFinding[];
+}
+
+/**
+ * Classifies an attempt for a coordinator handoff made while it is still in flight
+ * (docs/mid-cohort-succession-spec.md, section 7). A worker can carry on without the outgoing
+ * coordinator when it has acknowledged (`accepted`) or is `running`; a finished attempt is
+ * decided by the successor. An attempt that was only assigned, whose state is unknown, or that
+ * waits for an answer addressed to the outgoing coordinator cannot be handed over.
+ */
+function classifyAttempt(
+  record: TaskRecord,
+  attempt: TaskRecord['attempts'][number],
+): AttemptTransferability {
+  const base = {
+    subtask_id: attempt.subtask_id,
+    attempt: attempt.attempt,
+    state: attempt.state,
+  };
+  // An acknowledgement alone does not prove the worker runs: until a native observation answers
+  // "registered but not started", the successor would inherit an attempt nobody can prove alive.
+  if (
+    (attempt.state === 'accepted' || attempt.state === 'running') &&
+    (record.uncertainty ?? []).some(
+      (item) =>
+        !item.resolved_at &&
+        item.kind === 'registered_not_started' &&
+        item.subtask_id === attempt.subtask_id &&
+        item.attempt === attempt.attempt,
+    )
+  )
+    return {
+      ...base,
+      transferable: false,
+      next_action:
+        'Bind native evidence for the attempt, or resolve its registered_not_started uncertainty, before handing off.',
+    };
+  switch (attempt.state) {
+    case 'accepted':
+    case 'running':
+    case 'completed':
+    case 'failed':
+    case 'cancelled':
+      return { ...base, transferable: true, next_action: null };
+    case 'assigned':
+      return {
+        ...base,
+        transferable: false,
+        next_action:
+          'Deliver and acknowledge the assignment, or cancel the attempt, before handing off: its delivery depends on the outgoing coordinator.',
+      };
+    case 'needs_input':
+      return {
+        ...base,
+        transferable: false,
+        next_action:
+          'Answer or cancel the blocked attempt: an answer is authorized against the coordinator the question was addressed to.',
+      };
+    default:
+      return {
+        ...base,
+        transferable: false,
+        next_action:
+          'Reconcile the attempt state with native evidence before handing off.',
+      };
+  }
+}
+
+/**
+ * Read-only: can the coordinator change safely NOW, with workers still running?
+ *
+ * It starts from the boundary check and relaxes only what a successor can take over: attempts in
+ * flight that are transferable, and claims those attempts hold under their own subtask and
+ * attempt. Everything else keeps blocking, and every relaxed item is reported with its reason.
+ * Cohort acceptance is relaxed by the caller, which owns the plan evaluation.
+ */
+export function midCohortHandoffReadiness(
+  record: TaskRecord,
+  options: { readonly ignoreHandoffId?: string } = {},
+): MidCohortHandoffReadiness {
+  const base = coordinatorHandoffReadiness(record, options);
+  const attempts = (record.attempts ?? []).map((item) =>
+    classifyAttempt(record, item),
+  );
+  const transferable = new Set(
+    attempts
+      .filter((item) => item.transferable)
+      .map((item) => `${item.subtask_id}#${String(item.attempt)}`),
+  );
+  const blockers: HandoffReadinessFinding[] = [];
+  const relaxed: HandoffReadinessFinding[] = [];
+  const lineage = coordinatorLineage(record);
+  if (!lineage.valid)
+    blockers.push({
+      code: 'lineage_invalid',
+      detail: `The coordinator lineage cannot be established: ${lineage.detail}`,
+      next_action:
+        'Inspect the coordinator handoff history; a task with an invalid lineage keeps the boundary check.',
+    });
+  for (const item of attempts.filter(
+    (entry) =>
+      !entry.transferable &&
+      // needs_input keeps its own boundary blocker below.
+      entry.state !== 'needs_input',
+  ))
+    blockers.push({
+      code: 'attempt_not_transferable',
+      detail: `${item.subtask_id}#${String(item.attempt)} is ${item.state} and cannot be carried over by a successor.`,
+      next_action: item.next_action ?? 'Resolve the attempt first.',
+    });
+  const held = (record.claims ?? []).filter((item) => !item.released_at);
+  const tiedToTransferable = held.filter(
+    (item) =>
+      item.subtask_id !== null &&
+      item.attempt !== null &&
+      transferable.has(`${item.subtask_id}#${String(item.attempt)}`) &&
+      sameHolder(
+        findAttempt(record, item.subtask_id, item.attempt)?.assignee,
+        item.holder,
+      ),
+  );
+  for (const finding of base.blockers) {
+    if (finding.code === 'attempt_in_flight') {
+      relaxed.push({
+        code: finding.code,
+        detail: 'Transferable attempts may be in flight.',
+        next_action:
+          'The successor decides their reports; non-transferable ones block separately.',
+      });
+      continue;
+    }
+    if (finding.code === 'claims_unreleased') {
+      const source = coordinator_(record);
+      const remaining = held.filter(
+        (item) =>
+          !tiedToTransferable.includes(item) &&
+          !(
+            source !== null &&
+            item.holder?.agent_id === source.agent_id &&
+            item.holder?.session_id === source.session_id
+          ),
+      );
+      if (remaining.length > 0)
+        blockers.push({
+          ...finding,
+          detail: `${String(remaining.length)} claim(s) are not tied to a transferable attempt of their holder and are not released.`,
+          next_action:
+            'Release them, or claim them tied to the attempt (subtask and attempt) that holds them.',
+        });
+      if (tiedToTransferable.length > 0)
+        relaxed.push({
+          code: finding.code,
+          detail: `${String(tiedToTransferable.length)} claim(s) held by transferable attempts under their own subtask and attempt.`,
+          next_action: 'The workers release them after the successor decides.',
+        });
+      continue;
+    }
+    // Already reported once per attempt as `attempt_not_transferable`.
+    if (
+      finding.code === 'uncertainty_open' &&
+      /\(registered_not_started\)/.test(finding.detail)
+    )
+      continue;
+    blockers.push(finding);
+  }
+  return {
+    ready: blockers.length === 0,
+    blockers,
+    warnings: base.warnings,
+    attempts,
+    relaxed,
+  };
+}
+
+function sameHolder(
+  left: Identity | null | undefined,
+  right: Identity | null | undefined,
+): boolean {
+  return (
+    left != null &&
+    right != null &&
+    left.agent_id === right.agent_id &&
+    left.session_id === right.session_id
+  );
+}
+
+function coordinator_(record: TaskRecord) {
+  return record.coordinator ?? null;
 }

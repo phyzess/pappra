@@ -1,8 +1,6 @@
+import { currentBindingFile } from './binding-generation.js';
 import { readBoundedJson, digestFile, openWorkflowTask } from './context.js';
-import {
-  workflowManifestPath,
-  workflowBindingPath,
-} from '../../schemas/collab-workflow.js';
+import { workflowManifestPath } from '../../schemas/collab-workflow.js';
 import { emptyResult, type WorkflowResult } from './types.js';
 import { findAttempt } from '../../collab/lifecycle.js';
 import { resolveUserDataDir } from '../../install/data-dir.js';
@@ -97,7 +95,7 @@ export async function inspectWorkflow(
   const record = task.record;
   const manifestFile = workflowManifestPath(task.taskRoot);
   const manifestRead = readBoundedJson(manifestFile, 'workflow manifest');
-  const bindingFile = workflowBindingPath(task.taskRoot);
+  const bindingFile = currentBindingFile(task.taskRoot);
   const bindingRead = readBoundedJson(bindingFile, 'task binding');
   const deferred: { subtask_id: string; role: string }[] = [];
   if (manifestRead.ok) {

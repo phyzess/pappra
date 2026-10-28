@@ -33,6 +33,7 @@ export type WorkflowAction =
   | 'accept'
   | 'release'
   | 'reclaim'
+  | 'adopt'
   | 'inspect';
 
 export type WorkflowStatus =

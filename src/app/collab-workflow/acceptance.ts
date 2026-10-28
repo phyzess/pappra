@@ -16,7 +16,7 @@ import {
   type PaneReclaimEntry,
   type PaneReclaimOptions,
 } from '../collab-pane-reclaim.js';
-import { workflowBindingPath } from '../../schemas/collab-workflow.js';
+import { currentBindingFile, unadoptedWarning } from './binding-generation.js';
 import { validateWorkPlan } from '../../collab/work-plan.js';
 import { workflowWorkPlanPath } from '../../schemas/collab-workflow.js';
 import { digestText, readRecord } from '../../collab/store.js';
@@ -84,6 +84,8 @@ export async function applyAccept(
   const blockers: WorkflowBlocker[] = [];
   // Delivery is reported separately: an undelivered decision is still recorded, never rolled back.
   const warnings: string[] = [];
+  const unadopted = unadoptedWarning(task.taskRoot);
+  if (unadopted !== null) warnings.push(unadopted);
   const attempt = resolveAttempt(record, request.subtask_id, request.attempt);
   if (attempt === null)
     blockers.push({
@@ -360,7 +362,7 @@ export async function applyAccept(
     const delivered = await notify({
       taskRoot: task.taskRoot,
       messageId: message.message_id,
-      bindingFile: workflowBindingPath(task.taskRoot),
+      bindingFile: currentBindingFile(task.taskRoot),
       apply: true,
       retry: false,
       callerPane: request.caller_pane,

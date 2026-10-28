@@ -14,6 +14,7 @@ export async function handleHandoff(
     const handoffAction =
       selected === 'inventory' ||
       selected === 'check' ||
+      selected === 'check-mid-cohort' ||
       selected === 'successor' ||
       selected === 'ack' ||
       selected === 'begin' ||
@@ -29,7 +30,7 @@ export async function handleHandoff(
     const duplicateFlags =
       handoffAction === 'inventory'
         ? ['--task-root', '--subtask-id', '--attempt']
-        : handoffAction === 'check'
+        : handoffAction === 'check' || handoffAction === 'check-mid-cohort'
           ? ['--task-root']
           : handoffAction === 'successor'
             ? ['--request']
@@ -46,7 +47,7 @@ export async function handleHandoff(
       'json',
       ...(handoffAction === 'inventory'
         ? ['subtask-id', 'attempt']
-        : handoffAction === 'check'
+        : handoffAction === 'check' || handoffAction === 'check-mid-cohort'
           ? []
           : ['request', 'apply']),
     ]);

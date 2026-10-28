@@ -372,6 +372,18 @@ attempt, plan, assignment or message.
 successor, so a missed adoption never blocks the cohort. `collab handoff successor` (phase 3) is
 unchanged: adoption is a separate step after `complete`.
 
+**As built (step 4d).** The request is a document, not flags: `pappra/collab-workflow-adopt-request/1`
+(task root, caller, caller pane), like every other workflow action. The sealed binding is
+`<task root>/binding.json`, so generation N is `<task root>/binding.e<epoch>.json`; it carries the
+participants only (the binding schema is strict and unchanged), and the epoch in the name identifies
+the completed handoff that created it. The previous coordinator's entry is dropped unless that agent
+also holds an attempt of the task. The pane is observed with the Herdr agent listing: the agent in
+that pane must report the coordinator's harness and session id. Role plans and role event journals sit
+at caller-chosen paths, not under the task root, so only files with `role` in their name next to the
+task are detected; a warning always names the rest. The mid-cohort mode of `check` is the separate
+action `collab handoff check-mid-cohort`; an attempt that only acknowledged still carries its
+`registered_not_started` uncertainty, which keeps blocking until a native observation resolves it.
+
 ## 10. Threat model
 
 | Attack or fault | Outcome |

@@ -9,6 +9,8 @@ import {
   abortHandoff,
   coordinatorHandoffReadiness,
   type HandoffReadinessFinding,
+  type MidCohortHandoffReadiness,
+  midCohortHandoffReadiness,
   beginHandoff,
   completeHandoff,
   confirmReceiver,
@@ -25,6 +27,7 @@ import {
   workflowWorkPlanPath,
 } from '../schemas/collab-workflow.js';
 import { evaluateCohortPlan } from './collab-workflow/dispatch.js';
+import { unsupportedSurfaces } from './collab-workflow/succession-surfaces.js';
 import { transact } from '../collab/store.js';
 import type { Identity, Message, TaskRecord } from '../collab/types.js';
 import {
@@ -656,7 +659,11 @@ export async function readHandoffInventory(
  */
 export async function readCoordinatorHandoffCheck(
   taskRoot: string,
-  options: { readonly ignoreHandoffId?: string } = {},
+  options: {
+    readonly ignoreHandoffId?: string;
+    /** `mid_cohort` judges a handoff made while transferable attempts are still in flight. */
+    readonly mode?: 'boundary' | 'mid_cohort';
+  } = {},
 ): Promise<TaskStoreResult<Record<string, unknown>>> {
   const opened = await openTaskStore(taskRoot);
   if (!opened.ok) return opened;
@@ -675,8 +682,21 @@ export async function readCoordinatorHandoffCheck(
   const workflowDriven =
     present(workflowWorkPlanPath(opened.value.taskRoot)) ||
     present(workflowManifestPath(opened.value.taskRoot));
-  const readiness = coordinatorHandoffReadiness(record, options);
+  const midCohort = options.mode === 'mid_cohort';
+  const readiness = midCohort
+    ? midCohortHandoffReadiness(record, options)
+    : coordinatorHandoffReadiness(record, options);
   const blockers: HandoffReadinessFinding[] = [...readiness.blockers];
+  const relaxed: HandoffReadinessFinding[] = midCohort
+    ? [...(readiness as MidCohortHandoffReadiness).relaxed]
+    : [];
+  if (midCohort)
+    for (const finding of unsupportedSurfaces(record, opened.value.taskRoot))
+      blockers.push({
+        code: finding.code,
+        detail: finding.detail,
+        next_action: finding.next_action,
+      });
   if (workflowDriven) {
     // Reuse the dispatch evaluator: acceptance is the sealed plan's decision over verified
     // envelopes, not a message id. Every node must be accepted for the cohort to be finished.
@@ -694,7 +714,14 @@ export async function readCoordinatorHandoffCheck(
       const open = cohort.evaluation.nodes.filter(
         (node) => node.status !== 'accepted',
       );
-      if (open.length > 0)
+      if (open.length > 0 && midCohort)
+        relaxed.push({
+          code: 'cohort_node_not_accepted',
+          detail: `Not yet accepted by the sealed work plan: ${open.map((node) => `${node.node_id} (${node.status})`).join(', ')}.`,
+          next_action:
+            'The successor decides these; the plan still names every node.',
+        });
+      else if (open.length > 0)
         blockers.push({
           code: 'cohort_node_not_accepted',
           detail: `Not accepted by the sealed work plan: ${open.map((node) => `${node.node_id} (${node.status})`).join(', ')}.`,
@@ -724,6 +751,13 @@ export async function readCoordinatorHandoffCheck(
               owner_epoch: coordinator.owner_epoch,
             },
       workflow_driven: workflowDriven,
+      mode: midCohort ? 'mid_cohort' : 'boundary',
+      ...(midCohort
+        ? {
+            attempts: (readiness as MidCohortHandoffReadiness).attempts,
+            relaxed,
+          }
+        : {}),
       blockers,
       warnings: readiness.warnings,
       fence: {
@@ -739,6 +773,11 @@ export async function readCoordinatorHandoffCheck(
             'collab handoff confirm (successor ACK or HANDOFF message)',
             'collab handoff complete',
             'collab handoff release-dispatch (by the successor, new epoch)',
+            ...(midCohort
+              ? [
+                  'collab workflow adopt (by the successor, writes the binding generation)',
+                ]
+              : []),
           ]
         : [],
       limits: ['stored_state_only', 'no_native_query', 'read_only'],

@@ -77,7 +77,7 @@ test('collab workflow bypasses the global option parser and prints its own usage
   assert.equal(help.code, 0);
   assert.match(
     help.stdout,
-    /pappra collab workflow <prepare\|dispatch\|ack\|report\|accept\|release\|reclaim\|inspect>/,
+    /pappra collab workflow <prepare\|dispatch\|ack\|report\|accept\|release\|reclaim\|adopt\|inspect>/,
   );
 
   // `--watch` is a global flag; the workflow family must reject it as its own unknown

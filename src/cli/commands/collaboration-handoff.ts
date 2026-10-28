@@ -20,6 +20,7 @@ import type { CliOutput } from '../output.js';
 export const collaborationHandoffUsage =
   'pappra collab handoff inventory --task-root <abs> [--subtask-id <id>] [--attempt <positive integer>] [--json]\n' +
   'pappra collab handoff check --task-root <abs> [--json]\n' +
+  'pappra collab handoff check-mid-cohort --task-root <abs> [--json]\n' +
   'pappra collab handoff successor --request <abs successor.json> [--apply] [--json]\n' +
   'pappra collab handoff ack --task-root <abs> --request <successor request id> [--apply] [--json]\n' +
   'pappra collab handoff <begin|stopped|rebind|transfer|confirm|complete|abort|release-dispatch> --task-root <abs> --request <abs request.json> [--apply] [--json]\n\n' +
@@ -30,7 +31,13 @@ export const collaborationHandoffUsage =
 
 export interface CollaborationHandoffOptions {
   readonly action:
-    HandoffAction | 'inventory' | 'check' | 'successor' | 'ack' | null;
+    | HandoffAction
+    | 'inventory'
+    | 'check'
+    | 'check-mid-cohort'
+    | 'successor'
+    | 'ack'
+    | null;
   readonly taskRoot: string | null;
   readonly requestFile: string | null;
   readonly subtaskId: string | null;
@@ -243,8 +250,11 @@ export async function runCollaborationHandoffCommand(
   if (!path.isAbsolute(options.taskRoot))
     return invalid(output, options, ['--task-root must be absolute.']);
 
-  if (options.action === 'check') {
-    const result = await readCoordinatorHandoffCheck(options.taskRoot);
+  if (options.action === 'check' || options.action === 'check-mid-cohort') {
+    const result = await readCoordinatorHandoffCheck(
+      options.taskRoot,
+      options.action === 'check-mid-cohort' ? { mode: 'mid_cohort' } : {},
+    );
     if (!result.ok) return failure(output, options, result, 1, true);
     if (options.json) output.stdout(`${JSON.stringify(result.value)}\n`);
     else emitCheck(result.value, output);

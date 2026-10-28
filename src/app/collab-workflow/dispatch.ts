@@ -18,6 +18,7 @@ import {
 } from '../../collab/work-plan.js';
 import { deriveCapabilityCard } from '../capability-evidence/index.js';
 import { ACTIVE_STATES, findAttempt } from '../../collab/lifecycle.js';
+import { currentBindingFile, unadoptedWarning } from './binding-generation.js';
 import {
   createHerdrWorkExecutionAdapter,
   type WorkExecutionAdapter,
@@ -44,7 +45,6 @@ import {
 } from '../../collab/lineage.js';
 import {
   workflowAssignmentPath,
-  workflowBindingPath,
   workflowIntentsDir,
   workflowManifestPath,
   workflowWorkPlanPath,
@@ -1154,6 +1154,8 @@ export async function applyDispatch(
 
   const blockers: WorkflowBlocker[] = [];
   const warnings: string[] = [];
+  const unadopted = unadoptedWarning(task.taskRoot);
+  if (unadopted !== null) warnings.push(unadopted);
   const notified: string[] = [];
   const intents: string[] = [];
   const activationOnly: string[] = [];
@@ -1396,7 +1398,7 @@ export async function applyDispatch(
       const delivered = await adapter.dispatch({
         taskRoot: task.taskRoot,
         messageId: intent.message_id,
-        bindingFile: workflowBindingPath(task.taskRoot),
+        bindingFile: currentBindingFile(task.taskRoot),
         callerPane: request.caller_pane,
         retryNoEffect,
         finalAuthorityCheck,

@@ -18,10 +18,21 @@ pappra collab workflow ack      --request <abs participant.json>   [--apply] [--
 pappra collab workflow report   --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow release  --request <abs participant.json>   [--apply] [--json]
 pappra collab workflow accept   --request <abs accept.json>        [--apply] [--json]
+pappra collab workflow adopt    --request <abs adopt.json>         [--apply] [--json]
 pappra collab workflow inspect  --task-root <abs task root> [--limit <n>] [--json]
 ```
 
 `--goal` is accepted as an alias for `--request` on `prepare`.
+
+`adopt` is run by a successor coordinator after a mid-cohort coordinator succession
+(`docs/mid-cohort-succession-spec.md`). Its request (`pappra/collab-workflow-adopt-request/1`) names
+the task root, the caller and the caller's own pane. The plan is read-only; apply writes the next
+binding generation `binding.e<epoch>.json` beside the sealed `binding.json` and changes nothing
+else, so notifications reach the successor. It refuses unless the caller is the current coordinator,
+the lineage is valid and its pane is observed through Herdr as that session, and it refuses a task
+that uses managed Pi, session transition, rollover or role artifacts. `pappra collab handoff
+check-mid-cohort` is the read-only check for handing off while transferable attempts are still in
+flight: it blocks on every non-transferable attempt and lists what it relaxed.
 
 The family parses its own argv and is routed before the global option parser,
 so request documents never mix with the global flag surface. Without `--apply`

@@ -16,7 +16,7 @@ import {
 } from '../../collab/lineage.js';
 import { isToOnlyDuplicate, submitMessage } from '../../collab/messages.js';
 import { notifyRegisteredMessage } from '../collab-notify.js';
-import { workflowBindingPath } from '../../schemas/collab-workflow.js';
+import { currentBindingFile } from './binding-generation.js';
 import { digestText, readRecord, transact } from '../../collab/store.js';
 import { claimsOverlap, describeResource } from '../../collab/canonical.js';
 import fs from 'node:fs';
@@ -262,7 +262,7 @@ async function deliverAdmitted(
   const delivered = await notify({
     taskRoot,
     messageId,
-    bindingFile: workflowBindingPath(taskRoot),
+    bindingFile: currentBindingFile(taskRoot),
     apply: true,
     retry: false,
     callerPane,

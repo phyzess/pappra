@@ -1,17 +1,20 @@
 import {
   parseWorkflowAcceptBatchRequest,
+  parseWorkflowAdoptRequest,
   parseWorkflowAcceptRequest,
   parseWorkflowDispatchRequest,
   parseWorkflowParticipantRequest,
   parseWorkflowPrepareRequest,
   parseWorkflowReclaimRequest,
   WORKFLOW_ACCEPT_BATCH_REQUEST_SCHEMA,
+  WORKFLOW_ADOPT_REQUEST_SCHEMA,
   WORKFLOW_ACCEPT_REQUEST_SCHEMA,
   WORKFLOW_DISPATCH_REQUEST_SCHEMA,
   WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
   WORKFLOW_PREPARE_REQUEST_SCHEMA,
   WORKFLOW_RECLAIM_REQUEST_SCHEMA,
   type WorkflowAcceptBatchRequest,
+  type WorkflowAdoptRequest,
   type WorkflowAcceptRequest,
   type WorkflowDispatchRequest,
   type WorkflowParticipantRequest,
@@ -41,6 +44,8 @@ export {
 export { applyParticipant } from './collab-workflow/participant.js';
 export { applyAccept, applyAcceptBatch } from './collab-workflow/acceptance.js';
 export { applyReclaim } from './collab-workflow/reclaim.js';
+export { applyAdopt } from './collab-workflow/adopt.js';
+export { currentBindingFile } from './collab-workflow/binding-generation.js';
 export { inspectWorkflow } from './collab-workflow/inspect.js';
 export {
   workflowAssignmentPath,
@@ -67,6 +72,7 @@ export type {
   WorkflowDispatchRequest,
   WorkflowParticipantRequest,
   WorkflowPrepareRequest,
+  WorkflowAdoptRequest,
   WorkflowReclaimRequest,
   WorkflowReportDeclaration,
   WorkflowResourceDeclaration,
@@ -178,5 +184,15 @@ export function loadReclaimRequest(
     file,
     WORKFLOW_RECLAIM_REQUEST_SCHEMA,
     parseWorkflowReclaimRequest,
+  );
+}
+
+export function loadAdoptRequest(
+  file: string,
+): WorkflowOutcome<WorkflowAdoptRequest> {
+  return loadDocument(
+    file,
+    WORKFLOW_ADOPT_REQUEST_SCHEMA,
+    parseWorkflowAdoptRequest,
   );
 }

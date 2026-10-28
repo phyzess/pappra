@@ -11,7 +11,9 @@ import {
   loadDispatchRequest,
   loadParticipantRequest,
   loadPrepareRequest,
+  loadAdoptRequest,
   loadReclaimRequest,
+  applyAdopt,
   applyReclaim,
   planPrepare,
   type WorkflowPlan,
@@ -29,7 +31,7 @@ import type { CliOutput } from '../output.js';
  */
 
 export const collaborationWorkflowUsage =
-  'pappra collab workflow <prepare|dispatch|ack|report|accept|release|reclaim|inspect> [options]\n' +
+  'pappra collab workflow <prepare|dispatch|ack|report|accept|release|reclaim|adopt|inspect> [options]\n' +
   '  prepare  --request <abs prepare.json> [--apply] [--json]\n' +
   '  dispatch --request <abs dispatch.json> [--apply] [--json]\n' +
   '  ack      --request <abs participant.json> [--apply] [--json]\n' +
@@ -37,6 +39,7 @@ export const collaborationWorkflowUsage =
   '  release  --request <abs participant.json> [--apply] [--json]\n' +
   '  accept   --request <abs accept.json|accept-batch.json> [--apply] [--json]\n' +
   '  reclaim  --request <abs reclaim.json> [--apply] [--json]\n' +
+  '  adopt    --request <abs adopt.json> [--apply] [--json]\n' +
   '  inspect  --task-root <abs task root> [--limit <1-500>] [--json]\n\n' +
   'Without --apply every action is a zero-write, zero-notification plan. Prepare derives one\n' +
   'cohort from the declared goal, seals deterministic assignment documents and registers the\n' +
@@ -58,6 +61,7 @@ export const WORKFLOW_ACTIONS = [
   'accept',
   'release',
   'reclaim',
+  'adopt',
   'inspect',
 ] as const;
 
@@ -321,6 +325,13 @@ export async function runCollaborationWorkflowCli(
     const request = loadAcceptRequest(options.requestFile);
     if (!request.ok) return invalid(output, options.json, [request.message]);
     const result = await applyAccept(request.value, { apply: options.apply });
+    return emitResult(output, options.json, result);
+  }
+
+  if (options.action === 'adopt') {
+    const request = loadAdoptRequest(options.requestFile);
+    if (!request.ok) return invalid(output, options.json, [request.message]);
+    const result = await applyAdopt(request.value, { apply: options.apply });
     return emitResult(output, options.json, result);
   }
 
