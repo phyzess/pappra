@@ -10,6 +10,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -1133,10 +1134,16 @@ test('a claim replaced by another empty directory is detected and retained', asy
   ): Promise<unknown> => {
     if (String(path) === out) {
       calls += 1;
-      // The third lookup is the pre-publication claim verification.
+      // The third lookup is the pre-publication claim verification. Create the
+      // replacement while the claim still exists, then move it into place: both
+      // directories are alive at the same time, so the replacement is guaranteed a
+      // different inode. Remove-then-create can reuse the freed inode on Linux and
+      // would make this simulation silently become a no-op.
       if (calls === 3) {
+        const substitute = `${out}.substitute`;
+        mkdirSync(substitute);
         rmSync(out, { recursive: true, force: true });
-        mkdirSync(out);
+        renameSync(substitute, out);
       }
     }
     return originalLstat(path, options);
@@ -1148,6 +1155,7 @@ test('a claim replaced by another empty directory is detected and retained', asy
   );
   assert.equal(lstatSync(out).isDirectory(), true);
   assert.deepEqual(readdirSync(out), []);
+  assert.equal(existsSync(`${out}.substitute`), false);
 });
 
 test('staging substitution at the first write is detected before the private binding', async () => {
