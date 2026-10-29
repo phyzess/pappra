@@ -1,7 +1,8 @@
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { readdir } from 'node:fs/promises';
+import { readdir, unlink } from 'node:fs/promises';
 import { z } from 'zod';
 import { observePath, resolveRealpath, sha256Digest } from '../infra/fs.js';
+import { persistedIdentityMatches } from '../infra/persisted-identity.js';
 import {
   inspectMachineConfig,
   inspectWorkspaceConfig,
@@ -24,7 +25,7 @@ const referenceSchema = z.strictObject({
   workspaceRoot: z.string().min(1).max(4096).refine(isAbsolute),
   workspaceId: z.uuid(),
   rootIdentity: z.strictObject({
-    dev: z.number().int().nonnegative(),
+    dev: z.number().int().nonnegative().optional(),
     ino: z.number().int().nonnegative(),
   }),
   intendedRuntime: z.strictObject({
@@ -35,6 +36,81 @@ const referenceSchema = z.strictObject({
   registeredAt: z.iso.datetime({ offset: true }),
 });
 type RuntimeReference = z.infer<typeof referenceSchema>;
+
+const referenceNamePattern = /^sha256-[0-9a-f]{64}\.json$/;
+
+interface RegistryRecord {
+  readonly name: string;
+  readonly entry: RuntimeReference;
+}
+
+/** Validated records of this registry. Foreign or unparsable files are never records. */
+async function readRegistryRecords(
+  directory: string,
+): Promise<readonly RegistryRecord[]> {
+  let names: string[];
+  try {
+    names = (await readdir(directory)).sort();
+  } catch {
+    return [];
+  }
+  // Cleanup never enumerates an unbounded directory; inspection bounds it too.
+  if (names.length > 4096) return [];
+  const records: RegistryRecord[] = [];
+  for (const name of names) {
+    if (!referenceNamePattern.test(name)) continue;
+    const read = await readJsonDocument(join(directory, name), referenceSchema);
+    // A record that cannot be parsed is preserved and reported by inspection.
+    if (!read.value) continue;
+    records.push({ name, entry: read.value });
+  }
+  return records;
+}
+
+/** Valid records this registration replaces: same workspace root, id and inode. */
+function supersededReferenceNames(
+  records: readonly RegistryRecord[],
+  entry: RuntimeReference,
+  keepName: string,
+): string[] {
+  return records
+    .filter(
+      (record) =>
+        record.name !== keepName &&
+        record.entry.workspaceRoot === entry.workspaceRoot &&
+        record.entry.workspaceId === entry.workspaceId &&
+        persistedIdentityMatches(record.entry.rootIdentity, entry.rootIdentity),
+    )
+    .map((record) => record.name);
+}
+
+/** Removes only names this call already validated as records of this registry. */
+async function removeReferenceRecords(
+  directory: string,
+  names: readonly string[],
+): Promise<Outcome<null>> {
+  for (const name of names) {
+    if (!referenceNamePattern.test(name))
+      return failed(
+        diagnosticCodes.initApplyResidual,
+        `Refusing to remove an unrecognised runtime reference entry: ${name}`,
+      );
+    try {
+      await unlink(join(directory, name));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      return failed(
+        diagnosticCodes.initApplyResidual,
+        `The superseded runtime reference could not be removed: ${name}`,
+        {
+          nextAction:
+            'Inspect the runtime reference registry; the new record is already published.',
+        },
+      );
+    }
+  }
+  return succeeded(null);
+}
 
 export interface RuntimeReferenceReport {
   readonly coverage: 'registered-workspaces-only';
@@ -104,6 +180,7 @@ export async function inspectRuntimeReferences(
     executable: string;
   }[] = [];
   const unknown: string[] = [];
+  const listed = new Set<string>();
   const canonicalDataDir = (await resolveRealpath(dataDir)) ?? resolve(dataDir);
   const directory = runtimeReferencesDirectory(canonicalDataDir);
   const report = (): RuntimeReferenceReport => ({
@@ -138,7 +215,7 @@ export async function inspectRuntimeReferences(
     return report();
   }
   for (const name of names) {
-    if (!/^sha256-[0-9a-f]{64}\.json$/.test(name)) {
+    if (!referenceNamePattern.test(name)) {
       unknown.push('unexpected_registry_entry');
       continue;
     }
@@ -154,8 +231,7 @@ export async function inspectRuntimeReferences(
       root?.kind !== 'directory' ||
       !root.stats ||
       canonical !== entry.workspaceRoot ||
-      root.stats.dev !== entry.rootIdentity.dev ||
-      root.stats.ino !== entry.rootIdentity.ino
+      !persistedIdentityMatches(entry.rootIdentity, root.stats)
     ) {
       unknown.push(`workspace_missing_or_replaced:${name}`);
       continue;
@@ -171,12 +247,21 @@ export async function inspectRuntimeReferences(
       continue;
     }
     const binding = machine.value.runtime;
-    if (binding && (await runtimeBindingMatches(dataDir, version, binding)))
-      active.push({
-        workspaceRoot: entry.workspaceRoot,
-        workspaceId: entry.workspaceId,
-        executable: binding.executable,
-      });
+    if (!binding || !(await runtimeBindingMatches(dataDir, version, binding)))
+      continue;
+    const workspaceKey = JSON.stringify([
+      entry.workspaceRoot,
+      entry.workspaceId,
+    ]);
+    // A superseded legacy record can still name this same workspace; report
+    // each workspace once instead of failing on the duplicate.
+    if (listed.has(workspaceKey)) continue;
+    listed.add(workspaceKey);
+    active.push({
+      workspaceRoot: entry.workspaceRoot,
+      workspaceId: entry.workspaceId,
+      executable: binding.executable,
+    });
   }
   return report();
 }
@@ -245,14 +330,11 @@ export async function beginRuntimeReference(
     registeredAt: new Date().toISOString(),
   };
   const key = sha256Digest(
-    JSON.stringify([
-      canonical,
-      entry.workspaceId,
-      entry.rootIdentity.dev,
-      entry.rootIdentity.ino,
-    ]),
+    JSON.stringify([canonical, entry.workspaceId, entry.rootIdentity.ino]),
   ).replace(':', '-');
-  const path = join(runtimeReferencesDirectory(dataDir), `${key}.json`);
+  const directory = runtimeReferencesDirectory(dataDir);
+  const name = `${key}.json`;
+  const path = join(directory, name);
   const boundary = await ensureStatePathBoundary(dataDir, path);
   if (!boundary.ok) return boundary;
   let existing = await readJsonDocument(path, referenceSchema);
@@ -260,15 +342,19 @@ export async function beginRuntimeReference(
     existing.value &&
     existing.value.workspaceRoot === canonical &&
     existing.value.workspaceId === entry.workspaceId &&
-    existing.value.rootIdentity.dev === entry.rootIdentity.dev &&
-    existing.value.rootIdentity.ino === entry.rootIdentity.ino &&
+    persistedIdentityMatches(existing.value.rootIdentity, entry.rootIdentity) &&
     JSON.stringify(existing.value.intendedRuntime) ===
       JSON.stringify(entry.intendedRuntime);
   if (unchanged && (await observePath(lockPath)).kind === 'missing') {
     const machine = await inspectMachineConfig(canonical);
     if (
       machine.value?.runtime?.version === runtime.runtimeVersion &&
-      machine.value.runtime.executable === runtime.executable
+      machine.value.runtime.executable === runtime.executable &&
+      supersededReferenceNames(
+        await readRegistryRecords(directory),
+        entry,
+        name,
+      ).length === 0
     ) {
       // This binding is already published and protected from deletion by its
       // verified registry entry. A read-only repeat needs no registration lease.
@@ -303,8 +389,10 @@ export async function beginRuntimeReference(
     (!existing.value ||
       existing.value.workspaceRoot !== canonical ||
       existing.value.workspaceId !== entry.workspaceId ||
-      existing.value.rootIdentity.dev !== entry.rootIdentity.dev ||
-      existing.value.rootIdentity.ino !== entry.rootIdentity.ino)
+      !persistedIdentityMatches(
+        existing.value.rootIdentity,
+        entry.rootIdentity,
+      ))
   ) {
     await release();
     return failed(
@@ -312,16 +400,32 @@ export async function beginRuntimeReference(
       'Existing runtime reference is unreadable or belongs to another workspace identity; it was preserved.',
     );
   }
+  const superseded = supersededReferenceNames(
+    await readRegistryRecords(directory),
+    entry,
+    name,
+  );
   if (
     existing.value &&
     JSON.stringify(existing.value.intendedRuntime) ===
       JSON.stringify(entry.intendedRuntime)
-  )
+  ) {
+    const cleaned = await removeReferenceRecords(directory, superseded);
+    if (!cleaned.ok) {
+      await release();
+      return cleaned;
+    }
     return succeeded({ path, lockPath, release });
+  }
   const written = await writeJsonAtomic(path, entry, dataDir);
   if (!written.ok) {
     await release();
     return written;
+  }
+  const cleaned = await removeReferenceRecords(directory, superseded);
+  if (!cleaned.ok) {
+    await release();
+    return cleaned;
   }
   return succeeded({ path, lockPath, release });
 }

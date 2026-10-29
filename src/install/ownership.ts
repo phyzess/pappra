@@ -35,6 +35,10 @@ import {
 import { ensurePrivateState } from '../infra/private-state.js';
 import { publishPrivateLock } from '../infra/private-lock.js';
 import { captureProcessIdentity } from '../infra/process-identity.js';
+import {
+  persistedIdentityMatches,
+  type PersistedFileIdentity,
+} from '../infra/persisted-identity.js';
 
 export interface WorkspaceInstallPaths {
   readonly root: string;
@@ -502,7 +506,7 @@ export async function scanJournalDirectory(
 
 export interface FileOwnershipState {
   readonly status: 'match' | 'missing' | 'modified' | 'unsafe';
-  readonly identity: { readonly dev: number; readonly ino: number } | null;
+  readonly identity: PersistedFileIdentity | null;
   readonly digest: string | null;
 }
 
@@ -533,7 +537,7 @@ export async function inspectOwnedFile(
   if (observation.kind !== 'file' || observation.stats === null) {
     return { status: 'modified', identity: null, digest: null };
   }
-  const identity = {
+  const identity: PersistedFileIdentity = {
     dev: observation.stats.dev,
     ino: observation.stats.ino,
   };
@@ -545,8 +549,7 @@ export async function inspectOwnedFile(
   }
   const digest = sha256Digest(bytes);
   const matches =
-    identity.dev === entry.identity.dev &&
-    identity.ino === entry.identity.ino &&
+    persistedIdentityMatches(identity, entry.identity) &&
     digest === entry.afterDigest;
   return {
     status: matches ? 'match' : 'modified',
@@ -585,7 +588,7 @@ export async function removeOwnedFile(
 
 export function createManifest(
   root: string,
-  rootIdentity: { readonly dev: number; readonly ino: number },
+  rootIdentity: PersistedFileIdentity,
 ): WorkspaceInstallManifest {
   const now = new Date().toISOString();
   return {
@@ -641,7 +644,7 @@ export async function writeInstallJournal(
 
 export async function rootIdentityOf(
   root: string,
-): Promise<{ readonly dev: number; readonly ino: number } | null> {
+): Promise<PersistedFileIdentity | null> {
   const observation = await observePath(root);
   return observation.kind === 'directory' && observation.stats !== null
     ? { dev: observation.stats.dev, ino: observation.stats.ino }

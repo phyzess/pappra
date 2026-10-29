@@ -33,6 +33,7 @@ import {
   writeWorkspaceManifest,
 } from './ownership.js';
 import { observePath, sha256Digest } from '../infra/fs.js';
+import { persistedIdentityMatches } from '../infra/persisted-identity.js';
 import { beginRuntimeReference } from './references.js';
 import {
   errorMessage,
@@ -41,6 +42,7 @@ import {
   type Outcome,
 } from '../schemas/outcome.js';
 
+/** Live observation of one filesystem entry, including its device. */
 export interface FileIdentity {
   readonly dev: number;
   readonly ino: number;
@@ -198,8 +200,7 @@ export async function beginManagedApply(
   const manifest = manifestRead.value ?? createManifest(root, rootIdentity);
   if (
     manifest.workspaceRoot !== root ||
-    manifest.rootIdentity.dev !== rootIdentity.dev ||
-    manifest.rootIdentity.ino !== rootIdentity.ino
+    !persistedIdentityMatches(manifest.rootIdentity, rootIdentity)
   ) {
     return {
       ok: false,
@@ -734,8 +735,7 @@ export async function inspectWorkspaceInstallReadiness(
     if (
       manifest.value.workspaceRoot !== root ||
       identity === null ||
-      manifest.value.rootIdentity.dev !== identity.dev ||
-      manifest.value.rootIdentity.ino !== identity.ino
+      !persistedIdentityMatches(manifest.value.rootIdentity, identity)
     ) {
       return failed(
         diagnosticCodes.initPlanStale,
@@ -924,8 +924,7 @@ async function updateMachineRuntimeAt(
   const currentIdentity = await rootIdentityOf(root);
   if (
     currentIdentity === null ||
-    currentIdentity.dev !== manifest.rootIdentity.dev ||
-    currentIdentity.ino !== manifest.rootIdentity.ino
+    !persistedIdentityMatches(currentIdentity, manifest.rootIdentity)
   ) {
     return {
       ok: false,

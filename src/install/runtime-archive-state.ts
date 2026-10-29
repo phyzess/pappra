@@ -9,7 +9,7 @@ import {
 import { ensureStatePathBoundary, readJsonDocument } from './ownership.js';
 
 export const archiveIdentitySchema = z.strictObject({
-  dev: z.number().int().nonnegative(),
+  dev: z.number().int().nonnegative().optional(),
   ino: z.number().int().nonnegative(),
   kind: z.enum(['file', 'directory']),
   size: z.number().int().nonnegative(),

@@ -6,6 +6,7 @@ import { createDiagnostic } from '../schemas/diagnostics.js';
 import { diagnosticCodes } from '../schemas/errors.js';
 import { sha256Digest } from '../infra/fs.js';
 import { observePath } from '../infra/fs.js';
+import { persistedIdentityMatches } from '../infra/persisted-identity.js';
 import type {
   InstallJournal,
   ManagedFileEntry,
@@ -302,8 +303,7 @@ async function rollbackMachineRuntimeUpdate(
   const entry = manifest.entries[index]!;
   if (
     entry.afterDigest !== journalEntry.digest ||
-    entry.identity.dev !== journalEntry.identity.dev ||
-    entry.identity.ino !== journalEntry.identity.ino
+    !persistedIdentityMatches(entry.identity, journalEntry.identity)
   ) {
     return {
       ok: false,
@@ -624,8 +624,7 @@ export async function rollbackWorkspaceInstall(
     const currentIdentity = await rootIdentityOf(options.root);
     if (
       currentIdentity === null ||
-      currentIdentity.dev !== manifest.rootIdentity.dev ||
-      currentIdentity.ino !== manifest.rootIdentity.ino
+      !persistedIdentityMatches(currentIdentity, manifest.rootIdentity)
     ) {
       return {
         ok: false,
@@ -753,8 +752,7 @@ export async function uninstallWorkspaceManagedFiles(
   const currentIdentity = await rootIdentityOf(options.root);
   if (
     currentIdentity === null ||
-    currentIdentity.dev !== manifest.rootIdentity.dev ||
-    currentIdentity.ino !== manifest.rootIdentity.ino
+    !persistedIdentityMatches(currentIdentity, manifest.rootIdentity)
   ) {
     return {
       ok: false,

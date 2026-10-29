@@ -14,6 +14,7 @@ import {
   isLocalProcessIdentity,
   observeProcessIdentity,
 } from '../infra/process-identity.js';
+import { persistedIdentityMatches } from '../infra/persisted-identity.js';
 import {
   ensureStatePathBoundary,
   readJsonDocument,
@@ -22,7 +23,7 @@ import {
 } from './ownership.js';
 
 const identitySchema = z.strictObject({
-  dev: z.number().int().nonnegative(),
+  dev: z.number().int().nonnegative().optional(),
   ino: z.number().int().nonnegative(),
 });
 const resetSchema = z.strictObject({
@@ -149,14 +150,28 @@ async function assertNoLiveManagedOwners(root: string): Promise<void> {
   await walk(local, 0);
 }
 
+/** Live pins from this invocation keep the full device/inode pair. */
 function sameIdentity(
+  actual: Awaited<ReturnType<typeof observePath>>,
+  expected: { readonly dev: number; readonly ino: number },
+): boolean {
+  return (
+    actual.kind === 'directory' &&
+    actual.stats !== null &&
+    actual.stats.dev === expected.dev &&
+    actual.stats.ino === expected.ino
+  );
+}
+
+/** A persisted reset-journal identity ignores the device, which can change across reboots. */
+function samePersistedIdentity(
   actual: Awaited<ReturnType<typeof observePath>>,
   expected: ResetJournal['source'],
 ): boolean {
   return (
     actual.kind === 'directory' &&
-    actual.stats?.dev === expected.dev &&
-    actual.stats.ino === expected.ino
+    actual.stats !== null &&
+    persistedIdentityMatches(actual.stats, expected)
   );
 }
 
@@ -289,7 +304,7 @@ export async function resetLocalState(
       const now = await observePath(local);
       if (
         journal.fresh !== null &&
-        sameIdentity(now, journal.fresh) &&
+        samePersistedIdentity(now, journal.fresh) &&
         (await readdir(local)).every((name) => name === '.gitignore')
       )
         return { status: 'reset', archive: journal.archive, resumed: true };
@@ -328,7 +343,7 @@ export async function resetLocalState(
     let archived = await observePath(journal.archive);
     const source = await observePath(local);
     if (archived.kind === 'missing') {
-      if (!sameIdentity(source, journal.source))
+      if (!samePersistedIdentity(source, journal.source))
         throw new Error(
           'Original local state identity changed before archival.',
         );
@@ -337,21 +352,21 @@ export async function resetLocalState(
       const boundary = await ensureStatePathBoundary(root, journal.archive);
       if (!boundary.ok) throw new Error(boundary.message);
       await assertPinned();
-      if (!sameIdentity(await observePath(local), journal.source))
+      if (!samePersistedIdentity(await observePath(local), journal.source))
         throw new Error(
           'Original local state changed immediately before archival.',
         );
       await rename(local, journal.archive);
       await assertPinned();
       archived = await observePath(journal.archive);
-      if (!sameIdentity(archived, journal.source))
+      if (!samePersistedIdentity(archived, journal.source))
         throw new Error(
           'Archived local state identity changed; preserved for inspection.',
         );
       await options.afterArchive?.();
     } else if (
-      !sameIdentity(archived, journal.source) ||
-      sameIdentity(source, journal.source)
+      !samePersistedIdentity(archived, journal.source) ||
+      samePersistedIdentity(source, journal.source)
     )
       throw new Error(
         'Reset archive/source identity is ambiguous; both were preserved.',
@@ -364,7 +379,7 @@ export async function resetLocalState(
     if (
       created.kind !== 'directory' ||
       created.stats === null ||
-      sameIdentity(created, journal.source)
+      samePersistedIdentity(created, journal.source)
     )
       throw new Error('Fresh local state identity is unavailable.');
     await saveJournal({

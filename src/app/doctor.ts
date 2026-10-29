@@ -43,6 +43,7 @@ import { inspectWorkspaceLocks } from '../install/repair.js';
 import { inspectRuntimeArchiveState } from '../install/runtime-archive-state.js';
 import { inspectLocalResetState } from '../install/reset-local.js';
 import { inspectPrivateLock } from '../infra/private-lock.js';
+import { persistedIdentityMatches } from '../infra/persisted-identity.js';
 
 export interface DoctorOptions {
   readonly root?: string;
@@ -188,8 +189,7 @@ async function inspectInstallState(
     const identity = await rootIdentityOf(root);
     if (
       identity === null ||
-      identity.dev !== manifest.value.rootIdentity.dev ||
-      identity.ino !== manifest.value.rootIdentity.ino
+      !persistedIdentityMatches(identity, manifest.value.rootIdentity)
     ) {
       escalate('error');
       problems.push(

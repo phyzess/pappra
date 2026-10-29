@@ -23,11 +23,20 @@ performed.
 
 Binding a runtime registers the workspace under the explicit data directory's
 `runtime-references/`. Each private record pins its canonical workspace root,
-workspace UUID and root directory identity. Registration happens before
+workspace UUID and root directory identity. Persisted root-identity
+comparisons compare the inode only: the recorded device number stays
+informational, because a volume's device number can change across reboots
+while the workspace, its inode and its contents are unchanged. Registration
+happens before
 writing `machine.json`, while holding the same per-version lock used by
 installation and removal. A process interrupted before binding cannot silently
 create an untracked binding; its retained lock is an explicit repair
 condition. Repeated unchanged bindings retain the same reference file.
+The record name is content-addressed from the canonical root, the workspace
+UUID and the inode, never the device number, and registration replaces any
+superseded record of the same workspace, so one workspace keeps exactly one
+record. Inspection reports a workspace at most once even while a legacy
+device-named record for it remains.
 
 ```sh
 pappra runtime remove --runtime-version <version> --json       # read-only plan

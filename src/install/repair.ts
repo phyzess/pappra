@@ -34,6 +34,7 @@ import {
   writeWorkspaceManifest,
 } from './ownership.js';
 import { rollbackWorkspaceInstall } from './rollback.js';
+import { persistedIdentityMatches } from '../infra/persisted-identity.js';
 import {
   resolveUserDataDir,
   runtimePaths,
@@ -319,8 +320,10 @@ async function repairWorkspace(
         manifest.diagnostics.length > 0 ||
         (manifest.value !== null &&
           (manifest.value.workspaceRoot !== root ||
-            manifest.value.rootIdentity.dev !== rootObservation.stats?.dev ||
-            manifest.value.rootIdentity.ino !== rootObservation.stats?.ino))
+            !persistedIdentityMatches(
+              manifest.value.rootIdentity,
+              rootObservation.stats,
+            )))
       )
         throw new Error('Cannot verify ownership after interrupted rollback.');
       if (manifest.value !== null) {
@@ -334,8 +337,8 @@ async function repairWorkspace(
                 (item) =>
                   item.path === entry.path &&
                   item.digest === entry.afterDigest &&
-                  item.identity?.dev === entry.identity.dev &&
-                  item.identity.ino === entry.identity.ino,
+                  item.identity !== null &&
+                  persistedIdentityMatches(item.identity, entry.identity),
               ),
           )
         )
@@ -402,8 +405,10 @@ async function retireUnprovenApply(
       manifest.diagnostics.length ||
       (manifest.value !== null &&
         (manifest.value.workspaceRoot !== root ||
-          manifest.value.rootIdentity.dev !== rootState.stats?.dev ||
-          manifest.value.rootIdentity.ino !== rootState.stats?.ino))
+          !persistedIdentityMatches(
+            manifest.value.rootIdentity,
+            rootState.stats,
+          )))
     )
       throw new Error(
         'Cannot verify workspace ownership for interrupted creation.',
@@ -460,8 +465,7 @@ async function retireUnprovenApply(
       if (
         !read.ok ||
         read.value.digest !== managed.afterDigest ||
-        observed.stats?.dev !== managed.identity.dev ||
-        observed.stats.ino !== managed.identity.ino
+        !persistedIdentityMatches(managed.identity, observed.stats)
       )
         throw new Error(`Proven managed file changed; preserve ${target}`);
       removals.push(managed);
@@ -526,8 +530,10 @@ async function assertRollbackComplete(
     manifest.diagnostics.length > 0 ||
     (manifest.value !== null &&
       (manifest.value.workspaceRoot !== root ||
-        manifest.value.rootIdentity.dev !== rootObservation.stats?.dev ||
-        manifest.value.rootIdentity.ino !== rootObservation.stats?.ino ||
+        !persistedIdentityMatches(
+          manifest.value.rootIdentity,
+          rootObservation.stats,
+        ) ||
         manifest.value.entries.some(
           (entry) => entry.installId === source.installId,
         )))
@@ -553,8 +559,7 @@ async function assertRollbackComplete(
     if (
       observation.kind !== 'file' ||
       owned?.afterDigest !== entry.backupDigest ||
-      owned.identity.dev !== observation.stats?.dev ||
-      owned.identity.ino !== observation.stats?.ino
+      !persistedIdentityMatches(owned.identity, observation.stats)
     ) {
       throw new Error(
         `Source restoration ownership cannot be verified: ${target}`,
@@ -631,8 +636,10 @@ async function repairInterruptedRollback(
           ? entry.digest !== origin.digest ||
             entry.backupRef !== origin.backupRef ||
             entry.backupDigest !== origin.backupDigest ||
-            entry.identity?.dev !== origin.identity?.dev ||
-            entry.identity?.ino !== origin.identity?.ino
+            (entry.identity === null) !== (origin.identity === null) ||
+            (entry.identity !== null &&
+              origin.identity !== null &&
+              !persistedIdentityMatches(entry.identity, origin.identity))
           : entry.digest !== origin.backupDigest ||
             entry.backupRef !== null ||
             entry.backupDigest !== null)
@@ -694,8 +701,10 @@ async function repairReconfiguration(
     baseline.value === null ||
     baseline.digest !== backupDigest ||
     baseline.value.workspaceRoot !== root ||
-    baseline.value.rootIdentity.dev !== rootObservation.stats?.dev ||
-    baseline.value.rootIdentity.ino !== rootObservation.stats?.ino
+    !persistedIdentityMatches(
+      baseline.value.rootIdentity,
+      rootObservation.stats,
+    )
   ) {
     throw new Error('Ownership backup does not match this workspace.');
   }
@@ -735,8 +744,7 @@ async function repairReconfiguration(
         continue;
       if (
         entry.identity === null ||
-        current.stats?.dev !== entry.identity.dev ||
-        current.stats.ino !== entry.identity.ino ||
+        !persistedIdentityMatches(entry.identity, current.stats) ||
         content.value.digest !== entry.digest
       ) {
         throw new Error(`Recovery target changed; it was preserved: ${target}`);

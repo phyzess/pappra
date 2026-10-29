@@ -18,6 +18,7 @@ import {
   readJsonDocument,
   releaseInstallLock,
 } from './ownership.js';
+import { persistedIdentityMatches } from '../infra/persisted-identity.js';
 import {
   inspectRuntimeReferences,
   runtimeBindingMatches,
@@ -122,11 +123,27 @@ async function identify(file: string): Promise<Identity | null> {
   };
 }
 
+/** Live pins from this invocation keep the full device/inode pair. */
 function same(actual: Identity | null, expected: Identity): boolean {
   return (
     actual !== null &&
     actual.dev === expected.dev &&
     actual.ino === expected.ino &&
+    sameContent(actual, expected)
+  );
+}
+
+/** A persisted receipt identity ignores the device, which can change across reboots. */
+function samePersisted(actual: Identity | null, expected: Identity): boolean {
+  return (
+    actual !== null &&
+    persistedIdentityMatches(actual, expected) &&
+    sameContent(actual, expected)
+  );
+}
+
+function sameContent(actual: Identity, expected: Identity): boolean {
+  return (
     actual.kind === expected.kind &&
     (actual.kind === 'directory' ||
       (actual.size === expected.size &&
@@ -287,7 +304,7 @@ export async function archiveRuntime(
         // an old move. The old bundle and permanent receipt remain untouched.
         for (const item of items)
           if (
-            !same(
+            !samePersisted(
               await identify(join(archive, item.destination)),
               item.identity,
             )
@@ -551,8 +568,8 @@ export async function archiveRuntime(
           await checkUsage();
           const actual = await identify(item.source);
           const moved = await identify(destination);
-          if (same(moved, item.identity) && actual === null) continue;
-          if (moved !== null || !same(actual, item.identity))
+          if (samePersisted(moved, item.identity) && actual === null) continue;
+          if (moved !== null || !samePersisted(actual, item.identity))
             throw new Error(
               `Archive source/destination identity is ambiguous: ${item.source}`,
             );
@@ -566,7 +583,10 @@ export async function archiveRuntime(
                 (runtimeOwner.state === 'unknown' &&
                   !options.allWritersStopped) ||
                 !originalLock ||
-                !same(await identify(runtimeLock), originalLock.identity)
+                !samePersisted(
+                  await identify(runtimeLock),
+                  originalLock.identity,
+                )
           )
             throw new Error(
               'Runtime lock changed or its owner is alive/unverified.',
@@ -581,7 +601,7 @@ export async function archiveRuntime(
             pinned.set(dirname(destination), destinationParent);
           await assertPinned();
           if (
-            !same(await identify(item.source), item.identity) ||
+            !samePersisted(await identify(item.source), item.identity) ||
             (await identify(destination))
           )
             throw new Error(
@@ -591,7 +611,7 @@ export async function archiveRuntime(
           await syncDirectory(dirname(item.source));
           await syncDirectory(dirname(destination));
           await assertPinned();
-          if (!same(await identify(destination), item.identity))
+          if (!samePersisted(await identify(destination), item.identity))
             throw new Error(
               'Moved evidence identity changed; preserved for inspection.',
             );

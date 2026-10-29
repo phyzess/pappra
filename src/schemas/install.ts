@@ -19,7 +19,7 @@ const versionSchema = z
 const pathSchema = z.string().min(1).max(4096);
 
 export const fileIdentitySchema = z.strictObject({
-  dev: z.number().int().nonnegative(),
+  dev: z.number().int().nonnegative().optional(),
   ino: z.number().int().nonnegative(),
 });
 

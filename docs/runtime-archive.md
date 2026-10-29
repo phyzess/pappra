@@ -103,8 +103,10 @@ evidence keeps its existing permissions.
 The receipt records the original reason and timestamp, exact selected paths,
 device/inode identities, file sizes and modification times, content digests
 for control files up to 1 MiB, observed references and lock ownership, and
-explicit uncertainty/stopped-writer policies. Large files and directory
-contents are moved intact without a recursive content-hash assertion. The
+explicit uncertainty/stopped-writer policies. Receipt replay compares an
+item's inode, kind, size, modification time and digest; the recorded device
+number is informational, because it can change across reboots. Large files and
+directory contents are moved intact without a recursive content-hash assertion. The
 receipt is a local audit record, not a signature or proof against a same-user
 administrator modifying it.
 
