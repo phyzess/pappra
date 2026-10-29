@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
@@ -27,6 +27,7 @@ import {
   workflowParticipantRequestsDir,
 } from '../../src/app/collab-notify.js';
 import { inspectWorkflow } from '../../src/app/collab-workflow/inspect.js';
+import { parseWorkflowParticipantRequest } from '../../src/schemas/collab-workflow.js';
 import { makeTaskDomain } from './task-resources-fixtures.js';
 import { owner } from './scenarios.js';
 
@@ -46,9 +47,18 @@ const WRITER = {
   configuration_id: 'daily-visible',
 };
 
+type ResourceInput = {
+  readonly path: string;
+  readonly access: 'read' | 'write';
+  readonly scope?: 'file' | 'tree';
+};
+
 function prepareRequest(
   domainRoot: string,
   cwd: string,
+  resources: readonly ResourceInput[] = [
+    { path: join(cwd, 'output.txt'), access: 'write', scope: 'file' },
+  ],
 ): WorkflowPrepareRequest {
   return {
     schema: 'pappra/collab-workflow-prepare-request/1',
@@ -95,9 +105,7 @@ function prepareRequest(
         assignee: WRITER.agent_id,
         objective: 'Produce one declared output.',
         acceptance: ['The output file is updated.'],
-        resources: [
-          { path: join(cwd, 'output.txt'), access: 'write', scope: 'file' },
-        ],
+        resources: [...resources],
         required_skills: [],
         required_tools: [],
         native_evidence: [],
@@ -189,10 +197,13 @@ const silentNotify = (async () => ({
   } as unknown as NotifyResult,
 })) as unknown as typeof import('../../src/app/collab-notify.js').notifyRegisteredMessage;
 
-async function fixture(name: string) {
+async function fixture(
+  name: string,
+  resources?: (root: string) => ResourceInput[],
+) {
   const domain = makeTaskDomain(name, ['cohort'], { initialize: [] });
   const prepared = await applyPrepare(
-    prepareRequest(domain.domainRoot, domain.root),
+    prepareRequest(domain.domainRoot, domain.root, resources?.(domain.root)),
   );
   assert.equal(prepared.status, 'applied', JSON.stringify(prepared.blockers));
   const taskRoot = join(domain.domainRoot, 'tasks', 'cohort');
@@ -445,6 +456,179 @@ test('plan dispatch and inspect warn ack_not_registered until ACK is applied', a
       ),
       JSON.stringify(inspectedAfter.warnings),
     );
+  } finally {
+    f.domain.cleanup();
+  }
+});
+
+test('generated participant request files all validate against the participant schema', async () => {
+  const f = await fixture('dispatch-participant-schema');
+  try {
+    const dispatched = await applyDispatch(
+      dispatchRequest(f.taskRoot, f.cardFile),
+      { adapter: submittedAdapter },
+    );
+    assert.equal(
+      dispatched.status,
+      'applied',
+      JSON.stringify(dispatched.blockers),
+    );
+    const files = {
+      ack: workflowParticipantRequestPath(f.taskRoot, 'writer-one', 1, 'ack'),
+      report: workflowParticipantRequestPath(
+        f.taskRoot,
+        'writer-one',
+        1,
+        'report',
+      ),
+      release: workflowParticipantRequestPath(
+        f.taskRoot,
+        'writer-one',
+        1,
+        'release',
+      ),
+    };
+    const parsed = {
+      ack: parseWorkflowParticipantRequest(
+        JSON.parse(readFileSync(files.ack, 'utf8')),
+      ),
+      report: parseWorkflowParticipantRequest(
+        JSON.parse(readFileSync(files.report, 'utf8')),
+      ),
+      release: parseWorkflowParticipantRequest(
+        JSON.parse(readFileSync(files.release, 'utf8')),
+      ),
+    };
+    for (const [action, result] of Object.entries(parsed))
+      assert.equal(result.ok, true, `${action}: ${JSON.stringify(result)}`);
+    const ack = JSON.parse(readFileSync(files.ack, 'utf8')) as {
+      action: string;
+      report: unknown;
+      release: unknown;
+    };
+    assert.equal(ack.action, 'ack');
+    assert.equal(ack.report, null);
+    assert.equal(ack.release, null);
+    const report = JSON.parse(readFileSync(files.report, 'utf8')) as {
+      report: { status: string } | null;
+      release: unknown;
+    };
+    assert.equal(report.report?.status, 'running');
+    assert.equal(report.release, null);
+    const release = JSON.parse(readFileSync(files.release, 'utf8')) as {
+      report: unknown;
+      release: { reason: string } | null;
+    };
+    assert.equal(release.report, null);
+    assert.notEqual(release.release, null);
+
+    // The generated shape is what makes the file usable; a missing key is still refused.
+    const ackWithout: Record<string, unknown> = { ...ack };
+    delete ackWithout['report'];
+    delete ackWithout['release'];
+    const reportWithout: Record<string, unknown> = { ...report };
+    delete reportWithout['release'];
+    const releaseWithout: Record<string, unknown> = { ...release };
+    delete releaseWithout['report'];
+    for (const withoutKey of [ackWithout, reportWithout, releaseWithout]) {
+      const rejected = parseWorkflowParticipantRequest(withoutKey);
+      assert.equal(rejected.ok, false, JSON.stringify(withoutKey));
+    }
+  } finally {
+    f.domain.cleanup();
+  }
+});
+
+test('generated report outputs list only file-scoped write resources', async () => {
+  const treePath = 'src-tree';
+  const f = await fixture('dispatch-outputs-file-scope', (root) => [
+    { path: join(root, treePath), access: 'write' },
+    { path: join(root, 'output.txt'), access: 'write', scope: 'file' },
+  ]);
+  try {
+    mkdirSync(join(f.domain.root, treePath), { recursive: true });
+    const dispatched = await applyDispatch(
+      dispatchRequest(f.taskRoot, f.cardFile),
+      { adapter: submittedAdapter },
+    );
+    assert.equal(
+      dispatched.status,
+      'applied',
+      JSON.stringify(dispatched.blockers),
+    );
+    const reportFile = workflowParticipantRequestPath(
+      f.taskRoot,
+      'writer-one',
+      1,
+      'report',
+    );
+    const report = JSON.parse(readFileSync(reportFile, 'utf8')) as {
+      report: { outputs: string[] };
+    };
+    assert.deepEqual(report.report.outputs, [
+      join(f.domain.root, 'output.txt'),
+    ]);
+    assert.equal(
+      report.report.outputs.includes(join(f.domain.root, treePath)),
+      false,
+    );
+
+    const bytesBefore = readFileSync(reportFile);
+    const rerun = await applyDispatch(dispatchRequest(f.taskRoot, f.cardFile), {
+      adapter: submittedAdapter,
+    });
+    assert.equal(rerun.status, 'needs-reconciliation');
+    assert.deepEqual(readFileSync(reportFile), bytesBefore);
+  } finally {
+    f.domain.cleanup();
+  }
+});
+
+test('a tree-only assignment generates an empty outputs list that reports without edits', async () => {
+  const treePath = 'src-tree';
+  const f = await fixture('dispatch-outputs-tree-only', (root) => [
+    { path: join(root, treePath), access: 'write' },
+  ]);
+  try {
+    mkdirSync(join(f.domain.root, treePath), { recursive: true });
+    const dispatched = await applyDispatch(
+      dispatchRequest(f.taskRoot, f.cardFile),
+      { adapter: submittedAdapter },
+    );
+    assert.equal(
+      dispatched.status,
+      'applied',
+      JSON.stringify(dispatched.blockers),
+    );
+    const reportFile = workflowParticipantRequestPath(
+      f.taskRoot,
+      'writer-one',
+      1,
+      'report',
+    );
+    const generated = JSON.parse(readFileSync(reportFile, 'utf8')) as {
+      report: { outputs: string[] };
+    };
+    assert.deepEqual(generated.report.outputs, []);
+
+    // The file is usable exactly as generated: the real report action accepts it, so the
+    // report path never has to digest a tree.
+    const reported = await applyParticipant(
+      generated as unknown as WorkflowParticipantRequest,
+      { apply: true, notify: silentNotify },
+    );
+    assert.equal(reported.status, 'applied', JSON.stringify(reported.blockers));
+    assert.deepEqual(
+      reported.blockers.filter((item) => item.code === 'output_missing'),
+      [],
+    );
+
+    const bytesBefore = readFileSync(reportFile);
+    const rerun = await applyDispatch(dispatchRequest(f.taskRoot, f.cardFile), {
+      adapter: submittedAdapter,
+    });
+    assert.equal(rerun.status, 'needs-reconciliation');
+    assert.deepEqual(readFileSync(reportFile), bytesBefore);
   } finally {
     f.domain.cleanup();
   }

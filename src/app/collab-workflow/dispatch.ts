@@ -833,6 +833,7 @@ interface WorkflowManifestSnapshot {
     readonly resources?: readonly {
       readonly path: string;
       readonly access: string;
+      readonly scope?: 'file' | 'tree';
     }[];
   }[];
 }
@@ -867,9 +868,15 @@ function deriveParticipantRequestFiles(
     cwd: participant?.cwd ?? coordinatorFallbackCwd,
   };
   const callerPane = binding?.pane_id ?? null;
+  // A report output must be digestable by the report path, which reads regular files only,
+  // and dispatch cannot stat it because the file may not exist yet. So only write resources
+  // the sealed manifest declares with an explicit `scope: "file"` are listed; tree-scoped
+  // writes are not, and a participant may still add file paths inside its own claim.
   const outputs =
     assignment?.resources
-      ?.filter((resource) => resource.access === 'write')
+      ?.filter(
+        (resource) => resource.access === 'write' && resource.scope === 'file',
+      )
       .map((resource) => resource.path) ?? [];
   const base = {
     schema: WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
@@ -879,10 +886,13 @@ function deriveParticipantRequestFiles(
     attempt,
     caller_pane: callerPane,
   };
+  // Every generated file is a complete participant request: the schema requires both
+  // `report` and `release`, so the unused one is emitted as an explicit null. The key order
+  // stays fixed, which keeps the bytes and their digest stable across reruns.
   const files = [
     {
       file: workflowParticipantRequestPath(taskRoot, subtaskId, attempt, 'ack'),
-      value: { ...base, action: 'ack' },
+      value: { ...base, action: 'ack', report: null, release: null },
     },
     {
       file: workflowParticipantRequestPath(
@@ -900,6 +910,7 @@ function deriveParticipantRequestFiles(
           blockers: [],
           outputs,
         },
+        release: null,
       },
     },
     {
@@ -912,6 +923,7 @@ function deriveParticipantRequestFiles(
       value: {
         ...base,
         action: 'release',
+        report: null,
         release: {
           reason: 'Released after coordinator acceptance.',
           cancel_attempt: false,
