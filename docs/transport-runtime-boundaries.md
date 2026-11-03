@@ -166,7 +166,9 @@ is aged: `src/collab/preflight.ts:246` adds `capabilities_stale` past
 ### 2.1 Seams that already exist
 
 Four interfaces already isolate transport behaviour. They are the extraction
-starting point, not a new framework.
+starting point inside **one** channel, not a channel-agnostic framework: each is
+Herdr-shaped, taking pane ids and agent names and returning Herdr refusal codes.
+They say nothing about what a second channel would look like (§5).
 
 **1. `HerdrTransport`** — `src/app/collab-notify.ts:102-133`
 
@@ -262,70 +264,110 @@ they validate a pinned artifact, not a transport.
 
 ## 3. Minimal contracts
 
-Only the four operations G1 actually exercised. Each entry states what the
-contract guarantees, what it refuses, what evidence it may claim, and what an
-unsupported implementation must say instead of guessing.
+The four operations G1 actually exercised. Each entry states what the contract
+guarantees, what it refuses, what evidence it may claim, and what an unsupported
+implementation must say instead of guessing.
 
-### 3.1 Context access
+### 3.1 Task context read
 
-Reads that tell a caller what environment it is in: the caller pane, its
-workspace, its cwd, the task root's current identity, and any stored documents.
+Reads of recorded knowledge that need **no pane, no channel and no host
+identity**: the workspace record, registered documents, continuity and checkpoint
+material, code query results, and the task record itself. The G1 Codex desktop
+path used exactly this and none of the rest.
 
-- **Guarantees**: a resolution is either a value observed now, or an explicit
-  failure. Identity is compared exactly, never by prefix or substring.
-- **Refuses**: a missing environment marker, an invalid pane id, a pane that
-  resolves to something else, a workspace that does not match, a task root that
-  changed underneath, and any focus-based inference (`collab-notify.ts:362-512`).
-- **May claim**: `declared` routing facts and `unknown` native affiliation.
-  A pane id is not a native session id (`collabDeliveryCallerSchema`).
-- **Unsupported implementation must report**: the capability as
-  `unavailable` or `unknown` and name the missing observation — never fall back
-  to focus, a title, a default pane or an inferred workspace.
+- **Guarantees**: a bounded read returns either the recorded bytes with their
+  digest, or an explicit failure. Paths are checked inside the selected root,
+  symlinks are not followed, and a namespace that changed underneath fails closed
+  instead of being re-read (`openMessageTask`, `assertMessageTaskCurrent`).
+- **Refuses**: an unregistered or unsafe id, a path outside the workspace, a
+  redirected root, an oversized artifact, invalid JSON, a document that failed
+  schema validation, and any request that would infer a workspace from an
+  unrelated session.
+- **May claim**: `declared` for what the record says was read, `observed` only
+  for a bounded artifact the reader actually opened. A digest proves the bytes,
+  never who read them or whether the reader understood them.
+- **Unsupported implementation must report**: `unknown` for a missing artifact
+  and name what was absent — never substitute another workspace's document, a
+  cached copy of unknown age, or a fabricated summary.
 
-### 3.2 Observed participant reference
+### 3.2 Host/channel identity observation
 
-Turns a declared participant into a live reference: agent name, pane, harness,
-cwd and reported session, matched against the sealed binding.
+An identity the **host really reports**: pane, agent name, native session and
+capability card. This is the transport-specific contract, and the evidence level
+is exactly what that host can prove.
 
-- **Guarantees**: exactly one live participant matches the bound name, and every
-  compared field agrees (`collab-notify.ts:1198-1277`).
+- **Guarantees**: a participant resolves to exactly one live match, and every
+  compared field agrees — name, pane, harness, cwd and any reported native
+  session (`collab-notify.ts:1198-1277`). A capability card records what the
+  executable reported, with `unsupported` and `unknown` as first-class states.
 - **Refuses**: zero matches, more than one match, a pane/harness/cwd mismatch, a
-  reported session that differs from the message target, and an archived
-  identity used as a current route.
-- **May claim**: `match` / `unknown` for the native session, and
-  `process_affiliation: 'not-established'` for the process. A roster entry is
-  not proof that the process is alive or idle.
-- **Unsupported implementation must report**: `unknown`, with the field that
-  could not be observed, and leave the delivery un-attempted.
+  reported session that differs from the message target, an archived identity
+  used as a current route, a missing or invalid environment marker, and any
+  focus-based or title-based inference (`collab-notify.ts:362-512`).
+- **May claim**: `match` / `unknown` for the native session,
+  `process_affiliation: 'not-established'` for the process, and `declared` for a
+  selection the host stated. A pane id is not a native session id, and a roster
+  entry is not proof that the process is alive or idle.
+- **Unsupported implementation must report**: `unavailable` or `unknown`, with
+  the field it could not observe, and leave the delivery un-attempted. It must
+  never fall back to a focused pane, a default agent, a window title, or a
+  configuration key that merely names a channel.
 
 ### 3.3 Submission
 
-Delivers a pointer to an **already registered** message.
+Delivers a pointer to a message whose **file** is registered at the requested id.
+Registration of the file is not the same as acceptance by the task record — see
+"File validation versus record acceptance" below.
 
-- **Guarantees**: the message was validated (id, digest, task, sender,
-  recipient) before any transport call, and every outcome is persisted as a
-  delivery attempt (`notifications/<message_id>.json`).
-- **Refuses**: an unregistered message, an id/content mismatch, a digest that
-  changed after validation, a binding that changed mid-flight, a second implicit
-  send, more than the bounded retry count, and delivery with no verified caller.
+- **Guarantees**: the file passes `readRegisteredMessageSafe`
+  (`src/collab/persisted-messages.ts:404`) and `message.task_id` matches the
+  record before any transport call, and every outcome is persisted as a delivery
+  attempt (`notifications/<message_id>.json`).
+- **Refuses**: an unsafe id, a file that is missing, a symlink, redirected,
+  oversized, not JSON, or fails protocol validation, a file whose `message_id`
+  differs from the requested id, a task mismatch, a digest that changed after
+  validation, a binding that changed mid-flight, a second implicit send, more
+  than the bounded retry count, and delivery with no verified caller.
+- **Does not refuse today**: a valid file that the task record has not accepted.
+  Whether it should is #17's decision, not G2's.
 - **May claim**: `submitted` only. `consumed` and `taskAccepted` are typed as
   the literal `false` (`collab-notify.ts:782`, `:1189`), so a caller cannot even
   express the stronger claim from the notify result.
 - **Unsupported implementation must report**: `unavailable` when it cannot
   deliver at all, `unknown` when the effect is ambiguous, and never "delivered".
 
+#### File validation versus record acceptance
+
+Two different checks, in two different functions:
+
+| Check                   | Where                                                                                              | What it proves                                                                                                                                                            |
+| ----------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| File validation         | `readRegisteredMessageSafe` (`src/collab/persisted-messages.ts:404`)                                | the bytes at `messages/<id>.json` are a regular, unredirected, well-formed envelope whose `message_id` equals the requested id and whose `task_id` equals the record's id   |
+| Record acceptance state | `readMessageFromTaskRoot` (`src/collab/persisted-messages.ts:796`, record lookup at `:802-805`)      | the task record itself holds an entry for that id; the result field is `entry` and it may be `null`                                                                        |
+
+`notifyRegisteredMessage` calls only the first. It never reads `record.messages`,
+so a valid file the task record has not accepted is still delivered today.
+Whether it should refuse is #17's decision, not G2's. The behaviour is
+characterized by the second test in
+`tests/collab/transport-runtime-contract.test.ts`.
+
 ### 3.4 Result observation
 
-Reads a persisted result, report or delivery record.
+Reads a persisted result, report, delivery record, or the same message through
+the record-aware reader.
 
 - **Guarantees**: the reader is bounded, identity-checked (path inside the task,
   regular file, real path equal to the requested path), and returns the digest
-  it actually read (`src/collab/persisted-messages.ts:404-502`).
+  it actually read (`src/collab/persisted-messages.ts:404-502`). The
+  record-aware reader returns both the file facts and the record `entry`, so the
+  caller can tell "the file is valid" from "the record accepted it"
+  (`:796-806`).
 - **Refuses**: unsafe ids, symlinks, redirected paths, oversized files, invalid
   JSON, a file whose `message_id` differs from the requested id, an unknown
   classification, and a stale record presented as a current one.
 - **May claim**: `applied` for a recorded decision, `submitted` for a delivery,
-  `unknown` for everything the record does not state.
+  `unknown` for everything the record does not state, and `entry: null` for an
+  id the record does not hold.
 - **Unsupported implementation must report**: `unknown` for a missing record,
   and name the absent artifact instead of synthesising a result.
 
@@ -362,12 +404,32 @@ implementation must not add a new way to claim any of the four.
   other value (`src/app/collab-recovery-executor.ts:143`). An existing
   `pappra/collab-binding/1` document therefore keeps exactly the meaning it was
   written with. There is no conversion and no reinterpretation.
-- **No new representation is needed for #33.** The four contracts above are
-  already expressible with the persisted fields in §1.3. A new transport should
-  first be expressed as another implementation of `HerdrTransport` and
-  `HerdrBootstrapOps`; if a genuinely new discriminator is ever required, it
-  arrives as a new `channel` value, which is a **new** representation rather
-  than a re-reading of an old one.
+- **Generic task identity is channel-independent.** Every channel shares one
+  identity and one evidence model: `task_id` / `task_root`, `subtask_id`,
+  `attempt`, the caller and assignee triple (`agent_id`, `session_id`,
+  `harness`), the message id and `content_digest`, claim keys, and the task state
+  machine. These are the fields in `harness-collab/state/1`,
+  `harness-collab/message/1` and the claim records, and core modules read only
+  these.
+- **Channel-specific routing data is not identity.** A pane id, a Herdr agent
+  name, the `channel: 'herdr'` literal in the binding, the bootstrap and pane
+  receipts (`launch_reservations[].bootstrap.receipts[].argv`) and the delivery
+  record's `target` / `caller` fields describe how to reach a participant. They
+  are routing metadata, never authority (§4), and they exist only in the binding,
+  the delivery record and the reservation extras.
+- **A new channel is a new representation, not another `HerdrTransport`
+  implementation.** `HerdrTransport` and `HerdrBootstrapOps` are Herdr-shaped —
+  they take pane ids and agent names and return Herdr refusal codes — so they sit
+  inside one channel and cannot carry a second one. A new channel would need its
+  own binding form (its own `channel` value with its own routing fields), its own
+  dispatch path for that form, and its own reader. The read boundary is the
+  point: core modules (envelope, claims, work plan, reports, acceptance,
+  preflight) must read only task identity and never routing data; only the
+  adapter layer and the routing steps of `prepare`, `dispatch` and `notify` may
+  read channel-specific fields. Existing bindings keep the Herdr interpretation;
+  an unknown `channel` value is refused, not guessed. **G2 defines no new
+  schema**: the design above is a statement about a future change, which needs
+  its own issue and its own migration decision.
 - **Old reader behaviour** (today's code, unchanged): a document with
   `channel: 'herdr'` is accepted; anything else is refused before any claim,
   pane or delivery action.
@@ -392,30 +454,39 @@ implementation must not add a new way to claim any of the four.
 
 ## 6. Characterization coverage
 
-`tests/collab/transport-runtime-contract.test.ts` pins only the boundaries that
-no existing test already pinned. Every other row cites the test that covers it.
+`tests/collab/transport-runtime-contract.test.ts` pins the boundaries that no
+existing test pinned, including one behaviour that #17 has to decide and that G2
+only characterizes. Every other row cites the test that covers it.
 
 | # | Required case                | Status   | Covered by                                                                                                                                                                     |
 | - | ---------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | 1 | unavailable capability       | existing | `tests/collab/messages.test.ts` — "notification is unavailable outside a verified Herdr caller" (status `herdr_unavailable`, `consumed: false`, no delivery record)              |
-| 2 | stale identity               | existing | `tests/collab/capabilities.test.ts` — "Pi replay keeps the native observation time and goes stale" (`capabilities_stale` past the 30-minute bound at `src/collab/preflight.ts:246`) |
+| 2 | stale identity               | existing (capability preflight only) | `tests/collab/capabilities.test.ts` — "Pi replay keeps the native observation time and goes stale" (`capabilities_stale` past the 30-minute card bound, `src/collab/preflight.ts:246`). This covers capability preflight; transport-level observations have no age bound at all (see Known gaps) |
 | 3 | submitted-not-consumed       | existing | `tests/collab/messages.test.ts` — "notify validates the binding and sends one pointer-only prompt" (`submitted`, `consumed: false`, `taskAccepted: false`, duplicate recorded)   |
 | 4 | unknown delivery / no replay | existing | `tests/collab/workflow-notifications.test.ts` — "an unknown delivery stays unknown and is never replayed automatically"                                                          |
 | 5 | changed workspace (#13)      | existing | `tests/collab/shell-readiness.test.ts` — "readiness fails closed on pane, workspace, terminal, cwd and agent drift" (`workspace_id_mismatch`); task-root redirect in `tests/collab/messages.test.ts` — "unsafe ids, malformed records, task mismatch and redirected state fail closed" |
 | 6 | lack of stop proof           | existing | `tests/collab/rollover.test.ts` — "unknown quiescence and non-complete inventory never authorize transfer" (`old_writer_not_stopped`, `stop_evidence_required`)                   |
-| 7 | registered-message validation (#17) | added    | `tests/collab/transport-runtime-contract.test.ts` — "a registered message whose id does not match its registration is refused". Digest drift was already covered by `tests/collab/messages.test.ts` — "notify rejects selected binding or registered message drift during transport checks" |
+| 7 | registered-message validation (#17) | characterized — decision deferred to #17 | Not covered. Two tests in `tests/collab/transport-runtime-contract.test.ts` pin only today's behaviour: "a registered message whose id does not match its registration is refused" (the file-level half) and "notify attempts delivery when the file is valid but the record has not accepted the message" (the open half). Whether the second must refuse is #17's decision, not G2's |
 
 ### Known gaps, stated rather than faked
 
-- **Case 2 has no transport-level age bound.** The only age bound in the system
-  is the capability card's `observed_at` (`src/collab/preflight.ts:246`). A live
-  pane/session observation has no expiry: it is compared exactly, and its
-  `observed_at` is recorded, but nothing ages it into `unknown`. So "stale
-  identity" is exercised end to end only through the capability preflight; the
-  transport-level half does not exist yet and is **not** faked here. Proposed
-  (not implemented): an explicit maximum age on
-  `caller.observed_at` / `attempts[].native.observed_at` that downgrades to
-  `unknown` instead of accepting a stale match.
+- **Transport observations have no independent age bound.** The only age bound in
+  the system is the capability card's `observed_at`
+  (`src/collab/preflight.ts:246`, default 30 minutes,
+  `src/app/collab-preflight.ts:96`), and it covers capability preflight and
+  nothing else. Transport-level observations are not aged at all: a pane/session
+  observation is compared exactly, its `observed_at` is recorded in
+  `attempts[].native.observed_at` and in the delivery record's
+  `caller.observed_at`, but an old observation that still matches is accepted and
+  is never downgraded to `unknown`. The 30-minute card bound does **not** cover
+  this layer, and this page claims no such coverage. Proposed checkpoint for a
+  later implementation: the identity-observation step itself, inside
+  `verifyLiveParticipant` (`src/app/collab-notify.ts:1198`) before a match is
+  accepted, reading a per-attempt or per-binding maximum age and reporting
+  `unknown` — with no delivery attempt and no `match` claim — when the
+  observation is older than that; the same check would apply when recording
+  `attempts[].native`. Implementing it needs its own issue, its own tests and its
+  own migration decision; G2 only names the gap and the checkpoint.
 - **Case 6 cannot prove quiescence for interactive Pi.** Interactive Pi exposes
   no stop proof, so the only honest outcomes are refusal and `unknown`; the
   rollover test pins that refusal rather than a positive proof.
