@@ -103,9 +103,9 @@ cwd `/Users/zimm.yu/personal/YU/pappra`.
 
 **Desk A — what the desktop host can actually do** (`01a1a13b-…`, events in
 `evidence/31-desktop/logs/deskA-events.jsonl`). The session saw twelve MCP servers
-(`codegraph`, `codex_apps`, `cua_repl`, `figma`, `mcp_atlassian_service`,
-`mcp_gitlab`, `node_repl`, `openaiDeveloperDocs`, `pappra`, `serena`, `shadcn`,
-`spring_ui_mcp`) and the `pappra` tool set (`checkpoint`, `code_prepare`,
+(`codegraph`, `codex_apps`, `cua_repl`, `figma`, `mcp-atlassian-service`,
+`mcp-gitlab`, `node_repl`, `openaiDeveloperDocs`, `pappra`, `serena`, `shadcn`,
+`spring-ui-mcp`) and the `pappra` tool set (`checkpoint`, `code_prepare`,
 `code_query`, `code_status`, `collab_prepare`, `collab_start`, `docs_check`,
 `docs_list`, `docs_scan`, `resume`, `runtime_install`, `runtime_status`,
 `workspace_status`). Then, as instructed:
@@ -129,21 +129,26 @@ in the package. That is the #30 material working end to end on a host with no He
 and no Pi in the path, and it is also a review that refused to approve on a package
 it could not verify.
 
-**One capability blocked first, and how it cleared.** The daemon's first desktop turn
-failed with `codexErrorInfo: "unauthorized"` — "Your access token could not be
-refreshed because you have since logged out or signed in to another account" — while
-`codex login status` said "Logged in using ChatGPT" and `codex exec` worked. The CLI
-and the daemon keep separate token state; `codex app-server daemon restart` reloaded
-it and both desktop threads then completed. Until that restart, desktop thread
-creation worked and only the model turn failed. Nothing was re-authenticated, no
-account state was changed and no user setting was overwritten.
+**One capability blocked first, and how it cleared.** Two earlier desktop turns failed
+before the recorded ones: threads `01a1a12a-ffc7-7b62-8c13-9eb63f77d021` and
+`01a1a13a-824c-7093-924a-5a4ac5eadf41`. Their host-written rollout files are kept as
+`evidence/31-desktop/logs/deskA-failed-01a1a12a.jsonl` and
+`deskA-failed-01a1a13a.jsonl`, and each carries the failure verbatim:
+`codexErrorInfo: "unauthorized"`, "Your access token could not be refreshed because
+you have since logged out or signed in to another account. Please sign in again."
+That happened while `codex login status` said "Logged in using ChatGPT" and
+`codex exec` worked, so the CLI and the daemon keep separate token state. Desktop
+thread creation succeeded in both attempts; only the model turn failed. A coordinator
+`codex app-server daemon restart` reloaded the daemon's credentials, and both later
+threads completed. Nothing was re-authenticated, no account state was changed and no
+user setting was overwritten.
 
-**What this does not prove.** The desktop application's own in-app chat runtime is a
-separate process (`ChatGPT.app/…/CodexCLI.app/…/codex … app-server`, stdio, no
-`--listen`); it was never driven, so no claim is made about UI-driven approvals,
-desktop-only tools (`codex_app` is `disabled` in the MCP list) or the app's own
-session surface. What was driven is the managed app-server daemon, with the same
-`~/.codex` configuration and the same MCP set the desktop tooling uses.
+**What this does not prove.** The desktop application's own in-app chat session was
+never driven, so no claim is made here about UI-driven approvals, desktop-only tools
+(`codex_app` is `disabled` in the MCP list) or the app's own session surface. What was
+driven is the managed app-server daemon, with the same `~/.codex` configuration and
+the same MCP set the desktop tooling uses. Whether the app's chat surface shares this
+daemon's threads is not established by these runs.
 
 ### 1. Workspace, docs and continuity access without Herdr or Pi
 
