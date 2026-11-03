@@ -1,0 +1,3 @@
+task_id,mode,model,model_version,sessions,amount_usd,amount_basis,amount_source,amount_time,outcome,rework,human_active_minutes,note
+SYNTH-301,delegated,deepseek-flash,unknown,1,3.60,measured,openrouter-usage-export,2026-07-15T17:40:00+08:00,failed,1,25,synthetic example row: first attempt failed and still cost money
+SYNTH-301,delegated,deepseek-flash,unknown,1,4.10,measured,openrouter-usage-export,2026-07-15T18:20:00+08:00,accepted,0,30,synthetic example row: second attempt accepted; task_id repeats per attempt
