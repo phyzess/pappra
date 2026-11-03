@@ -7,6 +7,7 @@ import {
 } from '../../collab/envelope.js';
 import { transitionAttempt } from '../../collab/lifecycle.js';
 import { isAssignment } from '../../collab/contracts.js';
+import { nativeObservationAgeSummary } from '../../collab/native-observation.js';
 import { releaseClaim } from '../../collab/resources.js';
 import {
   coordinatorLineage,
@@ -527,7 +528,10 @@ export async function applyParticipant(
           // assignment classify the report as stale instead of completing it.
           input_revision:
             attempt.input_revision ?? record.input_revision ?? null,
+          // `native_ref` stays exactly as recorded; `native_age` is the reader's guard so a
+          // stale observation cannot be mistaken for a current one. Nothing is refused here.
           native_ref: attempt.native ?? null,
+          native_age: nativeObservationAgeSummary(attempt.native),
           evidence_ref:
             resolved.outputs.length === 0
               ? null

@@ -15,6 +15,7 @@ import {
   type RecoveryProjection,
   type TaskNamespaceAnchor,
 } from './collab-recovery-projection.js';
+import { evaluateNativeObservationAge } from '../collab/native-observation.js';
 import type { Identity, TaskRecord } from '../collab/types.js';
 import {
   createHerdrTransport,
@@ -423,8 +424,9 @@ function buildCause(
 
 /**
  * Validate current authority and identity without querying a host. For a resume the acting `self` must
- * match the expected session and the attempt's bound native session; a pending cancellation refuses. For a
- * review the acting coordinator is validated by role, not by the completed writer's native binding.
+ * match the expected session and the attempt's bound native session, and any persisted native
+ * observation must still be current; a pending cancellation refuses. For a review the acting
+ * coordinator is validated by role, not by the completed writer's native binding.
  */
 function validateAuthority(
   request: RecoveryExecutionRequest,
@@ -432,6 +434,7 @@ function validateAuthority(
   action: RecoveryAction,
   kind: RecoveryControllerKind,
   notes: string[],
+  nowMs: number,
 ): boolean {
   const expected = request.expectedSession;
   const participant = expected?.binding?.participant;
@@ -487,6 +490,18 @@ function validateAuthority(
     ) {
       notes.push(
         'the acting writer is not the current task assignee bound to this native session; refusing to apply.',
+      );
+      return false;
+    }
+    // A recorded observation has to still be current: an expired, missing, invalid or
+    // future one cannot authorize a continue, and the refusal names the age condition.
+    // An attempt that recorded nothing is not an aged observation, so nothing is gated.
+    const nativeAge = evaluateNativeObservationAge(attempt.native, {
+      now: nowMs,
+    });
+    if (nativeAge.asserted && !nativeAge.fresh) {
+      notes.push(
+        `the attempt's native observation is ${nativeAge.classification}, so continuing would authorize on a non-current observation; refusing to apply. ${nativeAge.detail}`,
       );
       return false;
     }
@@ -1006,6 +1021,7 @@ async function runRecovery(
       action,
       controllerKind,
       notes,
+      now(),
     )
   )
     return result({
@@ -1149,6 +1165,7 @@ async function runRecovery(
       controllerKind,
       initialAnchor,
       sidecar,
+      now,
     );
     if (recheckBlock !== null)
       return blockedAfterReserve(
@@ -1195,6 +1212,7 @@ async function runRecovery(
         controllerKind,
         initialAnchor,
         sidecar,
+        now,
       )) === null;
     try {
       last = await deps.controller.perform({
@@ -1310,6 +1328,7 @@ async function revalidateBeforeAttempt(
   kind: RecoveryControllerKind,
   initialAnchor: TaskNamespaceAnchor | null,
   sidecar: SidecarAnchor,
+  now: () => number,
 ): Promise<string | null> {
   if (!verifyTaskNamespace(initialAnchor))
     return 'the task namespace changed or was redirected during recovery; stopping before the effect.';
@@ -1343,7 +1362,16 @@ async function revalidateBeforeAttempt(
   )
     return 'the pinned task binding changed or no longer admits this session; stopping before the effect.';
   const authorityNotes: string[] = [];
-  if (!validateAuthority(request, safe.record, action, kind, authorityNotes))
+  if (
+    !validateAuthority(
+      request,
+      safe.record,
+      action,
+      kind,
+      authorityNotes,
+      now(),
+    )
+  )
     return authorityNotes[0] ?? 'authority changed during recovery; stopping.';
   return null;
 }

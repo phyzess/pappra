@@ -7,6 +7,7 @@ import {
 } from '../collab/envelope.js';
 import { findHandoff } from '../collab/handoff.js';
 import { findAttempt } from '../collab/lifecycle.js';
+import { evaluateNativeObservationAge } from '../collab/native-observation.js';
 import * as rollover from '../collab/rollover.js';
 import type {
   AppliedMessage,
@@ -1328,23 +1329,36 @@ export async function inspectOrPlanRollover(
     }
     const native = attempt.native;
     const expectedNative = postTransfer ? successorNative : pinnedSource;
+    const nativeAge = evaluateNativeObservationAge(native);
     if (native.observation !== 'confirmed')
       drift.push({
         code: 'native_unconfirmed',
         detail: `The recorded attempt native observation is ${native.observation}.`,
       });
-    else if (expectedNative !== null) {
-      if (
-        expectedNative.session_id !== native.session_id ||
-        expectedNative.runner !== native.runner ||
-        expectedNative.run_id !== native.run_id
-      )
+    else {
+      // A confirmed observation still has to be current to justify the transfer. This is
+      // the transfer eligibility judgement only: the claim records, holders and transfer
+      // mechanics are untouched, and a completed transfer keeps its recorded history.
+      if (!postTransfer && !nativeAge.fresh)
         drift.push({
-          code: postTransfer ? 'successor_native_drift' : 'source_native_drift',
-          detail: postTransfer
-            ? 'The recorded native identity no longer matches the pinned successor.'
-            : 'The recorded source native identity no longer matches the identity pinned at intent creation.',
+          code: 'native_observation_stale',
+          detail: `The recorded source native observation is ${nativeAge.classification} and cannot count as confirmed for a transfer. ${nativeAge.detail}`,
         });
+      if (expectedNative !== null) {
+        if (
+          expectedNative.session_id !== native.session_id ||
+          expectedNative.runner !== native.runner ||
+          expectedNative.run_id !== native.run_id
+        )
+          drift.push({
+            code: postTransfer
+              ? 'successor_native_drift'
+              : 'source_native_drift',
+            detail: postTransfer
+              ? 'The recorded native identity no longer matches the pinned successor.'
+              : 'The recorded source native identity no longer matches the identity pinned at intent creation.',
+          });
+      }
     }
   }
 
