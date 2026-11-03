@@ -166,6 +166,15 @@ const SUCCESSOR: Identity = {
   },
 };
 
+/**
+ * One fixture instant for this file: the capability card, the bound source native observation
+ * and the injected transition clock all start here, so the native-observation age is judged
+ * against the fixture's own time instead of the wall clock. The clock keeps a monotonic floor
+ * at that instant because the managed Pi host stamps its proof at call time: a proof may not
+ * be newer than the clock and must stay inside the quiescence window.
+ */
+const FIXTURE_NOW = Date.now();
+const fixtureClock = (): number => Math.max(FIXTURE_NOW, Date.now());
 async function fixture(label: string): Promise<TransitionFixture> {
   const domain = makeTaskDomain(`session-transition-${label}`, [TASK_ID]);
   const domainRoot = domain.domainRoot;
@@ -228,7 +237,7 @@ async function fixture(label: string): Promise<TransitionFixture> {
     surface: 'cli',
     configuration_id: 'fixture-config',
     cwd,
-    observed_at: new Date().toISOString(),
+    observed_at: new Date(FIXTURE_NOW).toISOString(),
     evidence_level: 'runtime',
     skills: [],
     tools: [],
@@ -265,7 +274,7 @@ async function fixture(label: string): Promise<TransitionFixture> {
   const sourceNative = transact(taskRoot, {
     actor: 'session-transition-fixture',
     purpose: 'fixture-bind-source-native',
-    clock: Date.parse('2026-10-20T00:02:00Z'),
+    clock: FIXTURE_NOW,
     apply: (record) => {
       const bound = bindNative(record, {
         subtaskId: SUBTASK_ID,
@@ -276,7 +285,7 @@ async function fixture(label: string): Promise<TransitionFixture> {
         missionId: null,
         observation: 'confirmed',
         evidenceRef: 'fixture-only:source-session-reference',
-        observedAt: '2026-10-20T00:02:00.000Z',
+        observedAt: new Date(FIXTURE_NOW).toISOString(),
       });
       if (!bound.ok) return bound;
       return {
@@ -733,7 +742,7 @@ function transitionDeps(
   bootstrap: SessionTransitionBootstrapExecutor,
   herdr: HerdrBootstrapOps = fakeHerdr(),
 ): SessionTransitionDependencies {
-  return { host, bootstrap, herdr };
+  return { host, bootstrap, herdr, clock: fixtureClock };
 }
 
 function liveSdkController(

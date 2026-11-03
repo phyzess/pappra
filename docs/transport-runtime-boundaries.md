@@ -541,7 +541,12 @@ only characterizes. Every other row cites the test that covers it.
   observation to age there and no delivery rule was added — `git diff` shows no
   change to `src/app/collab-notify.ts`. No transport, channel representation,
   message/acceptance semantics or migration is involved: the evaluation reads an
-  existing nullable field.
+  existing nullable field. Where the caller already owns a clock — a session
+  transition (`src/app/collab-session-transition.ts`,
+  `src/app/collab-session-transition/freeze.ts`) or a replay — it is threaded
+  into the evaluation through `inspectOrPlanRollover`'s in-process `now` option,
+  so a fixture or a replay is judged against its own time rather than the wall
+  clock; the CLI keeps `Date.now()` and no request field accepts a clock.
 - **Case 6 cannot prove quiescence for interactive Pi.** Interactive Pi exposes
   no stop proof, so the only honest outcomes are refusal and `unknown`; the
   rollover test pins that refusal rather than a positive proof.

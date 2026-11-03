@@ -1121,9 +1121,22 @@ function correlateEvidence(options: {
   };
 }
 
+/**
+ * In-process options for the rollover inspection. Deliberately not a wire field: the
+ * collaboration request schema refuses an inline clock, so a caller that already owns a
+ * clock (a session transition, a replay or a fixture) passes it here and everything else
+ * keeps the wall clock.
+ */
+export interface RolloverInspectionOptions {
+  /** Injected clock, called wherever the inspection judges an observation's age. */
+  readonly now?: () => number;
+}
+
 export async function inspectOrPlanRollover(
   input: unknown,
+  options: RolloverInspectionOptions = {},
 ): Promise<RolloverResult> {
+  const now = options.now ?? Date.now;
   const validated = validateRolloverRequest(input);
   if (validated.ok === false) return validated;
   const request = validated.value;
@@ -1329,7 +1342,9 @@ export async function inspectOrPlanRollover(
     }
     const native = attempt.native;
     const expectedNative = postTransfer ? successorNative : pinnedSource;
-    const nativeAge = evaluateNativeObservationAge(native);
+    // Age is judged against the caller's clock: a transition, replay or fixture owns the
+    // time its observations were taken with, and the wall clock is only the default.
+    const nativeAge = evaluateNativeObservationAge(native, { now: now() });
     if (native.observation !== 'confirmed')
       drift.push({
         code: 'native_unconfirmed',

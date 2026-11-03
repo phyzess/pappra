@@ -1330,3 +1330,49 @@ test('rollover refuses an expired confirmed observation and keeps the claim reco
     }
   }
 });
+
+test('the rollover age check judges the record against the caller clock', async () => {
+  // A fixed instant, far from any wall clock on purpose: the assertions below only use
+  // injected clocks, so this test cannot start failing when real time moves.
+  const observedAt = '2026-10-20T00:02:00.000Z';
+  const takenAt = Date.parse(observedAt);
+  const lateClock =
+    takenAt + (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 15) * MINUTE;
+  const cohort = await rolloverCohort('caller-clock', observedAt);
+  try {
+    const request = {
+      schema: COLLAB_ROLLOVER_REQUEST_SCHEMA,
+      action: 'plan' as const,
+      task_root: cohort.taskRoot,
+      intent_id: ROLLOVER_INTENT,
+      proposed_intent: null,
+      bundle: cohort.bundle,
+      evidence: { ack_message_id: null, report_message_id: null },
+    };
+    const staleDrift = (
+      result: Awaited<ReturnType<typeof inspectOrPlanRollover>>,
+    ) => {
+      assert.equal(result.ok, true, JSON.stringify(result));
+      if (!result.ok) return [];
+      return result.value.drift.filter(
+        (entry) => entry.code === 'native_observation_stale',
+      );
+    };
+
+    // The same record: expired against a late clock, current against its own clock.
+    const againstLateClock = staleDrift(
+      await inspectOrPlanRollover(request, { now: () => lateClock }),
+    );
+    assert.equal(againstLateClock.length, 1);
+    assert.match(
+      againstLateClock[0]!.detail,
+      /The recorded source native observation is expired/,
+    );
+    const againstOwnClock = staleDrift(
+      await inspectOrPlanRollover(request, { now: () => takenAt }),
+    );
+    assert.equal(againstOwnClock.length, 0);
+  } finally {
+    cohort.cleanup();
+  }
+});
