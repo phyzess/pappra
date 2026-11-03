@@ -26,7 +26,7 @@ import {
 } from '../../src/app/collab-workflow.js';
 import { deriveCapabilityCard } from '../../src/app/capability-evidence/index.js';
 import type { WorkExecutionAdapter } from '../../src/app/collab-work-execution.js';
-import { claimResources, releaseClaim } from '../../src/collab/resources.js';
+import { claimResources } from '../../src/collab/resources.js';
 import {
   COLLAB_ROLLOVER_REQUEST_SCHEMA,
   inspectOrPlanRollover,
@@ -712,7 +712,6 @@ interface DispatchCohort {
     ? A
     : never;
   readonly calls: string[];
-  readonly releaseHolder: () => void;
   readonly reviewAttempt: () => Record<string, unknown>;
   readonly mutateReview: (
     mutate: (
@@ -911,19 +910,6 @@ async function dispatchCohort(): Promise<DispatchCohort> {
     request,
     adapter,
     calls,
-    releaseHolder() {
-      for (const claim of readRecord(domain.tasks['holder']!)!.claims.filter(
-        (entry) => entry.released_at === null,
-      ))
-        assert.equal(
-          releaseClaim(domain.tasks['holder']!, {
-            claimId: claim.claim_id,
-            holder: OTHER,
-            reason: 'Fixture foreign writer stopped',
-          }).ok,
-          true,
-        );
-    },
     reviewAttempt,
     mutateReview(mutate) {
       const written = transact(taskRoot, {
@@ -943,74 +929,140 @@ async function dispatchCohort(): Promise<DispatchCohort> {
   };
 }
 
-test('the dispatch retry gate still refuses a recorded native observation, expired or not', async () => {
-  for (const variant of ['expired', 'fresh'] as const) {
-    const cohort = await dispatchCohort();
-    try {
-      // The first dispatch conflicts on the reviewer's read claim and writes no intent.
-      const conflicted = await applyDispatch(cohort.request, {
-        adapter: cohort.adapter,
-      });
-      assert.equal(conflicted.ok, false, JSON.stringify(conflicted));
-      assert.equal(
-        existsSync(
-          join(workflowIntentsDir(cohort.taskRoot), 'dispatch-review-1.json'),
+/**
+ * The dispatch retry gate, characterized by its effect rather than by a code.
+ *
+ * `review_activation_not_retryable` (`src/app/collab-workflow/dispatch.ts:1730` and `:1871`)
+ * is a revalidation guard behind `readManifestDeferred` (`dispatch.ts:1224-1231`): that reader
+ * already drops a deferred entry whose attempt exists and whose `canRetryReviewClaims` is
+ * false, so on a static record the code is unreachable and the gate refuses by exclusion —
+ * the reviewer never re-enters claim acquisition. This test pins that effect: with the bare
+ * placeholder observation a retry re-enters acquisition and reports `resource_conflict`
+ * again, while a recorded observation (expired or fresh) is filtered out first and reports no
+ * acquisition attempt at all, with byte-identical blockers for both.
+ *
+ * If `canRetryReviewClaims` were relaxed, the recorded-observation retries would keep the
+ * entry, re-enter acquisition and report `resource_conflict` exactly like the placeholder —
+ * so the `resource_conflict`-absent assertion (and the expired/fresh code equality below)
+ * fails, even though `dispatch.ts` is untouched.
+ */
+test('the dispatch retry gate refuses a recorded observation before claim acquisition', async () => {
+  const cohort = await dispatchCohort();
+  const codesOf = (result: Awaited<ReturnType<typeof applyDispatch>>) =>
+    result.blockers.map((blocker) => blocker.code);
+  const reviewClaims = () =>
+    readRecord(cohort.taskRoot)!.claims.filter(
+      (claim) => claim.subtask_id === 'review' && claim.released_at === null,
+    ).length;
+  const dispatchIntentWritten = () =>
+    existsSync(
+      join(workflowIntentsDir(cohort.taskRoot), 'dispatch-review-1.json'),
+    );
+  const attemptObservation = () =>
+    (cohort.reviewAttempt().native as { observation?: string }).observation;
+  const retry = async () => {
+    const result = await applyDispatch(cohort.request, {
+      adapter: cohort.adapter,
+    });
+    return { result, codes: codesOf(result) };
+  };
+  try {
+    // The foreign holder keeps the second read path claimed, so the reviewer cannot acquire
+    // its footprint. The first dispatch registers the attempt and fails at acquisition: that
+    // is the state in which a retry is asked about.
+    const first = await applyDispatch(cohort.request, {
+      adapter: cohort.adapter,
+    });
+    assert.equal(first.ok, false, JSON.stringify(first));
+    assert.ok(
+      codesOf(first).includes('resource_conflict'),
+      `the fixture must fail at claim acquisition: ${JSON.stringify(codesOf(first))}`,
+    );
+    assert.equal(attemptObservation(), 'unknown');
+    assert.equal(reviewClaims(), 0);
+    assert.equal(dispatchIntentWritten(), false);
+
+    // Bare placeholder: the gate lets the entry through, so acquisition is attempted again.
+    const placeholder = await retry();
+    assert.equal(
+      placeholder.result.ok,
+      false,
+      JSON.stringify(placeholder.result),
+    );
+    assert.ok(
+      placeholder.codes.includes('resource_conflict'),
+      `a placeholder observation must re-enter acquisition: ${JSON.stringify(placeholder.codes)}`,
+    );
+
+    // Recorded observation, expired: the entry is filtered out before acquisition.
+    cohort.mutateReview((attempt) => {
+      attempt.native = {
+        runner: 'pi',
+        session_id: String(
+          (attempt.assignee as { session_id?: unknown }).session_id,
         ),
-        false,
-      );
-      assert.equal(cohort.calls.length, 0);
-      cohort.releaseHolder();
-      // Only the observation's age differs; dispatch.ts itself is unchanged.
-      cohort.mutateReview((attempt) => {
-        attempt.native = {
-          runner: 'pi',
-          session_id: String(
-            (attempt.assignee as { session_id?: unknown }).session_id,
-          ),
-          run_id: 'run-review',
-          mission_id: null,
-          observation: 'confirmed',
-          observed_at: new Date(
-            Date.now() -
-              (variant === 'expired'
-                ? (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 1) * MINUTE
-                : MINUTE),
-          ).toISOString(),
-          evidence_ref: 'herdr:agent:w9:p7:settled',
-        };
-      });
-      assert.equal(
-        evaluateNativeObservationAge(cohort.reviewAttempt().native as object)
-          .classification,
-        variant,
-      );
-      const retried = await applyDispatch(cohort.request, {
-        adapter: cohort.adapter,
-      });
-      assert.equal(retried.ok, false, JSON.stringify(retried));
-      assert.equal(
-        evaluateNativeObservationAge(cohort.reviewAttempt().native as object)
-          .classification,
-        variant,
-        'recency never lifts the guard',
-      );
-      assert.equal(
-        readRecord(cohort.taskRoot)!.claims.filter(
-          (claim) =>
-            claim.subtask_id === 'review' && claim.released_at === null,
-        ).length,
-        0,
-      );
-      assert.equal(cohort.calls.length, 0);
-      assert.equal(
-        existsSync(
-          join(workflowIntentsDir(cohort.taskRoot), 'dispatch-review-1.json'),
-        ),
-        false,
-      );
-    } finally {
-      cohort.cleanup();
-    }
+        run_id: 'run-review',
+        mission_id: null,
+        observation: 'confirmed',
+        observed_at: new Date(
+          Date.now() - (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 1) * MINUTE,
+        ).toISOString(),
+        evidence_ref: 'herdr:agent:w9:p7:settled',
+      };
+    });
+    assert.equal(
+      evaluateNativeObservationAge(cohort.reviewAttempt().native as object)
+        .classification,
+      'expired',
+    );
+    const expired = await retry();
+    assert.equal(expired.result.ok, false, JSON.stringify(expired.result));
+    assert.equal(
+      expired.codes.includes('resource_conflict'),
+      false,
+      `an expired observation must never attempt acquisition: ${JSON.stringify(expired.codes)}`,
+    );
+    assert.ok(
+      expired.codes.includes('claim_coverage_missing'),
+      JSON.stringify(expired.codes),
+    );
+    assert.deepEqual(
+      (expired.result.detail as { activation_only?: readonly string[] } | null)
+        ?.activation_only ?? [],
+      [],
+      'the filtered retry never re-enters the activation phase',
+    );
+
+    // Recorded observation, fresh: recency never lifts the guard, byte for byte.
+    cohort.mutateReview((attempt) => {
+      (attempt.native as { observed_at: string }).observed_at = new Date(
+        Date.now() - MINUTE,
+      ).toISOString();
+    });
+    assert.equal(
+      evaluateNativeObservationAge(cohort.reviewAttempt().native as object)
+        .classification,
+      'fresh',
+    );
+    const fresh = await retry();
+    assert.equal(fresh.result.ok, false, JSON.stringify(fresh.result));
+    assert.equal(
+      fresh.codes.includes('resource_conflict'),
+      false,
+      `a fresh observation must not lift the guard: ${JSON.stringify(fresh.codes)}`,
+    );
+    assert.deepEqual(
+      fresh.codes,
+      expired.codes,
+      'expired and fresh recorded observations are refused identically',
+    );
+
+    // No recorded-observation retry acquired a claim or wrote a dispatch intent.
+    assert.equal(reviewClaims(), 0);
+    assert.equal(dispatchIntentWritten(), false);
+    assert.equal(cohort.calls.length, 0);
+  } finally {
+    cohort.cleanup();
   }
 });
 
