@@ -105,22 +105,24 @@ surface: complexity, dependency blast radius, disjoint write scopes, and risk.
 There is no backend role inferencer, no fixed participant count, and no repeated
 permission prompt once the user authorized the work.
 
-Make the choice explicit before implementation. The coordinator does not write
-implementation itself: it assesses, plans, writes briefs, dispatches, accepts
-or rejects reports, and runs the single final integration gate, while
-implementation and review are done by other participants, visible Pi peers by
-default. Small trivially-local edits are not exempt for repository source; the
-coordinator edits only coordination artifacts (briefs, request JSON, scratch)
-directly, and if no capable participant can be launched it reports the blocker
-rather than implementing. Changes to authorization, resource ownership, durable
-state/recovery or release execution still need independent review before
-completion; use this workflow to assign that review to an observed native
-participant, and a single write scope is not a reason to skip it. A
-review-only assignment can itself satisfy independent review and needs no
-recursive reviewer. Delegate disjoint implementation scopes when that reduces
-the critical path. If identity, the native channel or a required capability is
-unavailable, record the specific blocker and keep the work outstanding; never
-silently substitute self-review, self-implementation or another harness.
+Make the choice explicit before implementation, and choose it from that assessment
+rather than from a fixed role count. Direct work is first-class: the host agent
+may assess, plan, implement and verify a change itself with its own native tools,
+including repository source, and a trivial or tightly coupled change needs no
+separate writer. Delegate when it pays: independent work that can run in parallel,
+genuinely disjoint write scopes, or a decision that needs fresh context. An
+independent review needs an independent context, not a different model or
+provider; a review-only assignment can itself satisfy it and needs no recursive
+reviewer.
+
+Review stays mandatory where the risk lives: changes to authorization, resource
+ownership, durable state/recovery or release execution need an independent review
+before completion, and a single write scope is not a reason to skip it.
+Acceptance is never self-service — a writer cannot accept its own report, and no
+registered message is acceptance. If identity, the native channel or a required
+capability is unavailable, record the specific blocker and keep the work
+outstanding; never silently substitute self-review, self-implementation or
+another harness.
 
 When a cohort bootstraps a visible sibling pane, placement keeps the
 coordinator readable: the first split of the caller pane goes `right` with
@@ -131,11 +133,12 @@ A candidate that would be narrower than 40 columns or shorter than 10 rows is
 refused, an exhausted layout reports `pane_layout_exhausted` instead of
 squeezing the coordinator, an explicit `target.direction` keeps the legacy
 caller split, and unreadable geometry falls back to a right split of the
-caller at ratio 0.6 (see `references/environment.md`). When starting Pi
-participants the coordinator picks a suitable GLM or Kimi model explicitly,
-for example `--provider openrouter --model moonshotai/kimi-k2.7-code` for
-code, `~z-ai/glm-latest` for general work, or `moonshotai/kimi-k3` for
-long-context review, and never falls back silently.
+caller at ratio 0.6 (see `references/environment.md`).
+
+When the host starts participants it chooses each model and configuration
+explicitly and states that choice in the request, so the observed selection is
+recorded rather than assumed. Never let a default be used silently, and never
+report a selection that was not observed.
 
 Use the installed commands in this order; roles never grant authority:
 
