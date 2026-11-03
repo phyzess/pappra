@@ -165,9 +165,17 @@ digests instead of trusting the stored snapshot.
 Three fields do not fit as cleanly. The gaps are real, and each has a narrow additive
 answer that needs no new persisted protocol and no schema version:
 
-- **Base revision.** `repositories[].head` is the candidate. There is no base field, and
-  none is needed: the base is the previous revision's head, reachable through
-  `previousDigest`. The template therefore asks for the derivation, not for a new field.
+- **Base revision.** `repositories[].head` is the candidate, and the record carries no
+  starting commit at all: neither `pappra/checkpoint/1` nor `pappra/task-context/1` has a
+  start or base field. The base is therefore the commit recorded when the task or change
+  started — named by the assignment or the task record — and never the previous
+  checkpoint's `head`. For a task that starts at A, checkpoints at B and ends at C, the
+  review covers A..C; a review that compares only B..C is incomplete, because it silently
+  drops A..B. When the start was never recorded the field is `unavailable` with the
+  reason, and the reviewer asks the coordinator for the base or reviews the whole known
+  range and records the gap; substituting the previous checkpoint's `head` yields a
+  zero-width comparison and is not allowed. The narrow additive proposal is to record the
+  starting commit once, when the task is created, instead of deriving it later.
 - **Dirty and untracked manifest.** The manifest exists and is complete — the retained
   `patches/<digest-hex>.patch` artifact holds the porcelain status, the tracked diff and
   one path-plus-digest entry per untracked file. What is missing is presentation: no
@@ -197,10 +205,15 @@ not-verifiable, with the command or file that decides it, and a list of findings
 name what it could not inspect.
 
 The reviewer must state which bytes it reviewed: the commit, or the patch digest when the
-tree is dirty, plus the artifact digests it actually read. A verdict without that
-identity cannot be matched to a candidate later, and a candidate that moved after the
-review is unreviewed by definition. `docs/review-request-template.md` carries the request
-shape; `docs/handoff-template.md` carries the package shape.
+tree is dirty, plus the artifact digests it actually read. It must also state the base it
+measured against, and that base is the commit recorded when the task or change started —
+not the previous checkpoint's `head`. When the start is not recorded, the verdict carries
+`unavailable` with the reason and either reviews the whole known range or returns
+`not-verifiable` and asks the coordinator for the base; it never substitutes the previous
+checkpoint's `head`. A verdict without that identity cannot be matched to a candidate
+later, and a candidate that moved after the review is unreviewed by definition.
+`docs/review-request-template.md` carries the request shape; `docs/handoff-template.md`
+carries the package shape.
 
 ## Limits
 

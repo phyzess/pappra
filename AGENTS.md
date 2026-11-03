@@ -37,6 +37,10 @@ security, persistence, cross-cutting behaviour) warrants an independent reviewer
 Record the execution mode before implementation, and choose it from that
 assessment — never from a fixed role count or a file-size threshold.
 
+The execution modes below sit on one boundary: what the host executes versus
+what Pappra records, decided in
+[docs/host-native-boundaries.md](docs/host-native-boundaries.md).
+
 - Direct work is first-class. A single host agent may assess, plan, implement and
   verify a change itself with its own native tools, including repository source.
   No separate writer is required for a trivial or tightly coupled change.
@@ -46,9 +50,9 @@ assessment — never from a fixed role count or a file-size threshold.
   work that can run in parallel, genuinely disjoint write scopes, or a decision
   that needs fresh context. Record the choice and its reason.
 - An independent review needs an independent context, not a different model or
-  provider. A separate reviewer participant, reached through Pappra's workflow
-  with observed native participants, satisfies it; a review-only assignment can
-  itself be that review and needs no recursive reviewer.
+  provider. A separate reviewer participant reached
+  through Pappra's workflow with observed native participants satisfies it, and a
+  review-only assignment can be that review without a recursive reviewer.
 
 Risk, not coordination ceremony, decides when review is mandatory. Changes to
 authorization, resource ownership, persisted state/recovery or release execution
