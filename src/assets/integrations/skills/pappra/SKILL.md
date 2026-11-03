@@ -112,8 +112,9 @@ including repository source, and a trivial or tightly coupled change needs no
 separate writer. Delegate when it pays: independent work that can run in parallel,
 genuinely disjoint write scopes, or a decision that needs fresh context. An
 independent review needs an independent context, not a different model or
-provider; a review-only assignment can itself satisfy it and needs no recursive
-reviewer.
+provider: a separate reviewer participant satisfies it
+through Pappra's workflow with observed native participants, and a review-only
+assignment can be that review without a recursive reviewer.
 
 Review stays mandatory where the risk lives: changes to authorization, resource
 ownership, durable state/recovery or release execution need an independent review

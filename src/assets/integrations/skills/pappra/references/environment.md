@@ -59,10 +59,12 @@ decision that needs fresh context — and record the choice and its reason.
 Review stays mandatory where the risk lives: authorization, resource ownership,
 durable state/recovery and release execution need an independent review before
 completion, and an independent review needs an independent context rather than a
-different model or provider. Acceptance is never self-service. If identity, the
-native channel or a required capability is unavailable, record the specific
-blocker and keep the work outstanding; never silently substitute self-review,
-self-implementation or another harness.
+different model or provider, and a separate reviewer participant satisfies it
+when reached through Pappra's workflow with observed native participants.
+Acceptance is never self-service. If identity, the native channel or a required
+capability is unavailable, record the specific blocker and keep the work
+outstanding; never silently substitute self-review, self-implementation or
+another harness.
 
 Which roles and how many participants are needed follows the real work split, and
 that choice belongs to the host agent reading the objective and change surface;
