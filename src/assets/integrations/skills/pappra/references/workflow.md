@@ -15,20 +15,26 @@ execution.
 
 ## Cohort roles
 
-The coordinator assesses the work, plans, writes briefs, dispatches, accepts
-or rejects reports, and runs the single final integration gate. It does not
-implement repository source itself: implementation and review are done by
-other participants, visible Pi peers by default, and small trivially-local
-edits are not exempt for repository source. The coordinator edits only
-coordination artifacts (briefs, request JSON, scratch) directly; if no capable
-participant can be launched it reports the exact blocker instead of
-implementing.
+Participants and roles come from the real work split. Direct work is first-class:
+a host agent may assess, plan, implement and verify a change itself with its own
+native tools, including repository source, and a trivial or tightly coupled
+change needs no separate writer. Delegate when it pays — independent work that can
+run in parallel, genuinely disjoint write scopes, or a decision that needs fresh
+context — and record the choice and its reason. An independent review needs an
+independent context, not a different model or provider.
 
-When the coordinator starts Pi participants it picks a suitable GLM or Kimi
-model explicitly (`--provider openrouter --model moonshotai/kimi-k2.7-code`
-for code work, `~z-ai/glm-latest` for general work, or `moonshotai/kimi-k3`
-for long-context review) and never falls back to a default model silently. A
-bootstrap request pins the same choice through `selected_model.openrouter_model`.
+Review stays mandatory where the risk lives: changes to authorization, resource
+ownership, persisted state/recovery or release execution need an independent
+review before completion, and a single write scope is not a reason to skip it. If
+identity, the native channel or a required capability is unavailable, record the
+specific blocker and keep the work outstanding; never silently substitute
+self-review, self-implementation or another harness.
+
+When the host starts participants it chooses each model and configuration
+explicitly and states that choice in the request, so the observed selection is
+what the assignment and the evidence record. Never let a default model or provider
+be used silently, and never report a selection that was not observed. A bootstrap
+request pins the same choice through `selected_model.openrouter_model`.
 
 ## Commands
 

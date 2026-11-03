@@ -50,13 +50,19 @@ stays `process_affiliation: "not-established"`.
 
 Pick participants, roles, harness, and configuration from the task rather than a
 fixed agent count. Participants implement, review, or verify; assign by need.
-The coordinator does not write implementation itself: it assesses, plans,
-writes briefs, dispatches, accepts or rejects reports, and runs the single
-final integration gate. Implementation and review are done by other
-participants, visible Pi peers by default. Small trivially-local edits are not
-exempt for repository source; the coordinator edits only coordination
-artifacts (briefs, request JSON, scratch) directly, and if no capable
-participant can be launched it reports the blocker rather than implementing.
+Direct work is first-class: the host agent may assess, plan, implement and verify a
+change itself with its own native tools, including repository source, and a
+trivial or tightly coupled change needs no separate writer. Delegate when it pays
+— independent work that can run in parallel, genuinely disjoint write scopes, or a
+decision that needs fresh context — and record the choice and its reason.
+
+Review stays mandatory where the risk lives: authorization, resource ownership,
+durable state/recovery and release execution need an independent review before
+completion, and an independent review needs an independent context rather than a
+different model or provider. Acceptance is never self-service. If identity, the
+native channel or a required capability is unavailable, record the specific
+blocker and keep the work outstanding; never silently substitute self-review,
+self-implementation or another harness.
 
 Which roles and how many participants are needed follows the real work split, and
 that choice belongs to the host agent reading the objective and change surface;
@@ -102,11 +108,11 @@ pane the task's own launch reservations created (the bootstrap's recorded
 
 The same rules guide manual sibling creation: keep the coordinator pane large
 and split task-owned siblings instead of the coordinator. When the coordinator
-starts a Pi participant it picks a suitable GLM or Kimi model explicitly rather
-than accepting a silent default: pass `--provider openrouter --model
-moonshotai/kimi-k2.7-code` for code work, `~z-ai/glm-latest` for general work,
-or `moonshotai/kimi-k3` for long-context review; a bootstrap request pins the
-same choice through `selected_model.openrouter_model`.
+starts a participant it chooses that participant's model and configuration
+explicitly rather than accepting a silent default, and states the choice with the
+assignment so the observed selection is what gets recorded. A bootstrap request
+pins the same choice through `selected_model.openrouter_model`; never report a
+selection that was not observed.
 
 ### One-time bounded discovery contact
 

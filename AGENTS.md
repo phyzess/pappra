@@ -34,32 +34,40 @@ Before a change that is not a trivial, reversible, local edit, assess the actual
 work: current behaviour, callers and tests in the blast radius, whether the change
 is one write scope or several disjoint ones, and whether risk (release, protocol,
 security, persistence, cross-cutting behaviour) warrants an independent reviewer.
+Record the execution mode before implementation, and choose it from that
+assessment — never from a fixed role count or a file-size threshold.
 
-- Coordination artifacts (briefs, request JSON, scratch) are the coordinator's
-  direct work; keep those edits simple, reversible and free of ceremony.
-- Repository source is implemented by participants, never by the coordinator
-  itself. The coordinator assesses, plans, writes briefs, dispatches, accepts
-  or rejects reports, and runs the single final integration gate;
-  implementation and review are done by other participants, visible Pi peers
-  by default. Small trivially-local edits are not exempt for repository source
-  in this project.
+- Direct work is first-class. A single host agent may assess, plan, implement and
+  verify a change itself with its own native tools, including repository source.
+  No separate writer is required for a trivial or tightly coupled change.
+- Coordination artifacts (briefs, request JSON, scratch) are always direct work;
+  keep those edits simple, reversible and free of ceremony.
+- Delegate when the work split makes the change cheaper or safer: independent
+  work that can run in parallel, genuinely disjoint write scopes, or a decision
+  that needs fresh context. Record the choice and its reason.
+- An independent review needs an independent context, not a different model or
+  provider. A separate reviewer participant, reached through Pappra's workflow
+  with observed native participants, satisfies it; a review-only assignment can
+  itself be that review and needs no recursive reviewer.
 
-A single write scope does not remove the need for independent review. Changes
-to authorization, resource ownership, persisted state/recovery or release
-execution require an independent review before completion, performed by a
-separate reviewer participant through Pappra's workflow using observed native
-participants. For disjoint implementation scopes, delegate them to different
-writers when doing so reduces the critical path. Record this choice before
-implementation. A review-only assignment can itself be that independent
-review; it does not need another reviewer recursively.
+Risk, not coordination ceremony, decides when review is mandatory. Changes to
+authorization, resource ownership, persisted state/recovery or release execution
+require an independent review before completion, and a single write scope does
+not remove that requirement. Ordinary implementation does not: when none of
+those areas is touched, the implementing agent verifies its own change and the
+result is still accepted by an explicit coordinator or user decision.
 
-If no capable participant can be launched, the coordinator reports the exact
-blocker instead of implementing itself. If the native channel, identity or
-required capability is unavailable, report the exact blocker and retain the
-outstanding review requirement. Do not silently substitute self-review,
-self-implementation, a different harness or an unrelated global tool.
+Acceptance is never self-service. An agent does not accept its own report, a
+registered `ASSIGN`, an `ACK`, a `REPORT` or a submitted notification is not
+acceptance, and direct work outside a cohort is decided by the user rather than
+by the agent that did the work.
 
-## Independent implementation and review
+If the native channel, identity or required capability for a mandatory review is
+unavailable, report the exact blocker and retain the outstanding review
+requirement. Do not silently substitute self-review, self-implementation, a
+different harness or an unrelated global tool.
+
+## Task-driven execution and independent review
 
 Roles and participants are chosen from the real work split, never from a fixed
 count. For a new cohort, prefer the typed workflow entry described in
@@ -85,8 +93,9 @@ node dist/cli/main.js collab role-plan aggregate --request <abs role-plan.json> 
   --task-root <abs> --config <abs expanded-plan.json> --json
 ```
 
-- Disjoint write scopes belong to different writers; shared or dependent work does
-  not. Add a separate acceptance/reviewer participant when risk warrants it.
+- When delegation is chosen, disjoint write scopes go to different writers and
+  shared or dependent work stays with one. Add a separate acceptance/reviewer
+  participant when risk warrants it.
 - Roles describe responsibility and scope. They grant no authority, approve
   nothing, and pick no participant by themselves.
 - A registered `ASSIGN`, an `ACK`, a `REPORT`, or a submitted notification is not
@@ -112,10 +121,12 @@ geometry that cannot be read falls back to a right split of the caller with
 ratio 0.6 rather than failing the launch. A task-owned sibling is a pane the
 task's own launch reservations created that is still present in the layout.
 
-When the coordinator starts Pi participants it picks a suitable GLM or Kimi
-model explicitly (`--provider openrouter --model moonshotai/kimi-k2.7-code`
-for code work, `~z-ai/glm-latest` for general work, `moonshotai/kimi-k3` for
-long-context review) and never falls back to a default model silently.
+When the host starts participants it chooses the model and configuration for each
+one explicitly and states that choice in the request, so the observed selection
+is what the assignment and the evidence record. Which model fits is the host's
+judgment from the work itself: code changes, long-context review and general
+investigation place different demands on it. Never let a default model or
+provider be used silently, and never report a selection that was not observed.
 
 ## Authorization and safety
 
