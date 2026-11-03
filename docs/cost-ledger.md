@@ -17,7 +17,7 @@ Two files:
 - No automation, script, parser or collector is added here, and none is implied by it.
 - No real account names, invoices, receipts or spending: every number in this document is
   explicitly synthetic.
-- No claim that delegated, multi-agent or independent-review work is inherently cheaper more
+- No claim that delegated, multi-agent or independent-review work is inherently cheaper; more
   sessions can cost more than one, and the ledger exists to show the real number either way.
 - No approval, merge or release decision. A complete ledger is evidence, not acceptance.
 
