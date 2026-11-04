@@ -20,7 +20,8 @@ Shared foundations are task/repository identity, bounded context, provenance, fr
 - [#28](https://github.com/phyzess/pappra/issues/28) retains its original programme: G1 accepted, G2 implemented, [#34](https://github.com/phyzess/pappra/issues/34)/G3 outstanding. Preserve the accepted work in [#29](https://github.com/phyzess/pappra/issues/29)–[#33](https://github.com/phyzess/pappra/issues/33) and [#35](https://github.com/phyzess/pappra/issues/35).
 - [#17](https://github.com/phyzess/pappra/issues/17) is closed through [PR #40](https://github.com/phyzess/pappra/pull/40), merged as `366f49f`. The merged tree matches reviewed candidate `70aeb19`; the eight PR CI check runs succeeded. This is recorded review/CI evidence, not new live-host consumption proof.
 - Notify now requires a matching recomputed protocol content digest and an `applied`/`recorded` task-record entry before forwarding, with final revalidation. Message protocol acceptance is distinct from receipt and task-result acceptance.
-- [#7](https://github.com/phyzess/pappra/issues/7) retry policy, [#20](https://github.com/phyzess/pappra/issues/20) receipt observation, [#13](https://github.com/phyzess/pappra/issues/13) relocation identity and [#21](https://github.com/phyzess/pappra/issues/21) configuration authority remain separate open scopes. [#5](https://github.com/phyzess/pappra/issues/5)'s compatibility decision remains open.
+- [#21](https://github.com/phyzess/pappra/issues/21) configuration-authority classification is completed through [PR #48](https://github.com/phyzess/pappra/pull/48), merged as `b9384c5`, with a tree identical to accepted candidate `fd18086`. Independent manual review, the coordinator's isolated integration gate and eight successful CI jobs support acceptance. This defines the authorization contract; it adds no validation execution. Non-blocking diagnostic follow-up [#49](https://github.com/phyzess/pappra/issues/49) remains separate.
+- [#7](https://github.com/phyzess/pappra/issues/7) retry policy, [#20](https://github.com/phyzess/pappra/issues/20) receipt observation and [#13](https://github.com/phyzess/pappra/issues/13) relocation identity remain separate open scopes. [#5](https://github.com/phyzess/pappra/issues/5)'s compatibility decision remains open.
 - Historical attempt rows in [#34](https://github.com/phyzess/pappra/issues/34) are not ten independent tasks or a paired comparison. Its original sample/baseline/budget and formal G3 contract stay intact.
 
 ## Work packages and milestones
@@ -39,13 +40,13 @@ These are product groupings, not permissions or strictly serial phases. `needs-t
 
 ### Baseline reconciliation
 
-Produce one capability/evidence map covering existing APIs, CLI paths, skills, documented limitations and real-host evidence. Classify each item as accepted, implemented but unverified, in flight or proposed. Record [#17](https://github.com/phyzess/pappra/issues/17) as completed baseline and preserve its regression contract; do not assign another implementation for it.
+Produce one capability/evidence map covering existing APIs, CLI paths, skills, documented limitations and real-host evidence. Classify each item as accepted, implemented but unverified, in flight or proposed. Record [#17](https://github.com/phyzess/pappra/issues/17) and [#21](https://github.com/phyzess/pappra/issues/21) as completed baseline and preserve their regression contracts; do not assign another implementation for them.
 
 Exit: the next write scopes have known owners, dependencies and missing evidence; previously accepted gates remain intact.
 
 ### Shared correctness and usable entry points
 
-Prioritize the bounded remaining authorization classification in [#21](https://github.com/phyzess/pappra/issues/21), current-version reproduction of [#13](https://github.com/phyzess/pappra/issues/13) and the delivery/retry decision in [#7](https://github.com/phyzess/pappra/issues/7). Reuse the completed [#17](https://github.com/phyzess/pappra/issues/17) notification-admission gate. These are local prerequisites only for the paths they affect, not a blanket requirement to finish all backlog before useful product work.
+Prioritize current-version reproduction of [#13](https://github.com/phyzess/pappra/issues/13) and the delivery/retry decision in [#7](https://github.com/phyzess/pappra/issues/7). Reuse the completed [#21](https://github.com/phyzess/pappra/issues/21) configuration-authority contract and [#17](https://github.com/phyzess/pappra/issues/17) notification-admission gate. These are local prerequisites only for the paths they affect, not a blanket requirement to finish all backlog before useful product work. [#49](https://github.com/phyzess/pappra/issues/49) is a non-blocking diagnostic follow-up.
 
 Exit: the selected adoption and collaboration scenarios have explicit, tested identity and authority boundaries, or an exact supported limitation.
 
