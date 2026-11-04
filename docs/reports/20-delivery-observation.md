@@ -1,335 +1,247 @@
 # Task C report — delivery observation (#20)
 
-Second candidate. The coordinator preflight of `4ebb888` rejected the first one
-for two defects, both reproduced here and fixed in `cec2b81`. This change still
-alters delivery and persisted semantics, so it stops here and awaits the
-coordinator's preflight and an independent review. Nothing was pushed, no PR was
-opened, no issue was closed or edited, no release or external message happened,
-and no real participant was sent anything.
+Third candidate. Coordinator preflight rejected `4ebb888` for its receipt
+semantics and budget; the independent review of `7119f93` then returned a
+needs-fix set (F1–F5), fixed here in `32444a6`. This change still alters delivery
+and persisted semantics, so it stops here and awaits the targeted re-review.
+Nothing was pushed, no PR was opened, no issue was closed or edited, no release or
+external message happened, and no real participant was sent anything.
 
 ## Base and head
 
-|                              |                                                                                                                                               |
-| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| repository                   | `/Users/zimm.yu/personal/YU/pappra` (worktree `/private/tmp/pappra-20-observation`)                                                           |
-| branch                       | `codex/20-delivery-observation`, created from `origin/main`                                                                                   |
-| base                         | `a351802` — `docs: balance workspace growth and collaborative delivery roadmap (#47)`                                                         |
-| first candidate              | `346c704` implementation, `4ebb888` report — rejected by preflight                                                                            |
-| head (implementation)        | `cec2b81` — `fix(collab): keep receipt unknown and bound the observation budget (#20)`; the branch tip is that commit plus this report commit |
-| known merged bases confirmed | `a351802` (PR #47), `366f49f` (PR #40, #17)                                                                                                   |
+|                              |                                                                                                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| repository                   | `/Users/zimm.yu/personal/YU/pappra` (worktree `/private/tmp/pappra-20-observation`)                                                                               |
+| branch                       | `codex/20-delivery-observation`, created from `origin/main`                                                                                                       |
+| base                         | `a351802` — `docs: balance workspace growth and collaborative delivery roadmap (#47)`                                                                             |
+| first candidate              | `346c704` implementation, `4ebb888` report — rejected by preflight                                                                                                |
+| second candidate             | `cec2b81` implementation, `7119f93` report — needs-fix from independent review                                                                                    |
+| head (implementation)        | `32444a6` — `fix(collab): forward the probe budget, protect the delivery record, observe on request (#20)`; the branch tip is that commit plus this report commit |
+| known merged bases confirmed | `a351802` (PR #47), `366f49f` (PR #40, #17)                                                                                                                       |
 
 `origin/main` was already `a351802` when the worktree was created; no other
-branch, worktree or uncommitted change was touched. `pnpm dev:setup` prepared
-this worktree's local code index and registered the workspace documents; that
-state lives under `.pappra/local/` and is gitignored.
+branch, worktree or uncommitted change was touched. `pnpm dev:setup` prepared this
+worktree's local code index and registered the workspace documents; that state
+lives under `.pappra/local/` and is gitignored.
 
 ## Execution mode
 
-Direct work in one tightly coupled write scope, as the task instructed. No
-sub-agent, role plan or cohort was started, no model was launched, and no live
-delivery experiment was run — including none for this revision. The independent
-review remains outstanding and belongs to the coordinator; the last section
-names what it should attack.
+Direct work in one write scope, as the task instructed: the two delivery guards,
+the observation and delivery-write path, the message CLI, their tests and the
+documents that describe them. No sub-agent, role plan or cohort was started, no
+model was launched, and no live delivery experiment was run — including none for
+this revision. The independent review of the second write, concurrency, crash and
+old-record contracts remains outstanding; the last section names the re-review
+entry points.
 
-## What changed against `4ebb888`
+## F1–F5, item by item
 
-| File                                                                                                                                                                                                | Change                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `src/app/collab-delivery-observation.ts`                                                                                                                                                            | `receipt` is now `unknown` on every path; the two activity reasons were renamed (`turn_activity_observed`, `no_turn_activity_observed`); the budget now covers waits and probes; a reading that arrives after the budget is recorded but never classified; `probeTimeoutMs` moved into the policy so the loop can clamp it; `window_ms` is the real elapsed time, capped at the schema bound with the true value in `detail` |
-| `src/app/collab-notify.ts`                                                                                                                                                                          | the probe closure receives its budget from the observation loop and passes it to `transport.list({ timeoutMs })`; the separate probe-timeout option and constant were removed                                                                                                                                                                                                                                                |
-| `src/schemas/collaboration.ts`                                                                                                                                                                      | receipt/reason semantics documented on the schema: `taken`/`not_taken` are message-level receipts that no supported transport can produce, and the two activity reasons replace the previous names                                                                                                                                                                                                                           |
-| `tests/collab/delivery-observation.test.ts`                                                                                                                                                         | rewritten: 23 tests, including the three counter-examples and the injected-clock deadline matrix                                                                                                                                                                                                                                                                                                                             |
-| `docs/collaboration-messages.md`, `docs/collaboration-reference.md`, `docs/transport-runtime-boundaries.md`, `skills/pappra/references/collaboration.md` (+ byte-identical `src/assets/...` mirror) | the receipt claim is withdrawn; the reason table, the budget guarantees and the read contract are stated instead                                                                                                                                                                                                                                                                                                             |
+### F1 — the probe budget now reaches the transport
 
-Nothing else was touched: no new protocol field, no new transport operation, no
-retry, resend, key press, watcher or background poll.
+Both delivery guards implemented `list()` without a parameter, so a caller's
+remaining observation budget was silently replaced by the transport default.
 
-## Phase 1 — what a supported Herdr actually exposes
+| Guard                                                       | Before                          | Now                                                                                                                                    |
+| ----------------------------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `guardedBootstrapTransport` (`src/app/collab-bootstrap.ts`) | `list: () => underlying.list()` | `list: (options) => underlying.list(options)`                                                                                          |
+| work-execution guard (`src/app/collab-work-execution.ts`)   | `list: () => transport.list()`  | extracted to `guardedWorkExecutionTransport(transport, finalAuthorityCheck)` with `list: (listOptions) => transport.list(listOptions)` |
 
-Read-only inspection only. No prompt, no `send-keys`, no `agent wait`, no
-transcript read, no experiment against a live participant.
+Both guards are now exported and tested as the real guard functions, not as
+same-shape copies: `tests/collab/transport-guard-passthrough.test.ts` drives the
+actual `guardedBootstrapTransport` and `guardedWorkExecutionTransport` values and
+asserts the underlying transport received `{ timeoutMs: 777 }` / `{ timeoutMs:
+1_234 }` unchanged, and `undefined` when the caller passed nothing. The same file
+re-asserts the prompt boundaries that must not move: the work-execution guard
+still blocks without a final-authority callback, blocks on a callback that throws
+or declines, and forwards exactly once when the callback allows; the bootstrap
+guard still refuses a foreign recipient before anything is prompted.
+`verifyCaller` forwarding is asserted for both.
 
-| Evidence                                                      | Result                                                                                                                                                                                                                                                             |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `herdr --version`                                             | `herdr 0.9.5` (`/opt/homebrew/bin/herdr`)                                                                                                                                                                                                                          |
-| `herdr api schema --json`                                     | `protocol: 22`, `schema_version: 1`, five schemas (`error_response`, `event`, `request`, `subscription_event`, `success_response`)                                                                                                                                 |
-| `herdr agent list` (live, values not printed)                 | 9 agents. Keys observed: `agent`, `agent_session`, `agent_status`, `cwd`, `focused`, `foreground_cwd`, `pane_id`, `revision`, `screen_detection_skipped`, `state_change_seq`, `tab_id`, `terminal_id`, `terminal_title`, `terminal_title_stripped`, `workspace_id` |
-| same call                                                     | `completion_seq` appeared only where non-null; `interactive_ready` and `launch_pending` appeared in no entry; no entry exposed a `name`                                                                                                                            |
-| `herdr agent --help`, `agent get --help`, `agent wait --help` | `agent get <target>` exists; `agent wait --until <state>` waits indefinitely unless `--timeout` is passed                                                                                                                                                          |
+### F2 — a broken observation can no longer damage a valid record
 
-### Basis of that read-only call, and what it does not establish
+| Requirement                                              | Implementation                                                                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| untrusted `detail` is bounded and marked                 | `boundDetail()` in `collab-delivery-observation.ts` shortens only the free-text detail: the observation's own `detail` at 1 024 chars (its schema bound), the attempt `detail` at 4 096 in the write path. A shortened value ends with ` …[truncated N chars]`                                                                                                                                                   |
+| never truncate identity or state to make a "legal" value | no identity or state field is ever shortened. An observation whose state is out of schema is rejected by the writer instead of being trimmed into a different value that looks valid                                                                                                                                                                                                                             |
+| validate before the atomic publish                       | `writeDelivery` validates the candidate against `pappra/collab-delivery/1` before the temp file is created, and `updateReservedAttempt` pre-checks so it can report the precise code instead of a generic write failure                                                                                                                                                                                          |
+| failure keeps the valid status/attempts and says so      | `updateReservedAttempt` now returns a typed outcome (`delivery_state_busy`, `delivery_state_unreadable`, `delivery_record_invalid`, `delivery_state_unwritable`). On failure nothing is written; the result reports `observation: null` and appends `The transport observation (receipt/reason) was not recorded (<code>: <detail>)` to its detail, so an unrecorded value is never presented as stored evidence |
 
-The three commands above were run from this worktree through the installed
-`herdr` binary with no `--session`, `--machine` or `--remote` flag, so the CLI
-used its own default resolution. I did **not** record `herdr status`,
-`herdr session list` or the process environment (`HERDR_ENV`, `HERDR_PANE_ID`) at
-that moment, so **which server, session or workspace those 9 agents belonged to,
-and whether this shell was itself inside Herdr, is unverified**. The `agent get`
-attempt used an empty target — the roster exposed no names — and returned an
-error envelope, so it produced no additional evidence and was not retried; no
-other server or participant was queried afterwards.
+This is not a repository-wide safe-write refactor: it touches the one atomic
+publish this surface already owned.
 
-The `api schema` output is bundled with the installed CLI, so it is evidence
-about what version 0.9.5 _declares_, not about any running session. The field
-_kinds_ and their required-ness below come from that schema; the fact that
-`agent list` returns some of them comes from the read above.
+Fault regressions (all in `tests/collab/delivery-observation.test.ts`):
 
-| Field               | Type                                        | Required | Declared meaning                                                                  |
-| ------------------- | ------------------------------------------- | -------- | --------------------------------------------------------------------------------- |
-| `agent_status`      | `idle`/`working`/`blocked`/`done`/`unknown` | yes      | what the agent is doing                                                           |
-| `state_change_seq`  | `uint64`, default `0`                       | no       | counter of detected state changes                                                 |
-| `completion_seq`    | `uint64` \| `null`                          | no       | "The current idle transition completed work, independently of who has viewed it." |
-| `terminal_id`       | `string`                                    | yes      | identity of the terminal the agent runs in                                        |
-| `revision`          | `uint64`                                    | yes      | per-agent update counter                                                          |
-| `interactive_ready` | `boolean`                                   | no       | whether the pane accepts input                                                    |
-| `launch_pending`    | `boolean`                                   | no       | whether the agent is still launching                                              |
-| `agent_session`     | `{source, agent, kind, value}`              | no       | reported native session                                                           |
+| Fault                                                                               | Test                                                                              | Asserted outcome                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| over-long exception/probe diagnostic                                                | "an over-long diagnostic is bounded and marked, and the observation is kept"      | observation stored, `detail` ≤ 1 024 with the truncation marker, reason `probe_failed`                                                                                                                                     |
+| over-long attempt detail                                                            | "an over-long attempt detail is bounded and marked, and the status is kept"       | attempt `detail` ≤ 4 096 with the marker, status `submitted`                                                                                                                                                               |
+| observation the schema rejects (300-char status)                                    | "an observation the schema would reject is not recorded, and the status survives" | `observation: null`, detail names `delivery_record_invalid` and `agent_status`, record keeps `submitted` + one attempt with no observation, and a later `notify` reports `already_recorded` — not `delivery_state_invalid` |
+| observation write fails (delivery directory made unwritable during the observation) | "a failed observation write leaves the delivery record intact"                    | `observation: null`, detail names `delivery_state_unwritable`, record readable with status `submitted`, later `notify` reports `already_recorded`. Skipped when running as root                                            |
+| different attempt keeps its own evidence                                            | "a retry keeps its own attempt and observation"                                   | two attempts, each `submitted` with its own `receipt: unknown` observation, one prompt per attempt                                                                                                                         |
+| old record                                                                          | "an older delivery record without an observation still reads as unobserved"       | byte-identical file after reading                                                                                                                                                                                          |
 
-### Why these signals cannot become a receipt
+The concurrent-reservation, lock-contention and stale-reservation regressions
+stay in `tests/collab/messages.test.ts` and `notify-record-acceptance.test.ts`,
+which are unchanged and green.
 
-- **No message-level correlation.** The counters are per agent, not per prompt.
-  A turn that starts after a pointer is submitted may have been started by that
-  pointer, by another message, or by a human at the keyboard.
-- **No input-box visibility.** Nothing in the API says whether the pointer text
-  is sitting unsubmitted in the input; `agent read` would expose another agent's
-  terminal content, which #20 keeps out of scope.
-- **No queue truth.** A queued-but-unread pointer and a dropped Enter are
-  indistinguishable from outside.
+### F3 — observation is opt-in, with read-back
 
-So the observation records what it saw and refuses to name a receipt:
-`turn_activity_observed` (a turn started on that terminal, cause unknown),
-`no_turn_activity_observed` (no turn started inside the window; a queued pointer
-looks the same), or an `unknown` reason for everything that cannot be compared.
+- **Default off.** `NotifyOptions.observation` is now off when omitted or
+  `false`; `notify` sends one pointer and returns with no probe and no extra wait,
+  exactly as before this task. Verified by "a notification without an explicit
+  request observes nothing and waits for nothing": one `verifyCaller`, one
+  `list()` call with no options, one prompt, no observation in the record.
+- **Explicit API opt-in** stays: pass a policy (`{}` for the defaults) to observe.
+- **CLI opt-in.** The existing flags on this surface are short verbs
+  (`--apply`, `--retry`) plus `--caller-pane`; the new flag follows that and is
+  `notify --observe`. It is declared in `src/cli/options.ts`, allowed only for the
+  `notify` action in `src/cli/collaboration-routing/messages.ts`, rejected for
+  other message actions, and rejected by the other command routers
+  (`run.ts`, `collaboration-routing/native.ts`,
+  `collaboration-routing/execution.ts`) the same way `--retry` already is. No
+  global policy framework was introduced.
+- **Read-back.** `message read` reports the saved observation for the delivered
+  attempt (`receipt: unknown (no_turn_activity_observed), 3 sample(s) over
+2000 ms`) and `receipt: unobserved` when the record has none — an old record and
+  a notification sent without `--observe` look the same and neither becomes an
+  `unknown` receipt. The JSON `delivery` object already carries the observation.
+  `message list` and `workflow inspect` are untouched, and nothing watches in the
+  background.
 
-### The six facts, kept separate
+CLI coverage (`tests/collab/messages-cli.test.ts`): `message read` on a record
+with an observation, on a record without one, `message list --observe` rejected
+as `invalid_arguments`, `message notify --observe` accepted by routing (outcome
+is still the transport's `herdr_unavailable`), and the help text listing
+`--observe`.
 
-| Fact                                  | Written by                                                                  | Never collapsed into          |
-| ------------------------------------- | --------------------------------------------------------------------------- | ----------------------------- |
-| persisted                             | `send --apply` → `submitMessage`                                            | notification                  |
-| notified/submitted                    | `notify --apply` → one pointer handed to a transport                        | consumed                      |
-| observed transport activity (**new**) | bounded roster observation after the submission; `receipt` always `unknown` | submitted, consumed, accepted |
-| consumed/acknowledged                 | the recipient's own `ACK`                                                   | delivery                      |
-| reported                              | the recipient's `REPORT`                                                    | acceptance                    |
-| accepted                              | the coordinator's explicit decision                                         | anything on this surface      |
+### F4 — late failure versus late reading
 
-## Phase 2 — representation, classification and the budget
+The loop checks a probe's own diagnosis first and the budget second, so the two
+are different facts, and both the code comments and the documents now say so:
 
-`pappra/collab-delivery-observation/1` is stored on the delivery attempt it
-describes (`attempts[].observation`, optional, strict): `receipt` (always
-`unknown` from a roster read), a closed `reason`, `source`, `started_at`,
-`ended_at`, `window_ms`, `samples`, `before`/`after` state, and a bounded
-`detail`. Unreported signals stay `null`, never `0`/`false`.
+- a **late failure** keeps `probe_failed` (or `target_missing`,
+  `target_identity_changed`, `target_session_changed`): "the read failed" is a
+  diagnosis about the probe;
+- a **late reading** is recorded as raw evidence but never classified:
+  `window_expired`, because the window it was meant to cover has already ended.
 
-Decision order, first match wins (every branch returns `receipt: unknown`):
+Test: "a late failure keeps its diagnosis while a late reading does not" — the
+same 4 000 ms overrun on a 3 000 ms window yields `probe_failed` for a failure
+and `window_expired` for a reading.
 
-| #   | Condition                                                                  | Reason                                                                                |
-| --- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| 1   | the transport outcome does not establish a submission                      | `submission_not_established`                                                          |
-| 2   | recipient launching / not interactive-ready (only where a read reports it) | `recipient_not_ready`                                                                 |
-| 3   | before reading lacks `terminal_id` or `state_change_seq`                   | `signals_unavailable`                                                                 |
-| 4   | recipient was already `working`                                            | `recipient_already_working`                                                           |
-| 5   | recipient was `blocked`                                                    | `recipient_blocked`                                                                   |
-| 6   | before status is not `idle`/`done`                                         | `recipient_state_unknown`                                                             |
-| 7   | probe failed / target gone / pane, harness, cwd or session changed         | `probe_failed`, `target_missing`, `target_identity_changed`, `target_session_changed` |
-| 8   | a sample lacks counters                                                    | `evidence_incomplete`                                                                 |
-| 9   | `terminal_id` differs from before                                          | `terminal_changed`                                                                    |
-| 10  | a sample is not interactive-ready                                          | `recipient_not_ready`                                                                 |
-| 11  | `working` with `state_change_seq` advanced past the before value           | `turn_activity_observed`                                                              |
-| 12  | `working` without a moved counter                                          | `evidence_incomplete`                                                                 |
-| 13  | status moved, but not into `working`                                       | `recipient_state_changed`                                                             |
-| 14  | `state_change_seq`, `completion_seq` or `revision` moved while at rest     | `unattributed_activity`                                                               |
-| 15  | the budget was spent before a sample could be classified                   | `window_expired`                                                                      |
-| 16  | all samples quiet, budget complete                                         | `no_turn_activity_observed`                                                           |
+### F5 — the record clock and the budget clock are separate
 
-### The budget covers waiting and probing
+`options.clock` stamps the record (`attempts[].at`, `created_at`, `updated_at`);
+the observation budget runs on its own `now()`, advanced only by the loop's waits.
+Neither substitutes for the other: a fixed record timestamp never shortens a
+deadline, and a budget reading never rewrites a record timestamp. Tests that need
+both to agree must inject both explicitly.
 
-`windowMs` is a deadline, not just a sleep total. With the defaults — 3 samples,
-1 s apart, 3 s window, 4 s probe cap:
+Test: "the record clock and the observation clock stay independent" runs one
+notification with `clock = 2026-11-12T08:00:00Z` and an observation clock starting
+at `2030-05-06T07:08:09Z`, then asserts the record carries the first and
+`started_at`/`ended_at`/`window_ms` the second.
 
-1. Before any wait, the loop checks the remaining budget; no budget ends the
-   observation as `window_expired`.
-2. Each probe receives `min(probeTimeoutMs, remaining budget)`, so a cooperating
-   transport cannot stretch the window; `notify` passes that number to
-   `herdr agent list`'s own timeout.
-3. After the probe returns, a reading later than the deadline is kept as raw
-   evidence (`after`, `samples`) but is never classified: the outcome is
-   `window_expired`. The first preflight reproduction (a 3000 ms window whose
-   first probe returned `working` at 4000 ms) now records no activity
-   conclusion, and the second (a third quiet probe returning at 5000 ms) is not a
-   quiet window either.
-4. `window_ms` is the real elapsed time.
+## What the observation still says (unchanged from `cec2b81`)
 
-**What this guarantees:** no probe is started without budget; no probe is asked
-for more time than remains; no conclusion is formed from a late reading; an
-observation whose probes answer inside their timeout is bounded by the window
-plus scheduling noise.
+`receipt` is `unknown` on every path. A Herdr roster read is agent-level: no
+signal names the prompt that caused a state change, a turn can be started by
+another message or by a human, and a pointer typed into the input without a
+started turn looks exactly like one that was never typed. The record keeps the
+raw before/after state, the sample count, the window and a closed reason
+(`turn_activity_observed`, `no_turn_activity_observed`, or an `unknown` reason).
+`taken`/`not_taken` stay defined for a transport that can correlate a state
+change with one message; nothing here emits them.
 
-**What it cannot guarantee:** `notify` has no cancellation channel into a
-transport. A transport that ignores the requested timeout, or hangs before it can
-enforce one, can overrun the window. The record then states the elapsed time
-(capped at the schema bound of 600 000 ms, with the true value in `detail`) and
-the reason stays `window_expired` — there is no unconditional hard wall-clock
-limit, and the code no longer implies one.
+## Preserved boundaries
 
-## Ordering against #17 (unchanged)
+#17 record acceptance (content digest, closed `applied`/`recorded` allow-list),
+the no-transport refusals, the final revalidation before submission, and #35
+reused-observation freshness are untouched. One pointer per attempt, no resend,
+no key press, no automatic takeover, `consumed: false` / `taskAccepted: false`
+literal, and the `--retry` policy are unchanged. The observation still starts
+after the delivery status is durable, so the reservation window is not widened.
 
-1. The **before** reading is the roster entry `verifyLiveParticipant` already
-   validated: no extra call and no extra await between the last admission check
-   and the prompt.
-2. `finalizeDelivery` writes the delivery status immediately after the prompt
-   returns, exactly as before, so the reservation is not held open during
-   observation and the old race window is neither widened nor shifted.
-3. Observation runs afterwards as read-only roster reads; a probe never prompts,
-   presses a key or retries.
-4. The observation is written by a second guarded update
-   (`updateReservedAttempt`) that re-reads the record under the same task-private
-   lock, matches its own `reservation_id`, and cannot change `status`.
-5. A crash after the status write leaves the attempt without an `observation`,
-   which readers treat as unobserved. #35 freshness is untouched: the
-   observation adds no reused native observation and no new age bound.
+## Verification
 
-## Write scope
+| Command                                                                                                                          | Result                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `npx tsc -p tsconfig.build.json --noEmit`, `-p tsconfig.test.json --noEmit`                                                      | clean                                                                          |
+| `pnpm source:check`                                                                                                              | `Source language policy passed.`                                               |
+| `pnpm format:check`                                                                                                              | `All matched files use Prettier code style!`                                   |
+| `node --test --test-concurrency=4 .build/test/tests/collab/*.test.js`                                                            | 803 tests, 800 pass, 0 fail, 3 skipped                                         |
+| `node --test .build/test/tests/collab/delivery-observation.test.js .build/test/tests/collab/transport-guard-passthrough.test.js` | 34 tests, 34 pass                                                              |
+| `node --test .build/test/tests/collab/messages-cli.test.js`                                                                      | 2 tests, 2 pass (includes the two read-back and two `--observe` routing cases) |
+| `node --test .build/test/tests/hosts/skill-mirror.test.js .build/test/tests/docs/*.test.js .build/test/tests/cli/*.test.js`      | 46 tests, 46 pass                                                              |
 
-`src/app/collab-delivery-observation.ts` (new), `src/app/collab-notify.ts`,
-`src/schemas/collaboration.ts`, `src/cli/commands/collaboration-message.ts`
-(one bounded `receipt:` line in the human `notify` output),
-`tests/collab/delivery-observation.test.ts` (new),
-`tests/collab/bootstrap-app-cli.test.ts` (one `observation: null` field on the
-existing `NotifyResult` fixture), and the four documentation files plus the skill
-reference and its byte-identical asset mirror. Not touched: workspace/machine
-schema, `doctor`/`status`, configuration-authority docs (task B), README,
-`AGENTS.md`, roadmap, package/lockfile, global settings.
+### Documentation formatting
 
-## Acceptance results
-
-| #   | Requirement                                                                                                               | Test                                                                                                                                                                                                                                                                                                                                                    | Result |
-| --- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| 1   | an admitted message still submits exactly one pointer and keeps the `submitted`/`consumed`/`taskAccepted` contract        | "an admitted message still submits one pointer and keeps the delivery contract"; `notify-record-acceptance.test.ts` "notify still forwards one pointer for a message the record accepted"                                                                                                                                                               | pass   |
-| 2   | #17 rejections still reach no transport, create no delivery record and never observe                                      | `notify-record-acceptance.test.ts` (stale epoch, hand-placed envelope, content swap; `listCalls === 0`, no `notifications/*.json`); "planned notification observes nothing and writes no delivery state"                                                                                                                                                | pass   |
-| 3   | corroborated receipt / non-receipt are **not** claimed; only activity is                                                  | "a started turn stays unknown: no roster signal ties it to this pointer"; "a queued pointer with no started turn is unknown, not non-receipt"                                                                                                                                                                                                           | pass   |
-| 4   | missing signal, redraw-only activity, an already working recipient, a changed terminal, wrong identity, an expired window | "missing signals leave the receipt unknown without any probe", "a moved counter without a turn stays unknown rather than activity", "a working sample that cannot be attributed to the pointer stays unknown", "a blocked or unready recipient is never treated as activity", "identity, session and probe problems stay unknown with their own reason" | pass   |
-| 5   | an observation failure or timeout never resubmits, keys or fabricates a conclusion                                        | "a failed probe leaves the recorded submission and never resends" (one prompt, status `submitted`, reason `probe_failed`); the six budget tests                                                                                                                                                                                                         | pass   |
-| 6   | old/new records read and stay bounded; no #17/#35 regression                                                              | "an older delivery record without an observation still reads as unobserved" (byte-identical file after reading); the collaboration suite below                                                                                                                                                                                                          | pass   |
-
-### Counter-examples the preflight asked for
-
-| Case                                                        | Test                                                                      | Recorded outcome                                                                                                                            |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| the same recipient is woken by another input                | "another input waking the recipient is activity, never receipt"           | `receipt: unknown`, `turn_activity_observed`, detail names another input and says it is not receipt                                         |
-| the pointer is queued but no turn started                   | "a queued pointer with no started turn is unknown, not non-receipt"       | `receipt: unknown`, `no_turn_activity_observed`, detail says a queued pointer looks the same                                                |
-| a `working` state that cannot be attributed to this pointer | "a working sample that cannot be attributed to the pointer stays unknown" | `recipient_already_working`, then `terminal_changed`, then `evidence_incomplete` — all `unknown`                                            |
-| a slow probe passes the deadline reporting a started turn   | "a probe that returns after the budget is recorded but never classified"  | `window_expired`, raw `working` state kept, no activity reason                                                                              |
-| the last quiet probe overruns                               | "a final quiet probe that overruns is not a quiet window either"          | `window_expired`, not `no_turn_activity_observed`                                                                                           |
-| the window is spent before a probe                          | "the window can be exhausted before a probe starts"                       | `window_expired`, 1 sample, no second probe                                                                                                 |
-| a transport that hangs                                      | "a transport that hangs records the overrun instead of claiming a bound"  | `window_expired`, `window_ms` 30 000 with a 3 000 budget; a 700 000 ms overrun is recorded at the 600 000 cap with the true value in detail |
-
-## Tests run
-
-| Command                                                                                                                        | Result                                          |
-| ------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------- |
-| `npx tsc -p tsconfig.build.json --noEmit` and `-p tsconfig.test.json --noEmit`                                                 | clean                                           |
-| `pnpm source:check`                                                                                                            | `Source language policy passed.`                |
-| `pnpm format:check`                                                                                                            | `All matched files use Prettier code style!`    |
-| `node --test --test-concurrency=4 .build/test/tests/collab/*.test.js`                                                          | 791 tests, 788 pass, 0 fail, 3 skipped          |
-| `node --test .build/test/tests/collab/delivery-observation.test.js`                                                            | 23 tests, 23 pass                               |
-| `node --test .build/test/tests/hosts/skill-mirror.test.js .../pi-bootstrap-extension.test.js .build/test/tests/docs/*.test.js` | 30 tests, 30 pass (skill mirror byte-identical) |
-
-### Documentation formatting, as instructed
-
-`docs/` is listed in `.prettierignore`, so the previous report's
-`pnpm format:check` result did **not** cover these files — that claim was
-wrong. The four changed documents were formatted explicitly, with the real
-output:
+`docs/` is in `.prettierignore`, so `pnpm format:check` does not cover it. The
+changed documents were formatted and then checked explicitly:
 
 ```sh
 npx prettier --write --ignore-path /dev/null \
   docs/reports/20-delivery-observation.md \
   docs/collaboration-messages.md \
   docs/collaboration-reference.md \
-  docs/transport-runtime-boundaries.md
-# docs/reports/20-delivery-observation.md 71ms
-# docs/collaboration-messages.md 107ms
-# docs/collaboration-reference.md 150ms
-# docs/transport-runtime-boundaries.md 90ms
+  docs/transport-runtime-boundaries.md \
+  skills/pappra/references/collaboration.md
+# docs/collaboration-messages.md 255ms (unchanged)
+# docs/collaboration-reference.md 186ms (unchanged)
+# docs/transport-runtime-boundaries.md 65ms
+# skills/pappra/references/collaboration.md 68ms (unchanged)
 
 npx prettier --check --ignore-path /dev/null \
-  docs/reports/20-delivery-observation.md \
-  docs/collaboration-messages.md \
-  docs/collaboration-reference.md \
+  docs/collaboration-messages.md docs/collaboration-reference.md \
   docs/transport-runtime-boundaries.md \
   skills/pappra/references/collaboration.md \
   src/assets/integrations/skills/pappra/references/collaboration.md
-# Checking formatting...
 # All matched files use Prettier code style!
 ```
 
-Prettier reflowed existing tables in those three long documents as well as the
-sections this task changed; that part of the diff is formatting only. The skill
-reference required no reformatting, and its `src/assets` mirror was re-synced
-after the content edit (`cmp` clean, and `tests/hosts/skill-mirror.test.ts`
-passes).
+The skill reference mirror is byte-identical (`cmp` clean) and
+`tests/hosts/skill-mirror.test.ts` passes. The whole-repository gate
+(`pnpm check`) is left to the coordinator's integration run.
 
-Tests use an injected clock and an injected sleeper, so no test sleeps in real
-time: the three-sample window advances the fake clock by exactly 2 000 ms, and an
-overrunning probe advances it by its scripted cost. The whole-repository gate
-(`pnpm check`) is left to the coordinator's integration run, per the task.
+## Diff against `7119f93`
 
-## Compatibility
+18 files, +1 112/−115: the two guards (F1), the observation module and the
+delivery write path (F2/F4/F5), the notify default and result composition (F2/F3),
+the message CLI and option routing (F3), their tests, and the four documents plus
+the skill reference and its mirror.
 
-- The observation stays additive and optional (`attempts[].observation`). An
-  attempt recorded before this change parses unchanged, reads as unobserved, and
-  is never rewritten — pinned by the legacy-record test, which asserts the file
-  bytes are identical after reading. An absent field is "not observed"; a
-  present `unknown` is "observed and not attributable".
-- A record written by `346c704` with the old reason names would not validate
-  against the renamed enum. Those values only ever existed in this unmerged
-  branch, so no released record can carry them; the coordinator's own
-  reproduction records were built from this branch and must not be treated as
-  fixtures for the new schema.
-- `submitted` keeps its meaning; `consumed: false` / `taskAccepted: false` stay
-  literal; `--retry` and its limit are untouched; the #7 work-run retry policy is
-  neither re-implemented nor influenced by an observation.
-- `NotifyResult` keeps a required `observation` field (`null` when nothing was
-  observed). `HerdrTransport.list()` keeps its optional `timeoutMs`; the value
-  now comes from the observation budget instead of a separate option.
+## Remaining limits and unverified scope
 
-## Remaining limits
-
-- **No message-level correlation exists**, so `receipt` is `unknown` for every
-  record this implementation can write. `taken`/`not_taken` are schema-defined
-  and unreachable until a transport can correlate a state change with a specific
-  message; a reviewer should confirm that keeping them defined-but-unreachable is
-  preferable to removing them.
+- **No message-level correlation**, so `receipt` is `unknown` for every record
+  this implementation writes; `taken`/`not_taken` are define-but-unreachable.
 - **The readiness gate is inert for the default transport**: `agent list` on
-  0.9.5 reports neither `interactive_ready` nor `launch_pending`, so
-  `recipient_not_ready` cannot fire from it. The classification is tested and
-  available to a transport that reports the flags.
+  0.9.5 reports neither `interactive_ready` nor `launch_pending`.
 - **No cancellation path**: a transport that ignores the requested timeout can
-  overrun the window; the record states it rather than pretending otherwise.
-- **Not verified live**: whether a real `herdr agent prompt` produces a
-  rest → working transition inside the window on a real Pi/Codex/Claude pane and
-  what the detection latency is; whether `revision` moves on a pure redraw
-  (revision-only movement forces `unknown` either way, so the classification is
-  safe, but the claim is inferred from the field's shape); the
-  server/session/workspace those 9 agents belonged to, and whether the inspecting
-  shell was inside Herdr.
-- **The experiment that would close the live gap** (needs explicit authorization
-  and a throwaway participant, so it is not run here): bootstrap one isolated
-  pane, notify it once with observation enabled, and record `before`/`after` and
-  `window_ms` for a real turn start; repeat with a deliberately dropped Enter to
-  confirm the quiet window still cannot distinguish a queued pointer. It must
-  resend nothing, press no key and touch no real cohort.
+  overrun the window; the record states the elapsed time rather than claiming a
+  hard bound. The forwarded budget in F1 only helps a transport that honours it.
+- **Not verified live**: that a real `herdr agent prompt` produces a rest →
+  working transition inside the window and what the latency is; whether
+  `revision` moves on a pure redraw; the server/session/workspace the earlier
+  read-only roster came from, and whether the inspecting shell was inside Herdr.
+  The live experiment that would close this needs explicit authorization and a
+  throwaway participant; it was not run.
+- **Not exercised end-to-end**: the bootstrap guard's prompt path is covered by
+  the visible-bootstrap suite, while the F1 test drives its read path with a
+  minimal context because `BootstrapContext` is internal. The work-execution guard
+  is covered on both paths.
 
-## For the coordinator preflight and the independent reviewer
+## For the targeted re-review
 
-1. Is `receipt: unknown` everywhere now the right reading of "no message-level
-   correlation", and are the two activity reasons enough to keep the observation
-   useful without smuggling a receipt back in?
-2. Does the budget truly cover waits and probes (the four checks above), and is
-   the stated guarantee — bounded when the transport honours its timeout, honest
-   overrun when it does not — the accurate claim?
-3. Are the counter-examples (another input, a queued pointer, an unattributable
-   working state) covered by behaviour rather than by comments?
-4. For the independent review this still needs: the second write, concurrency,
-   crash and old-record-read contracts, none of which the preflight accepts on
-   its own.
+1. F1: is forwarding `list(options)` in both guards sufficient, and does the
+   extraction of `guardedWorkExecutionTransport` preserve the prompt/authority
+   behaviour exactly?
+2. F2: is "validate the candidate before the atomic publish, bound only free
+   text, reject out-of-schema state, report `observation: null` plus a
+   not-recorded reason" the right shape — and is the 1 024/4 096 bound split
+   acceptable?
+3. F3: is `--observe` the right opt-in name and routing, and is `message read`
+   the right (and only) read-back surface?
+4. F4/F5: are the late-failure/late-reading distinction and the two-clock
+   responsibilities documented as narrowly as the code delivers them?
+5. Still outstanding for the independent review: the second write, concurrency,
+   crash windows and old-record reads.
