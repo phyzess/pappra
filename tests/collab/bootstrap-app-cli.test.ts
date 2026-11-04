@@ -804,6 +804,7 @@ function notifyResult(
     attempts: 1,
     priorStatus: null,
     detail: null,
+    observation: null,
     consumed: false,
     taskAccepted: false,
   };

@@ -35,7 +35,7 @@ pappra collab message list   --task-root <abs> [--limit <1-100>]
 pappra collab message read   --task-root <abs> --message-id <id>
 pappra collab message notify --task-root <abs> --message-id <id> \
                              --binding <abs-binding.json> [--caller-pane <id>] \
-                             [--apply] [--retry]
+                             [--apply] [--retry] [--observe]
 ```
 
 `--json` returns `pappra/collaboration-message/1` for every action.
@@ -60,15 +60,20 @@ pappra collab message notify --task-root <abs> --message-id <id> \
   record; a registered file the record never accepted reports `entry: null`.
   Both read commands are read-only.
 
-Five facts stay distinct and are never collapsed:
+Six facts stay distinct and are never collapsed:
 
 1. **persisted** — `send --apply` registered and applied the envelope through
    `submitMessage` (record, message file, ledger).
 2. **notified/submitted** — `notify --apply` handed one pointer line to a named
    Herdr agent; `delivery: submitted` only says the prompt was accepted.
-3. **consumed/acknowledged** — the recipient's own `ACK` message.
-4. **reported** — the recipient's `REPORT` message and stored result.
-5. **accepted** — the coordinator's explicit decision, outside this surface.
+3. **observed transport activity** — a bounded observation of the recipient's own
+   transport state after the submission, recorded beside the delivery status. A
+   roster read has no message-level correlation, so its `receipt` is always
+   `unknown`; the reason says whether a turn started on that terminal or not. It
+   never upgrades `submitted` into receipt or consumption.
+4. **consumed/acknowledged** — the recipient's own `ACK` message.
+5. **reported** — the recipient's `REPORT` message and stored result.
+6. **accepted** — the coordinator's explicit decision, outside this surface.
 
 Successful `notify` JSON results carry `consumed: false` and
 `taskAccepted: false`. Successful `send` results return
@@ -98,7 +103,7 @@ Current apply behaviour per type:
   `ANSWER` to an approval block is refused (`approval_not_auto_answerable`).
 - `REPORT` is admitted only from the attempt's current assignee; a stale sender's
   report is retained as evidence with an uncertainty (`classification:
-  "stale_sender"`) and changes nothing.
+"stale_sender"`) and changes nothing.
 - `CANCEL` records intent, marks the holder's claims `cancel_pending` and opens a
   `cancel_unconfirmed` uncertainty; `CANCELLED` requires stop evidence, confirms
   the stop, releases exactly that execution's claims and resolves the
@@ -156,7 +161,7 @@ COLLAB_MESSAGE task=<id> type=<type> message=<abs path> digest=sha256:<file dige
 
 No body, transcript, prompt or report text is included.
 
-**Registered is not accepted.** A message is *registered* when
+**Registered is not accepted.** A message is _registered_ when
 `messages/<message-id>.json` exists as a regular, unredirected, bounded,
 schema-valid envelope whose `message_id` and `task_id` match the request and
 whose bytes hash to the file digest in the pointer. That is a fact about bytes,
@@ -173,11 +178,11 @@ delivery reservation and in the last revalidation before submission, so plan and
 apply agree and no record change slips in behind the check. The refusals are
 ordinary service failures, never authority claims:
 
-| Code | Meaning |
-| --- | --- |
-| `message_not_recorded` | the record holds no entry for this message id |
-| `message_content_not_recorded` | an entry exists for the id, but it accepted different content |
-| `message_record_state_not_notifiable` | the entry's state is neither `applied` nor `recorded` |
+| Code                                  | Meaning                                                       |
+| ------------------------------------- | ------------------------------------------------------------- |
+| `message_not_recorded`                | the record holds no entry for this message id                 |
+| `message_content_not_recorded`        | an entry exists for the id, but it accepted different content |
+| `message_record_state_not_notifiable` | the entry's state is neither `applied` nor `recorded`         |
 
 A protocol-refused `send --apply` (for example `stale_epoch`) keeps its
 `messages/<id>.json` file and stays readable, but it is not notifiable: `list`
@@ -250,6 +255,170 @@ recognized pre-submission refusal set (`agent_not_found`) is `refused`;
 including an unrecognized code from a future Herdr version — is `unknown` with
 the code preserved, because a parseable error does not prove the command stopped
 before submitting. There is no automatic resend.
+
+## Observed receipt (on request)
+
+`notify --apply --observe` additionally records a bounded observation of the
+recipient's own transport state, beside the delivery status rather than inside
+it. It is **off by default**: without `--observe`, `notify` sends one pointer and
+returns, with no probe and no extra wait, exactly as it did before this
+observation existed. A caller using the API opts in by passing an observation
+policy (an empty object takes the defaults). The status answers "did the
+transport accept the pointer"; the observation answers only "what did the
+recipient's transport do afterwards", because that is all a supported Herdr
+reports.
+
+**Roster signals are not a receipt.** Every signal below is agent-level: none of
+them names the prompt that caused a change. A turn that starts after a pointer is
+submitted may have been started by that pointer, by another message, or by a
+human at the keyboard, and a pointer typed into the input without a started turn
+looks exactly like one that was never typed. So `receipt` is recorded as
+`unknown` in every case a roster observation can produce, and the record carries
+the raw evidence plus a closed `reason` that says what was observed. `taken` and
+`not_taken` stay defined for a transport that can correlate a state change with
+one message; no supported transport provides that evidence today, so Pappra never
+derives either value from these signals.
+
+The observation reads the signals a supported Herdr reports for the recipient, in
+the same roster read that participant verification already performs:
+
+| Signal                                | What it is                                  | What it contributes                                                     |
+| ------------------------------------- | ------------------------------------------- | ----------------------------------------------------------------------- |
+| `agent_status`                        | `idle`/`done`/`working`/`blocked`/`unknown` | a rest→working transition is turn activity, source unknown              |
+| `state_change_seq`                    | counter of detected state changes           | whether any state change happened at all                                |
+| `completion_seq`                      | counter for a completed turn                | a completed turn alone is not attributable                              |
+| `terminal_id`                         | identity of the agent's terminal            | a changed id means a restart, so nothing compares                       |
+| `revision`                            | per-agent update counter                    | movement alone forces `unknown`, never activity                         |
+| `interactive_ready`, `launch_pending` | whether the pane is at an input prompt      | only where a read reports them; an absent flag makes no readiness claim |
+
+The "before" reading is the roster entry participant verification already
+validated, so the observation adds no call and no seam around the final admission
+check. After the prompt returns, the roster is probed at most three times, one
+second apart, within a three-second budget, and every probe rechecks the
+recipient's name, pane, harness, cwd and reported native session. Nothing is
+typed, pressed, resent or watched in the background, and a failed probe ends the
+observation instead of triggering a second submission.
+
+The budget covers waiting _and_ probing:
+
+- a probe is only started while budget remains;
+- the transport timeout it is given is `min(probe timeout, remaining budget)`, so
+  a cooperating transport cannot stretch the window; a delivery guard that
+  wraps the transport forwards that bound unchanged;
+- a reading that arrives after the budget is kept as raw evidence and is never
+  classified — the outcome is `window_expired`, not an activity conclusion;
+- a **failure** that arrives late is still a failure: "the read failed" and "the
+  window is spent" are different facts, so a late failing probe keeps
+  `probe_failed` (or the specific target problem) instead of being flattened into
+  `window_expired`;
+- `window_ms` is the time that actually elapsed.
+
+Two clocks are involved and they are not interchangeable. The delivery record's
+`at`/`updated_at` come from the caller's fixed record clock (`--apply` runs use
+one stamped time). The observation's budget is measured on its own clock, which
+advances only when the loop waits. Neither substitutes for the other: a record
+timestamp never shortens a deadline, and a budget reading never rewrites a
+record timestamp.
+
+There is no unconditional hard wall-clock limit. `notify` has no cancellation
+path into a transport, so a transport that ignores the requested timeout can
+overrun the window; the record then shows the real elapsed time (capped at the
+schema bound of 600 000 ms, with the true value in `detail`) and the reason stays
+`window_expired`.
+
+| `reason`                                                              | Recorded when                                                                                                                                                                  |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `turn_activity_observed`                                              | the recipient left a rest state for `working` with the state counter advanced, on the same terminal — the turn's cause is unknown, so this is not receipt                      |
+| `no_turn_activity_observed`                                           | a complete window of samples on the same terminal stayed at rest with no counter movement — a queued pointer and an untyped pointer look identical, so this is not non-receipt |
+| `submission_not_established`                                          | the transport outcome does not establish that a pointer was submitted (`blocked`/`refused`/`failed`); nothing was observed                                                     |
+| `recipient_already_working`                                           | the recipient was mid-turn when the pointer was submitted, so later activity belongs to earlier work                                                                           |
+| `recipient_blocked`                                                   | the recipient was blocked; a blocked native UI is never answered                                                                                                               |
+| `recipient_state_unknown`                                             | the recipient reported a state this observation cannot start from                                                                                                              |
+| `recipient_not_ready`                                                 | the pane was launching or not interactive-ready when a read reported it                                                                                                        |
+| `signals_unavailable`                                                 | the transport reported no terminal identity or state counter                                                                                                                   |
+| `evidence_incomplete`                                                 | a sample lacked the counters needed to place a change after the submission                                                                                                     |
+| `terminal_changed`                                                    | the terminal identity changed, so the program was restarted                                                                                                                    |
+| `target_missing`, `target_identity_changed`, `target_session_changed` | the probed recipient is no longer the bound name/pane/harness/cwd/session                                                                                                      |
+| `probe_failed`                                                        | a probe failed; receipt stays unproven                                                                                                                                         |
+| `window_expired`                                                      | the budget was spent before a sample could be classified                                                                                                                       |
+| `recipient_state_changed`                                             | the state moved, but not into a working turn                                                                                                                                   |
+| `unattributed_activity`                                               | a counter moved without an observed turn; a redraw is not proof of anything                                                                                                    |
+
+`notify --json` returns the observation for the attempt it just recorded, and
+`message read` returns it inside `notifications/<message-id>.json`:
+
+```json
+{
+  "schema": "pappra/collab-delivery-observation/1",
+  "receipt": "unknown",
+  "reason": "no_turn_activity_observed",
+  "source": "herdr-agent-state",
+  "started_at": "2026-11-12T08:00:00.000Z",
+  "ended_at": "2026-11-12T08:00:02.000Z",
+  "window_ms": 2000,
+  "samples": 3,
+  "before": {
+    "observed_at": "2026-11-12T08:00:00.000Z",
+    "agent_status": "idle",
+    "terminal_id": "terminal-7",
+    "state_change_seq": 12,
+    "completion_seq": 9,
+    "revision": 40,
+    "interactive_ready": true,
+    "launch_pending": false
+  },
+  "after": {
+    "observed_at": "2026-11-12T08:00:02.000Z",
+    "agent_status": "idle",
+    "terminal_id": "terminal-7",
+    "state_change_seq": 12,
+    "completion_seq": 9,
+    "revision": 40,
+    "interactive_ready": true,
+    "launch_pending": false
+  },
+  "detail": "No working turn was observed in 3 sample(s) on the unchanged terminal. A pointer that never started a turn and a pointer still sitting unsubmitted in the input look identical here, so this is not non-receipt."
+}
+```
+
+The observation is additive and it can never damage the delivery evidence:
+
+- the status and its attempt are written first, exactly as before, and stay
+  durable on their own;
+- the observation is a second guarded write that can only add evidence, never
+  change a status;
+- the candidate record is validated against `pappra/collab-delivery/1` **before**
+  the atomic publish, so a candidate no reader could parse never replaces a valid
+  record;
+- an untrusted free-text `detail` is composed first and then bounded once, and is
+  marked when shortened (`…[truncated]`, deliberately without a count so no
+  arithmetic can push the field over its limit). An over-long transport error and
+  an over-run window are kept together in that one field: the recording window is
+  capped at the schema bound, the true elapsed time and the cap are both stated,
+  and the finished observation still validates. Identity and state values are
+  never shortened: a trimmed terminal id or status would be a different value
+  that merely looks valid, so an observation whose state is out of schema is
+  **rejected** instead;
+- when the observation is rejected or its write fails, the already-recorded
+  status and attempts remain readable, the result reports
+  `observation: null` with an explicit "not recorded" reason, and a later
+  `notify`/`notify --retry` still reports the recorded outcome rather than a
+  broken record.
+
+It never affects `--retry`: an observed `no_turn_activity_observed` is evidence
+for an operator decision, not an automatic resend authorization. An attempt
+recorded before this observation existed carries no `observation` field; that
+reads as unobserved — never as `unknown`, and never as a value Pappra writes back
+into an old file.
+
+`message read` summarises the **most recent** delivery attempt: its status, and
+either that attempt's observation or `receipt: unobserved for the most recent
+attempt (<status>)`. A missing observation is never filled in from an earlier
+attempt — an old record, a notification sent without `--observe`, and a retry
+that was refused all read as unobserved for the attempt they describe. Earlier
+attempts keep their own observations in the record and in the `delivery` object
+of the same command's JSON result, which returns every attempt; `message list`
+stays bounded and does not read observations back.
 
 ## Native capability evidence
 
@@ -388,7 +557,11 @@ claim transaction; a plan does not reserve that authority:
 {
   "schema": "pappra/collaboration-resource-request/1",
   "action": "claim",
-  "holder": { "agent_id": "worker", "session_id": "session-1", "harness": "pi" },
+  "holder": {
+    "agent_id": "worker",
+    "session_id": "session-1",
+    "harness": "pi"
+  },
   "subtask_id": "implementation",
   "attempt": 1,
   "resources": [{ "kind": "path", "path": "/abs/target" }],

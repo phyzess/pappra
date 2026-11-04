@@ -79,6 +79,7 @@ export function parseOptions(args: readonly string[]) {
       'message-id': { type: 'string' },
       binding: { type: 'string' },
       retry: { type: 'boolean' },
+      observe: { type: 'boolean' },
       'caller-pane': { type: 'string' },
       assignment: { type: 'string' },
       'max-age-minutes': { type: 'string' },

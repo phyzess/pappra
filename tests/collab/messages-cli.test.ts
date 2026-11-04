@@ -7,6 +7,15 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { buildMessage } from '../../src/collab/envelope.js';
 import { initTask } from '../../src/collab/store.js';
+import {
+  readDeliveryRecord,
+  sendMessageFromFile,
+} from '../../src/app/collab-messages.js';
+import {
+  notifyRegisteredMessage,
+  type HerdrAgentObservation,
+  type HerdrTransport,
+} from '../../src/app/collab-notify.js';
 import { cleanup, makeTempDir } from '../workspace/fixtures.js';
 
 const ROOT = realpathSync(
@@ -349,6 +358,53 @@ test('installed CLI persists, reads, lists and reports truthful notification sta
     assert.equal(invalidCallerValue.ok, false);
     assert.equal(invalidCallerValue.code, 'caller_pane_invalid');
 
+    const listWithObserve = run(
+      [
+        'collab',
+        'message',
+        'list',
+        '--task-root',
+        taskRoot,
+        '--observe',
+        '--json',
+      ],
+      root,
+    );
+    assert.equal(listWithObserve.status, 2);
+    const listObserveValue = JSON.parse(listWithObserve.stdout) as {
+      ok: boolean;
+      code: string;
+    };
+    assert.equal(listObserveValue.ok, false);
+    assert.equal(listObserveValue.code, 'invalid_arguments');
+
+    const notifyWithObserve = run(
+      [
+        'collab',
+        'message',
+        'notify',
+        '--task-root',
+        taskRoot,
+        '--message-id',
+        'msg-cli-1',
+        '--binding',
+        binding,
+        '--apply',
+        '--observe',
+        '--json',
+      ],
+      root,
+      envWithoutHerdr(),
+    );
+    // Routing accepts the flag; the outcome is still the transport's refusal.
+    assert.equal(notifyWithObserve.status, 1, notifyWithObserve.stderr);
+    const observedValue = JSON.parse(notifyWithObserve.stdout) as {
+      status: string;
+      observation: unknown;
+    };
+    assert.equal(observedValue.status, 'herdr_unavailable');
+    assert.equal(observedValue.observation, null);
+
     const sendWithCallerPane = run(
       [
         'collab',
@@ -376,6 +432,409 @@ test('installed CLI persists, reads, lists and reports truthful notification sta
     const explicitHelp = run(['collab', 'message', '--help'], root);
     assert.equal(explicitHelp.status, 0, explicitHelp.stderr);
     assert.match(explicitHelp.stdout, /--caller-pane <id>/);
+    assert.match(explicitHelp.stdout, /--observe/);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('message read reports a saved observation, and an unobserved record as unobserved', () => {
+  const root = realpathSync(makeTempDir('c0-message-cli-receipt'));
+  try {
+    const domain = join(root, 'domain');
+    mkdirSync(domain, { recursive: true });
+    const taskRoot = join(domain, 'tasks', 'receipt-task');
+    initTask(taskRoot, {
+      taskId: 'receipt-task',
+      domainRoot: domain,
+      coordinator: {
+        agent_id: 'coordinator',
+        session_id: 'coordinator-session',
+        harness: 'codex',
+        owner_epoch: 1,
+        since: '2026-10-21T09:00:00+08:00',
+      },
+      clock,
+    });
+    const at = new Date(clock).toISOString();
+    const record = (messageId: string, observation: unknown) => ({
+      schema: 'pappra/collab-delivery/1',
+      message_id: messageId,
+      message_path: join(taskRoot, 'messages', `${messageId}.json`),
+      message_digest: `sha256:${'0'.repeat(64)}`,
+      task_id: 'receipt-task',
+      task_root: taskRoot,
+      recipient: { agent_id: 'worker', harness: 'pi' },
+      target: {
+        herdr_agent: 'pappra-implement',
+        pane_id: 'w3:p3',
+        native_session: 'unknown',
+      },
+      status: 'submitted',
+      attempts: [
+        {
+          at,
+          status: 'submitted',
+          detail: null,
+          reservation_id: `reservation-${messageId}`,
+          ...(observation === null ? {} : { observation }),
+        },
+      ],
+      created_at: at,
+      updated_at: at,
+    });
+    const messages = join(taskRoot, 'messages');
+    const notifications = join(taskRoot, 'notifications');
+    mkdirSync(messages, { recursive: true });
+    mkdirSync(notifications, { recursive: true });
+    for (const messageId of ['msg-receipt-observed', 'msg-receipt-old']) {
+      writeFileSync(
+        join(messages, `${messageId}.json`),
+        `${JSON.stringify(
+          buildMessage(
+            {
+              type: 'STATUS_QUERY',
+              message_id: messageId,
+              task_id: 'receipt-task',
+              from: {
+                agent_id: 'coordinator',
+                session_id: 'coordinator-session',
+                harness: 'codex',
+              },
+              to: {
+                agent_id: 'worker',
+                session_id: 'worker-session',
+                harness: 'pi',
+              },
+            },
+            { clock },
+          ),
+          null,
+          2,
+        )}\n`,
+      );
+    }
+    writeFileSync(
+      join(notifications, 'msg-receipt-observed.json'),
+      `${JSON.stringify(
+        record('msg-receipt-observed', {
+          schema: 'pappra/collab-delivery-observation/1',
+          receipt: 'unknown',
+          reason: 'no_turn_activity_observed',
+          source: 'herdr-agent-state',
+          started_at: at,
+          ended_at: at,
+          window_ms: 2_000,
+          samples: 3,
+          before: {
+            observed_at: at,
+            agent_status: 'idle',
+            terminal_id: 'terminal-1',
+            state_change_seq: 5,
+            completion_seq: 4,
+            revision: 10,
+            interactive_ready: null,
+            launch_pending: null,
+          },
+          after: {
+            observed_at: at,
+            agent_status: 'idle',
+            terminal_id: 'terminal-1',
+            state_change_seq: 5,
+            completion_seq: 4,
+            revision: 10,
+            interactive_ready: null,
+            launch_pending: null,
+          },
+          detail: 'No working turn was observed.',
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(
+      join(notifications, 'msg-receipt-old.json'),
+      `${JSON.stringify(record('msg-receipt-old', null), null, 2)}\n`,
+    );
+
+    const observed = run(
+      [
+        'collab',
+        'message',
+        'read',
+        '--task-root',
+        taskRoot,
+        '--message-id',
+        'msg-receipt-observed',
+      ],
+      root,
+    );
+    assert.equal(observed.status, 0, observed.stderr);
+    assert.match(
+      observed.stdout,
+      /receipt: unknown \(no_turn_activity_observed\), 3 sample\(s\) over 2000 ms; most recent attempt submitted/,
+    );
+
+    const old = run(
+      [
+        'collab',
+        'message',
+        'read',
+        '--task-root',
+        taskRoot,
+        '--message-id',
+        'msg-receipt-old',
+      ],
+      root,
+    );
+    assert.equal(old.status, 0, old.stderr);
+    // An old record has no observation: it is unobserved, not an unknown receipt.
+    assert.match(old.stdout, /receipt: unobserved/);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('message read summarises the most recent attempt and JSON keeps earlier evidence', async () => {
+  const root = realpathSync(makeTempDir('c0-message-cli-recent'));
+  try {
+    const domain = join(root, 'domain');
+    mkdirSync(domain, { recursive: true });
+    const taskRoot = join(domain, 'tasks', 'recent-task');
+    const coordinator = {
+      agent_id: 'coordinator',
+      session_id: 'coordinator-session',
+      harness: 'codex',
+      owner_epoch: 1,
+      since: '2026-10-21T09:00:00+08:00',
+    };
+    initTask(taskRoot, {
+      taskId: 'recent-task',
+      domainRoot: domain,
+      coordinator,
+      clock,
+    });
+    const envelopeFile = join(root, 'recent-envelope.json');
+    writeFileSync(
+      envelopeFile,
+      `${JSON.stringify(
+        buildMessage(
+          {
+            type: 'STATUS_QUERY',
+            message_id: 'msg-recent-1',
+            task_id: 'recent-task',
+            from: {
+              agent_id: 'coordinator',
+              session_id: 'coordinator-session',
+              harness: 'codex',
+            },
+            to: {
+              agent_id: 'worker',
+              session_id: 'worker-session',
+              harness: 'pi',
+            },
+          },
+          { clock },
+        ),
+        null,
+        2,
+      )}\n`,
+    );
+    const sent = await sendMessageFromFile(taskRoot, envelopeFile, {
+      apply: true,
+      clock,
+    });
+    assert.equal(sent.ok, true);
+    const binding = join(root, 'recent-binding.json');
+    writeFileSync(
+      binding,
+      `${JSON.stringify(
+        {
+          schema: 'pappra/collab-binding/1',
+          task_id: 'recent-task',
+          task_root: taskRoot,
+          channel: 'herdr',
+          participants: [
+            {
+              agent_id: 'coordinator',
+              harness: 'codex',
+              cwd: taskRoot,
+              herdr_agent: 'pappra-coordinator',
+              pane_id: 'w3:p1',
+              native_session_id: 'coordinator-session',
+            },
+            {
+              agent_id: 'worker',
+              harness: 'pi',
+              cwd: taskRoot,
+              herdr_agent: 'pappra-implement',
+              pane_id: 'w3:p3',
+              native_session_id: 'worker-session',
+            },
+          ],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const recipient = (
+      overrides: Partial<HerdrAgentObservation> = {},
+    ): HerdrAgentObservation => ({
+      name: 'pappra-implement',
+      harness: 'pi',
+      paneId: 'w3:p3',
+      cwd: taskRoot,
+      sessionValue: 'worker-session',
+      sessionKind: 'id',
+      status: 'idle',
+      focused: false,
+      terminalId: 'terminal-1',
+      stateChangeSeq: 5,
+      completionSeq: 4,
+      revision: 10,
+      interactiveReady: null,
+      launchPending: null,
+      ...overrides,
+    });
+    let prompts = 0;
+    const transport: HerdrTransport = {
+      id: 'cli-recent-herdr',
+      async verifyCaller() {
+        return {
+          ok: true,
+          caller: {
+            paneId: 'w3:p1',
+            workspaceId: 'w3',
+            tabId: 'w3:t1',
+            harness: 'codex',
+            cwd: taskRoot,
+            sessionKind: 'id',
+            sessionValue: 'coordinator-session',
+            source: 'current',
+          },
+        };
+      },
+      async list() {
+        return {
+          ok: true,
+          agents: [
+            {
+              name: 'pappra-coordinator',
+              harness: 'codex',
+              paneId: 'w3:p1',
+              cwd: taskRoot,
+              sessionValue: null,
+              sessionKind: null,
+              status: 'idle',
+              focused: false,
+            },
+            recipient(),
+          ],
+        };
+      },
+      async prompt() {
+        prompts += 1;
+        return prompts === 1
+          ? { status: 'submitted', detail: null }
+          : { status: 'refused', detail: 'Herdr refused', effect: 'none' };
+      },
+    };
+
+    let observationNow = clock;
+    const first = await notifyRegisteredMessage({
+      taskRoot,
+      messageId: 'msg-recent-1',
+      bindingFile: binding,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+      observation: {
+        maxSamples: 3,
+        intervalMs: 1_000,
+        windowMs: 3_000,
+        probeTimeoutMs: 1_500,
+        now: () => observationNow,
+        sleep: async (milliseconds: number) => {
+          observationNow += milliseconds;
+        },
+      },
+    });
+    assert.equal(first.ok, true);
+    if (!first.ok) return;
+    assert.equal(first.value.observation?.reason, 'no_turn_activity_observed');
+
+    // A retry that the transport refuses. Observation is not requested here, so
+    // the most recent attempt carries no evidence of its own.
+    const second = await notifyRegisteredMessage({
+      taskRoot,
+      messageId: 'msg-recent-1',
+      bindingFile: binding,
+      apply: true,
+      retry: true,
+      transport,
+      clock,
+    });
+    assert.equal(second.ok, true);
+    if (!second.ok) return;
+    assert.equal(second.value.status, 'refused');
+    assert.equal(second.value.observation, null);
+    assert.equal(second.value.attempts, 2);
+
+    const delivery = readDeliveryRecord(taskRoot, 'msg-recent-1');
+    assert.equal(delivery?.attempts.length, 2);
+    assert.equal(delivery?.attempts[0]?.observation?.receipt, 'unknown');
+    assert.equal(delivery?.attempts[1]?.observation, undefined);
+
+    // The human summary describes the most recent attempt, and says the
+    // observation is missing rather than borrowing the earlier one.
+    const human = run(
+      [
+        'collab',
+        'message',
+        'read',
+        '--task-root',
+        taskRoot,
+        '--message-id',
+        'msg-recent-1',
+      ],
+      root,
+    );
+    assert.equal(human.status, 0, human.stderr);
+    assert.match(
+      human.stdout,
+      /receipt: unobserved for the most recent attempt \(refused\)/,
+    );
+    assert.doesNotMatch(human.stdout, /no_turn_activity_observed/);
+
+    // JSON keeps every attempt, so the first observation is still readable.
+    const json = run(
+      [
+        'collab',
+        'message',
+        'read',
+        '--task-root',
+        taskRoot,
+        '--message-id',
+        'msg-recent-1',
+        '--json',
+      ],
+      root,
+    );
+    assert.equal(json.status, 0, json.stderr);
+    const value = JSON.parse(json.stdout) as {
+      delivery: {
+        status: string;
+        attempts: { status: string; observation?: { receipt: string } }[];
+      };
+    };
+    assert.equal(value.delivery.status, 'refused');
+    assert.equal(value.delivery.attempts.length, 2);
+    assert.equal(value.delivery.attempts[0]?.status, 'submitted');
+    assert.equal(value.delivery.attempts[0]?.observation?.receipt, 'unknown');
+    assert.equal(value.delivery.attempts[1]?.status, 'refused');
+    assert.equal(value.delivery.attempts[1]?.observation, undefined);
   } finally {
     cleanup(root);
   }
