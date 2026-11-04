@@ -46,7 +46,7 @@ import {
 import { getPackageInfo, getPackageRoot } from '../package-info.js';
 import { spawnSync } from 'node:child_process';
 import { executableOnPath } from '../hosts/detect.js';
-import { HOST_SUPPORT } from '../hosts/integration/support.js';
+import { isSupportedVersion } from '../hosts/integration/support.js';
 import { observePath, resolveRealpath, sha256Digest } from '../infra/fs.js';
 import {
   inspectGitRepository,
@@ -1245,15 +1245,32 @@ export async function deriveInitChoices(
   const hosts: InitChoices['hosts'] = [];
   for (const host of ['claude', 'codex', 'pi'] as const) {
     const command = host;
-    const version = detectedHostVersion(command, pathEnv);
-    if (version === null || version !== HOST_SUPPORT[host].version) {
+    // Admission uses the observed event-contract version set, the same contract
+    // `pappra host probe` and onboard use. `HOST_SUPPORT[host].version` stays the
+    // reference default for templates and installation and is deliberately not a
+    // membership test here.
+    if (executableOnPath(command, pathEnv) === null) {
       rules.push({
         field: 'hosts',
         value: host,
-        reason:
-          version === null
-            ? 'host executable was not observed on PATH'
-            : `observed version ${version} is outside the pinned support matrix`,
+        reason: 'host executable was not observed on PATH',
+      });
+      continue;
+    }
+    const version = detectedHostVersion(command, pathEnv);
+    if (version === null) {
+      rules.push({
+        field: 'hosts',
+        value: host,
+        reason: 'host executable was observed but reported no readable version',
+      });
+      continue;
+    }
+    if (!isSupportedVersion(host, version)) {
+      rules.push({
+        field: 'hosts',
+        value: host,
+        reason: `observed version ${version} is outside the admitted event-contract versions`,
       });
       continue;
     }
@@ -1261,7 +1278,7 @@ export async function deriveInitChoices(
     rules.push({
       field: 'hosts',
       value: host,
-      reason: `host executable reports the pinned version ${version}`,
+      reason: `observed version ${version} is admitted for lifecycle events; loading, trust and callability still need an explicit native check`,
     });
   }
 
