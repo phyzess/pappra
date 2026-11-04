@@ -25,10 +25,11 @@ import { cleanup, makeTempDir } from '../workspace/fixtures.js';
  * behaviour that exists today so a later extraction cannot change it silently.
  *
  * Two boundaries are pinned here because no existing test pinned them: a
- * registered message whose id does not match its registration, and what notify
- * actually does when the message file is valid but the task record has not
- * accepted it (#17 characterizes it without deciding it). Every other required
- * case is covered elsewhere and is listed with its file and test name in
+ * registered message whose id does not match its registration, and a message
+ * file that is valid while the task record has not accepted it. #17 decided the
+ * second one: notification requires a matching accepted `record.messages` entry,
+ * so that case is refused rather than delivered. Every other required case is
+ * covered elsewhere and is listed with its file and test name in
  * `docs/transport-runtime-boundaries.md` §6. Nothing here starts a session or
  * calls a real host.
  */
@@ -177,7 +178,7 @@ class FakeTransport implements HerdrTransport {
   }
 }
 
-test('notify attempts delivery when the file is valid but the record has not accepted the message', async () => {
+test('notify refuses delivery when the file is valid but the record has not accepted the message', async () => {
   const root = makeTempDir('transport-runtime-unaccepted');
   try {
     const taskRoot = join(root, 'domain', 'tasks', 'sample');
@@ -259,18 +260,14 @@ test('notify attempts delivery when the file is valid but the record has not acc
       clock,
     });
 
-    // Today's behaviour: notify validates the file and never consults the record,
-    // so it still attempts the delivery. Whether it must refuse is #17's decision.
-    assert.equal(notified.ok, true);
-    if (!notified.ok) return;
-    assert.equal(notified.value.status, 'submitted');
-    assert.equal(notified.value.consumed, false);
-    assert.equal(notified.value.taskAccepted, false);
-    assert.equal(transport.prompts.length, 1);
-    assert.equal(
-      readDeliveryRecord(taskRoot, 'msg-unaccepted-1')?.status,
-      'submitted',
-    );
+    // Decided behaviour (#17): file validation is not record acceptance, so the
+    // pointer is refused before any transport call and no delivery is recorded.
+    assert.equal(notified.ok, false);
+    if (notified.ok) return;
+    assert.equal(notified.code, 'message_not_recorded');
+    assert.equal(notified.effect, 'none');
+    assert.equal(transport.prompts.length, 0);
+    assert.equal(readDeliveryRecord(taskRoot, 'msg-unaccepted-1'), null);
   } finally {
     cleanup(root);
   }

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { isSafeMessageId } from '../collab/envelope.js';
+import { contentDigest, isSafeMessageId } from '../collab/envelope.js';
 import { notificationsDir } from '../collab/store.js';
 import type { Message, TaskRecord } from '../collab/types.js';
 import {
@@ -817,6 +817,54 @@ function noEffect(
   return { ...failure, effect: 'none' };
 }
 
+/**
+ * The only states `applyMessage` writes into `record.messages`. The allow-list is
+ * closed on purpose: an unrecognized state is refused, never forwarded.
+ */
+const NOTIFIABLE_RECORD_STATES: readonly string[] = ['applied', 'recorded'];
+
+/**
+ * Registration is a file fact; acceptance is the record's. A pointer is only
+ * forwarded for a message the protocol itself wrote into `record.messages` with
+ * the same content digest, so a protocol-refused, hand-placed or content-swapped
+ * envelope is never notified. The owned-Pi sibling delivery path
+ * (`deliverManagedPiMessage`) requires the same record acceptance, with one
+ * difference: it compares the envelope's stored `content_digest` field, while
+ * this path recomputes the digest with `contentDigest`, so a file whose stored
+ * digest was forged to match the record entry is still refused here. The file
+ * digest keeps its separate role: it proves the bytes, not the decision.
+ */
+function recordAcceptanceFailure(
+  record: TaskRecord,
+  message: Message,
+): (MessageServiceFailure & { readonly effect: 'none' }) | null {
+  const entry = record.messages.find(
+    (row) => row.message_id === message.message_id,
+  );
+  if (entry === undefined) {
+    return noEffectFailure(
+      'message_not_recorded',
+      `Task record has no entry for message ${message.message_id}`,
+      'The task record did not accept this message; a registered file is not an accepted message. Inspect collab message read; nothing was notified.',
+    );
+  }
+  if (entry.content_digest !== contentDigest(message)) {
+    return noEffectFailure(
+      'message_content_not_recorded',
+      `Registered message ${message.message_id} is not the content the task record accepted`,
+      'The task record accepted different content under this id; send the intended content as a new message. Nothing was notified.',
+    );
+  }
+  if (!NOTIFIABLE_RECORD_STATES.includes(entry.state)) {
+    return noEffectFailure(
+      'message_record_state_not_notifiable',
+      `Task record entry for ${message.message_id} is ${entry.state}, not applied or recorded`,
+      'The task record did not accept this message in a notifiable state; inspect the task record. Nothing was notified.',
+    );
+  }
+  return null;
+}
+
 function notificationRouteFailure(
   record: TaskRecord,
   message: Message,
@@ -1395,6 +1443,11 @@ export async function notifyRegisteredMessage(
   const initialRouteFailure = notificationRouteFailure(record, message);
   if (initialRouteFailure !== null) return noEffect(initialRouteFailure);
 
+  // A registered file is not an accepted message. The record decides, and it is
+  // consulted before any plan is reported and before any delivery reservation.
+  const initialAcceptanceFailure = recordAcceptanceFailure(record, message);
+  if (initialAcceptanceFailure !== null) return initialAcceptanceFailure;
+
   // Record files legitimately change inode on any atomic task commit. Recheck
   // the selected message and participants, then evaluate routes from a fresh
   // record, rather than treating an unrelated commit as namespace replacement.
@@ -1434,6 +1487,8 @@ export async function notifyRegisteredMessage(
       }
       const current = await openMessageTask(taskRoot);
       if (!current.ok) return current;
+      const acceptance = recordAcceptanceFailure(current.value.record, message);
+      if (acceptance !== null) return acceptance;
       return notificationRouteFailure(current.value.record, message);
     };
 

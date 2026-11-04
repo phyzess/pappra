@@ -43,15 +43,22 @@ pappra collab message notify --task-root <abs> --message-id <id> \
 - `send` validates one envelope file and, with `--apply`, registers and applies it
   through the existing protocol. It reports `planned`, `accepted`, `duplicate`
   (same id and content, no second side effect), `conflict` (same id, different
-  content), or `rejected` with the protocol reason, and returns the registered
-  message path and the SHA-256 of the file. It never notifies anyone and never
-  claims native delivery or task acceptance.
+  content), or `rejected` with the protocol reason. For `accepted` and
+  `duplicate` it returns the registered message path and the SHA-256 of that
+  file. For a `rejected` message whose file did not exist before the send it
+  returns `messagePath: null` and `digest: null` even though
+  `messages/<id>.json` was written, because the protocol did not accept the
+  message; re-sending an already persisted rejected envelope reports that
+  existing file's path and digest instead. Neither value implies acceptance. It
+  never notifies anyone and never claims native delivery or task acceptance.
 - `list` reports the most recent registered messages from the authoritative
   record, including both `applied` and `recorded` entries, with their delivery
-  status when notification was attempted. The default limit is 20; the maximum
-  is 100.
+  status when notification was attempted. It is record-based, so a refused
+  registration whose file exists is absent from it. The default limit is 20; the
+  maximum is 100.
 - `read` returns one registered message, its record entry and its delivery
-  record. Both read commands are read-only.
+  record; a registered file the record never accepted reports `entry: null`.
+  Both read commands are read-only.
 
 Five facts stay distinct and are never collapsed:
 
@@ -141,13 +148,44 @@ guarantees of this CLI.
 
 ## Notify
 
-`notify` only forwards an **already registered** message pointer:
+`notify` only forwards a pointer to a message the task record accepted:
 
 ```text
 COLLAB_MESSAGE task=<id> type=<type> message=<abs path> digest=sha256:<file digest>
 ```
 
-No body, transcript, prompt or report text is included. It requires a task-local
+No body, transcript, prompt or report text is included.
+
+**Registered is not accepted.** A message is *registered* when
+`messages/<message-id>.json` exists as a regular, unredirected, bounded,
+schema-valid envelope whose `message_id` and `task_id` match the request and
+whose bytes hash to the file digest in the pointer. That is a fact about bytes,
+not a protocol decision. Acceptance is the task record's: `submitMessage` writes
+an entry into `record.messages` with the message's `content_digest` and a state
+of `applied` or `recorded`.
+
+Before anything is planned or forwarded, `notify` requires a `record.messages`
+entry for this `message_id` whose `content_digest` equals the content digest of
+the envelope being forwarded and whose state is `applied` or `recorded`. The
+state allow-list is closed: any other state is refused rather than admitted by
+default. The gate is evaluated against the freshly read record both before any
+delivery reservation and in the last revalidation before submission, so plan and
+apply agree and no record change slips in behind the check. The refusals are
+ordinary service failures, never authority claims:
+
+| Code | Meaning |
+| --- | --- |
+| `message_not_recorded` | the record holds no entry for this message id |
+| `message_content_not_recorded` | an entry exists for the id, but it accepted different content |
+| `message_record_state_not_notifiable` | the entry's state is neither `applied` nor `recorded` |
+
+A protocol-refused `send --apply` (for example `stale_epoch`) keeps its
+`messages/<id>.json` file and stays readable, but it is not notifiable: `list`
+does not show it, `read` reports `entry: null`, and `notify` refuses it in both
+plan and apply mode without contacting a transport. `message_registration_invalid`
+and `message_not_registered` keep their file-level meaning and are unchanged.
+
+Notification also requires a task-local
 binding (`pappra/collab-binding/1`, `channel: "herdr"`, at most 16 participants)
 whose `task_id` and `task_root` match the record and which contains both the
 message sender and recipient, with one participant per agent id and per Herdr

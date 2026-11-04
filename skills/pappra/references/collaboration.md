@@ -102,11 +102,11 @@ pappra collab message read --task-root <abs-task-root> \
 # List the most recent registered messages, including both `applied` and `recorded` entries (read-only, bounded by --limit 1-100).
 pappra collab message list --task-root <abs-task-root> --limit 20 --json
 
-# Validate task, message, binding and recipient without querying Herdr.
+# Validate task, record acceptance, message, binding and recipient without querying Herdr.
 pappra collab message notify --task-root <abs-task-root> \
   --message-id <id> --binding <abs-binding.json> --json
 
-# Send exactly one pointer-only Herdr prompt for the registered message.
+# Send exactly one pointer-only Herdr prompt for a message the record accepted.
 pappra collab message notify --task-root <abs-task-root> \
   --message-id <id> --binding <abs-binding.json> --apply --json
 ```
@@ -119,7 +119,12 @@ pappra collab rollover plan --task-root <abs-task-root> \
   --request <abs-rollover-request.json> --json
 ```
 
-`send` never notifies and `notify` never changes the task record. A successful
+`send` never notifies and `notify` never changes the task record. A registered
+file is not an accepted message: `notify` forwards or plans a pointer only when
+`record.messages` holds an entry for that id with the same content digest and
+state `applied` or `recorded`, so a protocol-refused or hand-placed envelope is
+refused (`message_not_recorded`, `message_content_not_recorded`,
+`message_record_state_not_notifiable`) before any transport call. A successful
 `notify` means one prompt was submitted to a named Herdr agent; it does not mean
 the recipient read it, consumed it, or accepted the work.
 
@@ -632,6 +637,10 @@ A validated succession also excludes its archived old native identity from
 `sender_route_excluded`/`recipient_route_excluded` before any caller or live Herdr
 query and before any send, while stored messages, deliveries and bindings keep their
 history unchanged. The current successor identity stays an active route.
+
+Route exclusion is one of several current-record gates: record acceptance is
+checked the same way, from the freshly read record, before a pointer is planned
+or forwarded.
 
 A completed handoff alone is not proof. Exclusion requires the matching intent (task,
 handoff, generation, source and successor identities), a recorded transfer boundary,
