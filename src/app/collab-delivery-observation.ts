@@ -2,29 +2,42 @@ import type {
   CollabDeliveryAgentState,
   CollabDeliveryObservation,
   CollabDeliveryObservationReason,
-  CollabDeliveryReceipt,
 } from '../schemas/collaboration.js';
 
 /**
- * Bounded receipt observation for one submitted collaboration prompt.
+ * Bounded observation of what the recipient's transport did around one
+ * submitted pointer.
  *
- * A `submitted` delivery only says the transport accepted the pointer. Whether
- * the recipient's agent started a turn is a separate, observable fact, and this
- * module states it as narrowly as the evidence allows: `taken` when the
- * recipient left its rest state for a working turn on the same terminal,
- * `not_taken` when a complete window of resting, unchanged samples shows no turn
- * start, and `unknown` for everything the signals cannot attribute.
+ * Herdr reports agent-level state — a status, counters, a terminal identity —
+ * and nothing in that read is correlated with a specific prompt. A turn that
+ * starts after a pointer is submitted may have been started by that pointer, by
+ * another message, or by a human at the keyboard, and a pointer that has been
+ * typed into the input without a started turn looks exactly like one that was
+ * never typed at all. This module therefore never derives a message-level
+ * receipt from those signals:
+ *
+ * - `receipt` is always `unknown`. The raw reading, the sample count, the
+ *   window and a closed `reason` still record **what was observed** — a turn
+ *   started on this terminal (`turn_activity_observed`) or no turn started in
+ *   the window (`no_turn_activity_observed`) — but neither value claims that
+ *   this pointer was or was not received.
+ * - `taken` / `not_taken` stay defined in the schema for a transport that can
+ *   correlate a state change with one message. No supported transport provides
+ *   that evidence today, so no code path here emits either value.
  *
  * Three limits are structural, not incidental:
  *
  * - Nothing here sends, retypes or presses a key, and nothing waits for a state
- *   it hopes to see: the loop is bounded by a sample budget and a wall-clock
- *   window before it starts.
+ *   it hopes to see. The loop starts only while budget remains, hands the
+ *   transport a timeout that never exceeds that budget, and refuses to classify
+ *   a reading that arrives after the budget is spent.
  * - Activity on its own proves nothing. A moved counter, a redraw, an already
  *   working recipient, a changed terminal or a missing signal stay `unknown`
- *   instead of being folded into a success or a failure branch.
- * - `taken` and `not_taken` describe observed transport state, never
- *   consumption, acknowledgement or task acceptance.
+ *   instead of being folded into a receipt branch.
+ * - `window_ms` is what actually elapsed. A transport that ignores the
+ *   requested timeout can overrun the budget; there is no cancellation path
+ *   from here into the transport, so the record states the overrun instead of
+ *   claiming a hard wall-clock limit.
  */
 
 /** Structural problems a probe can detect before any state comparison. */
@@ -49,24 +62,39 @@ export interface DeliveryObservationPolicy {
   readonly intervalMs: number;
   /** Wall-clock budget measured from the start of the observation. */
   readonly windowMs: number;
+  /**
+   * Upper bound for one probe. It is further clamped to the remaining budget, so
+   * a probe is never asked to wait for longer than the window has left.
+   */
+  readonly probeTimeoutMs: number;
 }
 
 /**
- * Default bound: three probes over about two seconds. Long enough to see a
- * provider's turn start, short enough that a notification stays interactive.
+ * Default bound: three probes over about two seconds, each probe capped at four
+ * seconds. Long enough to see a provider's turn start, short enough that a
+ * notification stays interactive.
  */
 export const DEFAULT_DELIVERY_OBSERVATION_POLICY: DeliveryObservationPolicy = {
   maxSamples: 3,
   intervalMs: 1_000,
   windowMs: 3_000,
+  probeTimeoutMs: 4_000,
 };
 
 export const MAX_DELIVERY_OBSERVATION_SAMPLES = 8;
 export const MAX_DELIVERY_OBSERVATION_INTERVAL_MS = 30_000;
 export const MAX_DELIVERY_OBSERVATION_WINDOW_MS = 60_000;
+export const MAX_DELIVERY_OBSERVATION_PROBE_TIMEOUT_MS = 30_000;
 
 /** A negative needs at least two independent samples to be a window. */
 export const MIN_DELIVERY_OBSERVATION_SAMPLES = 2;
+
+/**
+ * The persisted schema bounds `window_ms` at 600 000. A transport that hangs
+ * for longer is recorded at the bound with the real elapsed time in `detail`,
+ * so an overrun cannot make the delivery record unreadable.
+ */
+const MAX_RECORDED_WINDOW_MS = 600_000;
 
 function boundedInteger(
   value: unknown,
@@ -100,6 +128,12 @@ export function normalizeDeliveryObservationPolicy(
       MAX_DELIVERY_OBSERVATION_WINDOW_MS,
       DEFAULT_DELIVERY_OBSERVATION_POLICY.windowMs,
     ),
+    probeTimeoutMs: boundedInteger(
+      input.probeTimeoutMs,
+      1,
+      MAX_DELIVERY_OBSERVATION_PROBE_TIMEOUT_MS,
+      DEFAULT_DELIVERY_OBSERVATION_POLICY.probeTimeoutMs,
+    ),
   };
 }
 
@@ -122,7 +156,11 @@ export interface ObserveDeliveryReceiptInput {
   readonly submitted: boolean;
   /** The recipient reading taken while the participants were verified. */
   readonly before: CollabDeliveryAgentState;
-  readonly probe: () => Promise<DeliveryObservationProbe>;
+  /**
+   * One bounded read of the recipient. `budgetMs` never exceeds the remaining
+   * observation budget; a transport that honours it cannot stretch the window.
+   */
+  readonly probe: (budgetMs: number) => Promise<DeliveryObservationProbe>;
   readonly policy: DeliveryObservationPolicy;
   readonly now: () => number;
   readonly sleep: (milliseconds: number) => Promise<void>;
@@ -147,10 +185,15 @@ export async function observeDeliveryReceipt(
   input: ObserveDeliveryReceiptInput,
 ): Promise<CollabDeliveryObservation> {
   const startedAt = input.now();
+  const deadline = startedAt + input.policy.windowMs;
   const before = input.before;
 
+  /**
+   * Every outcome goes through here, and every outcome is `unknown`: this
+   * transport cannot correlate a state change with one prompt, so no branch may
+   * claim receipt or non-receipt. `reason` carries what was actually observed.
+   */
   const finish = (
-    receipt: CollabDeliveryReceipt,
     reason: CollabDeliveryObservationReason,
     fields: {
       readonly samples?: number;
@@ -159,52 +202,57 @@ export async function observeDeliveryReceipt(
     } = {},
   ): CollabDeliveryObservation => {
     const endedAt = Math.max(startedAt, input.now());
+    const elapsed = endedAt - startedAt;
+    const recorded = Math.min(elapsed, MAX_RECORDED_WINDOW_MS);
+    const detail = fields.detail ?? null;
     return {
       schema: 'pappra/collab-delivery-observation/1',
-      receipt,
+      receipt: 'unknown',
       reason,
       source: 'herdr-agent-state',
       started_at: new Date(startedAt).toISOString(),
       ended_at: new Date(endedAt).toISOString(),
-      window_ms: endedAt - startedAt,
+      window_ms: recorded,
       samples: fields.samples ?? 0,
       before,
       after: fields.after ?? null,
-      detail: fields.detail ?? null,
+      detail:
+        recorded === elapsed
+          ? detail
+          : `${detail === null ? '' : `${detail} `}The recorded window is capped at ${String(MAX_RECORDED_WINDOW_MS)} ms; the prober ran for ${String(elapsed)} ms.`,
     };
   };
 
-  // Nothing was established as submitted, so there is no receipt question at
-  // all. This stays `unknown` rather than a negative: `not_taken` is reserved
-  // for a complete observation window after a possible submission.
+  // Nothing was established as submitted, so there is no receipt question and
+  // no observation is attempted.
   if (!input.submitted)
-    return finish('unknown', 'submission_not_established', {
+    return finish('submission_not_established', {
       detail:
-        'The transport outcome does not establish that a prompt was submitted, so no receipt was observed.',
+        'The transport outcome does not establish that a prompt was submitted, so nothing was observed.',
     });
 
   if (notReady(before))
-    return finish('unknown', 'recipient_not_ready', {
+    return finish('recipient_not_ready', {
       detail:
-        'The recipient was launching or not ready for input when it was verified, so a prompt could not have been taken.',
+        'The recipient was launching or not ready for input when it was verified, so no turn could be attributed to this pointer.',
     });
   if (!comparable(before))
-    return finish('unknown', 'signals_unavailable', {
+    return finish('signals_unavailable', {
       detail:
-        'The transport reported no terminal identity or state counter for the recipient, so a turn start cannot be distinguished from a redraw.',
+        'The transport reported no terminal identity or state counter for the recipient, so turn activity cannot be told apart from a redraw.',
     });
   if (before.agent_status === 'working')
-    return finish('unknown', 'recipient_already_working', {
+    return finish('recipient_already_working', {
       detail:
-        'The recipient was already mid-turn when the pointer was submitted, so a working state proves nothing about this pointer.',
+        'The recipient was already mid-turn when the pointer was submitted, so any turn activity belongs to work that started before this pointer.',
     });
   if (before.agent_status === 'blocked')
-    return finish('unknown', 'recipient_blocked', {
+    return finish('recipient_blocked', {
       detail:
         'The recipient was blocked when the pointer was submitted; a blocked native UI is never answered.',
     });
   if (!REST_STATUSES.includes(before.agent_status))
-    return finish('unknown', 'recipient_state_unknown', {
+    return finish('recipient_state_unknown', {
       detail: `The recipient reported ${before.agent_status} when it was verified, which is not a rest state this observation can start from.`,
     });
 
@@ -213,85 +261,111 @@ export async function observeDeliveryReceipt(
 
   for (let index = 0; index < input.policy.maxSamples; index += 1) {
     if (index > 0) {
-      const remaining = startedAt + input.policy.windowMs - input.now();
-      if (remaining <= 0)
-        return finish('unknown', 'window_expired', {
+      const waitBudget = deadline - input.now();
+      if (waitBudget <= 0)
+        return finish('window_expired', {
           samples,
           after: previous,
-          detail: `The observation window ended after ${samples} sample(s); the receipt stays unproven.`,
+          detail: `The ${String(input.policy.windowMs)} ms observation budget was spent before sample ${String(samples + 1)}; nothing further was read.`,
         });
-      await input.sleep(Math.min(input.policy.intervalMs, remaining));
+      await input.sleep(Math.min(input.policy.intervalMs, waitBudget));
     }
+
+    // A probe is only started while budget remains, and it is never allowed to
+    // wait longer than that remainder.
+    const probeBudget = Math.min(
+      input.policy.probeTimeoutMs,
+      deadline - input.now(),
+    );
+    if (probeBudget <= 0)
+      return finish('window_expired', {
+        samples,
+        after: previous,
+        detail: `The ${String(input.policy.windowMs)} ms observation budget was spent before sample ${String(samples + 1)}; nothing further was read.`,
+      });
 
     let probe: DeliveryObservationProbe;
     try {
-      probe = await input.probe();
+      probe = await input.probe(probeBudget);
     } catch (error) {
-      return finish('unknown', 'probe_failed', {
+      return finish('probe_failed', {
         samples,
         after: previous,
-        detail: `A transport probe failed after ${samples} sample(s): ${error instanceof Error ? error.message : String(error)}`,
+        detail: `A transport probe failed after ${String(samples)} sample(s): ${error instanceof Error ? error.message : String(error)}`,
       });
     }
     samples += 1;
+    // A probe that reports a specific problem keeps that reason: a missing
+    // target, a changed identity and a failed read are different evidence.
     if (!probe.ok)
-      return finish('unknown', probe.reason, {
+      return finish(probe.reason, {
         samples,
         after: previous,
         detail: probe.detail,
       });
 
     const state = probe.state;
-    // The terminal identity is what makes the comparison meaningful: a new
-    // terminal id means Herdr restarted the program under the same name.
+    // A reading that arrives after the budget is kept as raw evidence and never
+    // classified: the window it was supposed to cover has already ended.
+    if (input.now() > deadline)
+      return finish('window_expired', {
+        samples,
+        after: state,
+        detail: `Sample ${String(samples)} returned after the ${String(input.policy.windowMs)} ms budget; its reading is recorded but never classified.`,
+      });
+
     if (!comparable(state))
-      return finish('unknown', 'evidence_incomplete', {
+      return finish('evidence_incomplete', {
         samples,
         after: state,
         detail:
           'A transport sample carried no terminal identity or state counter, so it cannot be compared with the state before submission.',
       });
 
+    // The terminal identity is what makes the comparison meaningful: a new
+    // terminal id means Herdr restarted the program under the same name.
     if (state.terminal_id !== before.terminal_id)
-      return finish('unknown', 'terminal_changed', {
+      return finish('terminal_changed', {
         samples,
         after: state,
         detail: `The terminal identity changed from ${String(before.terminal_id)} to ${String(state.terminal_id)}; the program was restarted.`,
       });
 
     if (notReady(state))
-      return finish('unknown', 'recipient_not_ready', {
+      return finish('recipient_not_ready', {
         samples,
         after: state,
         detail:
-          'The recipient is launching or not ready for input, so no turn start can be attributed to this pointer.',
+          'The recipient is launching or not ready for input, so no turn can be attributed to this pointer.',
       });
 
     if (state.agent_status === 'working') {
       if (state.state_change_seq <= before.state_change_seq)
-        return finish('unknown', 'evidence_incomplete', {
+        return finish('evidence_incomplete', {
           samples,
           after: state,
           detail:
             'The recipient reports a working state without a moved state counter, so the transition cannot be placed after this submission.',
         });
-      return finish('taken', 'turn_observed', {
+      // Turn activity is real and worth recording, but the roster read cannot
+      // say which input started it.
+      return finish('turn_activity_observed', {
         samples,
         after: state,
         detail:
-          'The recipient left its rest state for a working turn on the same terminal after the pointer was submitted.',
+          'The recipient left its rest state for a working turn on the same terminal during the window. Herdr reports no message-level correlation, so this turn may have been started by this pointer, by another input, or by a human; it is not receipt.',
       });
     }
 
     if (state.agent_status !== before.agent_status)
-      return finish('unknown', 'recipient_state_changed', {
+      return finish('recipient_state_changed', {
         samples,
         after: state,
         detail: `The recipient moved from ${before.agent_status} to ${state.agent_status} without an observed working turn.`,
       });
 
     if (state.state_change_seq !== before.state_change_seq)
-      return finish('unknown', 'unattributed_activity', {
+      return finish('unattributed_activity', {
         samples,
         after: state,
         detail: `The state counter moved from ${String(before.state_change_seq)} to ${String(state.state_change_seq)} without an observed working turn.`,
@@ -302,7 +376,7 @@ export async function observeDeliveryReceipt(
       before.completion_seq !== null &&
       state.completion_seq !== before.completion_seq
     )
-      return finish('unknown', 'unattributed_activity', {
+      return finish('unattributed_activity', {
         samples,
         after: state,
         detail:
@@ -314,18 +388,18 @@ export async function observeDeliveryReceipt(
       before.revision !== null &&
       state.revision !== before.revision
     )
-      return finish('unknown', 'unattributed_activity', {
+      return finish('unattributed_activity', {
         samples,
         after: state,
-        detail: `The recipient's revision moved from ${String(before.revision)} to ${String(state.revision)} while its state stayed at rest; a redraw is not proof of receipt.`,
+        detail: `The recipient's revision moved from ${String(before.revision)} to ${String(state.revision)} while its state stayed at rest; a redraw is not proof of anything about this pointer.`,
       });
 
     previous = state;
   }
 
-  return finish('not_taken', 'no_observed_turn', {
+  return finish('no_turn_activity_observed', {
     samples,
     after: previous,
-    detail: `No working turn was observed in ${samples} sample(s) on the unchanged terminal; the pointer may still be sitting unsubmitted in the recipient's input.`,
+    detail: `No working turn was observed in ${String(samples)} sample(s) on the unchanged terminal. A pointer that never started a turn and a pointer still sitting unsubmitted in the input look identical here, so this is not non-receipt.`,
   });
 }

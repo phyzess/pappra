@@ -32,11 +32,11 @@ import type {
 import { cleanup, makeTempDir } from '../workspace/fixtures.js';
 
 /**
- * Receipt observation is a bounded, evidence-gated fact recorded beside a
- * delivery. These tests pin four things: what the transport signals can prove,
- * what they may never prove, the bound on probes and wall-clock time, and that a
- * missing observation (an older record) reads as unobserved instead of being
- * rewritten. Nothing here contacts a real host or presses a key.
+ * Receipt observation is a bounded, evidence-gated record beside a delivery.
+ * These tests pin four things: that roster signals never become a message-level
+ * receipt, what the activity reasons may say, the budget that covers both the
+ * waits and the probes, and the read contract for old records. Nothing here
+ * contacts a real host, presses a key or resends.
  */
 
 const clock = Date.parse('2026-11-12T08:00:00Z');
@@ -61,6 +61,7 @@ const policy: DeliveryObservationPolicy = {
   maxSamples: 3,
   intervalMs: 1_000,
   windowMs: 3_000,
+  probeTimeoutMs: 1_000,
 };
 
 function state(
@@ -82,34 +83,43 @@ function state(
 interface Harness {
   readonly observation: Promise<CollabDeliveryObservation>;
   readonly probes: () => number;
+  readonly budgets: readonly number[];
   readonly elapsed: () => number;
 }
 
+/**
+ * Drives the classifier with a scripted probe sequence. A `number` entry is the
+ * cost of that probe in milliseconds, so a slow or overrunning transport is
+ * simulated on the injected clock instead of by sleeping.
+ */
 function observe(
   options: {
     readonly before?: CollabDeliveryAgentState;
     readonly samples?: readonly (DeliveryObservationProbe | Error)[];
+    readonly costs?: readonly number[];
     readonly submitted?: boolean;
     readonly policy?: DeliveryObservationPolicy;
-    readonly now?: () => number;
   } = {},
 ): Harness {
   let current = clock;
   let probes = 0;
-  const now = options.now ?? (() => current);
+  const budgets: number[] = [];
   const samples = options.samples ?? [];
+  const costs = options.costs ?? [];
   const observation = observeDeliveryReceipt({
     submitted: options.submitted ?? true,
     before: options.before ?? state(),
-    probe: async () => {
+    probe: async (budgetMs) => {
+      budgets.push(budgetMs);
       const next = samples[probes] ?? samples[samples.length - 1];
       probes += 1;
+      current += costs[probes - 1] ?? 0;
       if (next === undefined) throw new Error('no scripted probe');
       if (next instanceof Error) throw next;
       return next;
     },
     policy: options.policy ?? policy,
-    now,
+    now: () => current,
     sleep: async (milliseconds) => {
       current += milliseconds;
     },
@@ -117,6 +127,7 @@ function observe(
   return {
     observation,
     probes: () => probes,
+    budgets,
     elapsed: () => current - clock,
   };
 }
@@ -126,99 +137,129 @@ const workingProbe: DeliveryObservationProbe = {
   state: state({
     agent_status: 'working',
     state_change_seq: 6,
-    completion_seq: 4,
     revision: 11,
-    observed_at: new Date(clock + 1_000).toISOString(),
   }),
 };
 
 const quietProbe: DeliveryObservationProbe = {
   ok: true,
-  state: state({ observed_at: new Date(clock + 1_000).toISOString() }),
+  state: state(),
 };
 
-test('a corroborated turn start is taken, within the first sample', async () => {
+test('a started turn stays unknown: no roster signal ties it to this pointer', async () => {
   const harness = observe({ samples: [workingProbe] });
   const observation = await harness.observation;
-  assert.equal(observation.receipt, 'taken');
-  assert.equal(observation.reason, 'turn_observed');
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'turn_activity_observed');
   assert.equal(observation.samples, 1);
-  assert.equal(observation.window_ms, 0);
   assert.equal(observation.before.agent_status, 'idle');
   assert.equal(observation.after?.agent_status, 'working');
   assert.equal(observation.after?.terminal_id, 'terminal-1');
+  assert.match(String(observation.detail), /not receipt/);
   assert.equal(harness.probes(), 1);
 });
 
-test('a complete quiet window is not_taken and stops at the sample budget', async () => {
+test('another input waking the recipient is activity, never receipt', async () => {
+  // The pointer is delivered, then a different message (or a human) starts the
+  // turn. The roster read cannot tell the two apart, so the record must not.
   const harness = observe({
-    samples: [quietProbe, quietProbe, quietProbe, workingProbe],
+    before: state({ agent_status: 'idle', state_change_seq: 5 }),
+    samples: [
+      { ok: true, state: state({ state_change_seq: 5, revision: 10 }) },
+      workingProbe,
+    ],
   });
   const observation = await harness.observation;
-  assert.equal(observation.receipt, 'not_taken');
-  assert.equal(observation.reason, 'no_observed_turn');
-  assert.equal(observation.samples, 3);
-  assert.equal(observation.window_ms, 2_000);
-  // The fourth scripted sample is never read: the budget is the bound.
-  assert.equal(harness.probes(), 3);
-  assert.match(String(observation.detail), /may still be sitting unsubmitted/);
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'turn_activity_observed');
+  assert.equal(observation.samples, 2);
+  assert.match(String(observation.detail), /another input/);
 });
 
-test('a moved counter without a turn stays unknown rather than a success', async () => {
-  const redraw = observe({
+test('a queued pointer with no started turn is unknown, not non-receipt', async () => {
+  // The text is sitting in the recipient's input: no state change, no turn.
+  const harness = observe({ samples: [quietProbe, quietProbe, quietProbe] });
+  const observation = await harness.observation;
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'no_turn_activity_observed');
+  assert.equal(observation.samples, 3);
+  assert.equal(observation.window_ms, 2_000);
+  assert.match(String(observation.detail), /not non-receipt/);
+});
+
+test('a working sample that cannot be attributed to the pointer stays unknown', async () => {
+  // Already mid-turn when the pointer arrived, so later activity belongs to earlier work.
+  const alreadyWorking = await observe({
+    before: state({ agent_status: 'working', state_change_seq: 3 }),
+    samples: [
+      {
+        ok: true,
+        state: state({ agent_status: 'working', state_change_seq: 9 }),
+      },
+    ],
+  }).observation;
+  assert.equal(alreadyWorking.receipt, 'unknown');
+  assert.equal(alreadyWorking.reason, 'recipient_already_working');
+  assert.equal(alreadyWorking.samples, 0);
+
+  // A restarted terminal invalidates the comparison even if it now looks busy.
+  const restarted = await observe({
+    samples: [
+      {
+        ok: true,
+        state: state({
+          agent_status: 'working',
+          state_change_seq: 6,
+          terminal_id: 'terminal-2',
+        }),
+      },
+    ],
+  }).observation;
+  assert.equal(restarted.receipt, 'unknown');
+  assert.equal(restarted.reason, 'terminal_changed');
+
+  // Working without a moved counter cannot be placed after the submission.
+  const unmoved = await observe({
+    samples: [
+      {
+        ok: true,
+        state: state({ agent_status: 'working', state_change_seq: 5 }),
+      },
+    ],
+  }).observation;
+  assert.equal(unmoved.receipt, 'unknown');
+  assert.equal(unmoved.reason, 'evidence_incomplete');
+});
+
+test('a moved counter without a turn stays unknown rather than activity', async () => {
+  const redraw = await observe({
     samples: [{ ok: true, state: state({ revision: 11 }) }],
   });
   const observation = await redraw.observation;
   assert.equal(observation.receipt, 'unknown');
   assert.equal(observation.reason, 'unattributed_activity');
-  assert.equal(observation.samples, 1);
   assert.match(String(observation.detail), /redraw is not proof/);
 
-  const moved = observe({
+  const moved = await observe({
     samples: [{ ok: true, state: state({ state_change_seq: 6 }) }],
-  });
-  const movedObservation = await moved.observation;
-  assert.equal(movedObservation.receipt, 'unknown');
-  assert.equal(movedObservation.reason, 'unattributed_activity');
+  }).observation;
+  assert.equal(moved.receipt, 'unknown');
+  assert.equal(moved.reason, 'unattributed_activity');
 
-  const completed = observe({
+  const completed = await observe({
     samples: [{ ok: true, state: state({ completion_seq: 5 }) }],
-  });
-  const completedObservation = await completed.observation;
-  assert.equal(completedObservation.receipt, 'unknown');
-  assert.equal(completedObservation.reason, 'unattributed_activity');
-});
+  }).observation;
+  assert.equal(completed.receipt, 'unknown');
+  assert.equal(completed.reason, 'unattributed_activity');
 
-test('a state that leaves rest without a working turn stays unknown', async () => {
-  const harness = observe({
+  const blocked = await observe({
     samples: [{ ok: true, state: state({ agent_status: 'blocked' }) }],
-  });
-  const observation = await harness.observation;
-  assert.equal(observation.receipt, 'unknown');
-  assert.equal(observation.reason, 'recipient_state_changed');
-
-  const done = observe({
-    samples: [{ ok: true, state: state({ agent_status: 'done' }) }],
-  });
-  const doneObservation = await done.observation;
-  assert.equal(doneObservation.receipt, 'unknown');
-  assert.equal(doneObservation.reason, 'recipient_state_changed');
+  }).observation;
+  assert.equal(blocked.receipt, 'unknown');
+  assert.equal(blocked.reason, 'recipient_state_changed');
 });
 
-test('an already-working recipient proves nothing and is not probed', async () => {
-  const harness = observe({
-    before: state({ agent_status: 'working', state_change_seq: 3 }),
-    samples: [workingProbe],
-  });
-  const observation = await harness.observation;
-  assert.equal(observation.receipt, 'unknown');
-  assert.equal(observation.reason, 'recipient_already_working');
-  assert.equal(observation.samples, 0);
-  assert.equal(harness.probes(), 0);
-  assert.equal(observation.after, null);
-});
-
-test('a blocked or unanswered recipient is never treated as receipt', async () => {
+test('a blocked or unready recipient is never treated as activity', async () => {
   const blocked = await observe({
     before: state({ agent_status: 'blocked' }),
   }).observation;
@@ -242,7 +283,7 @@ test('a blocked or unanswered recipient is never treated as receipt', async () =
   assert.equal(notInteractive.receipt, 'unknown');
 });
 
-test('missing signals leave receipt unknown without any probe', async () => {
+test('missing signals leave the receipt unknown without any probe', async () => {
   for (const before of [
     state({ terminal_id: null }),
     state({ state_change_seq: null }),
@@ -253,39 +294,6 @@ test('missing signals leave receipt unknown without any probe', async () => {
     assert.equal(observation.reason, 'signals_unavailable');
     assert.equal(harness.probes(), 0);
   }
-});
-
-test('a changed terminal identity is unknown, not receipt or non-receipt', async () => {
-  const harness = observe({
-    samples: [{ ok: true, state: state({ terminal_id: 'terminal-2' }) }],
-  });
-  const observation = await harness.observation;
-  assert.equal(observation.receipt, 'unknown');
-  assert.equal(observation.reason, 'terminal_changed');
-  assert.equal(observation.samples, 1);
-});
-
-test('a probe carrying no counter is incomplete evidence, not a negative', async () => {
-  const harness = observe({
-    samples: [{ ok: true, state: state({ state_change_seq: null }) }],
-  });
-  const observation = await harness.observation;
-  assert.equal(observation.receipt, 'unknown');
-  assert.equal(observation.reason, 'evidence_incomplete');
-});
-
-test('a working state without a moved counter cannot be placed after the submit', async () => {
-  const harness = observe({
-    samples: [
-      {
-        ok: true,
-        state: state({ agent_status: 'working', state_change_seq: 5 }),
-      },
-    ],
-  });
-  const observation = await harness.observation;
-  assert.equal(observation.receipt, 'unknown');
-  assert.equal(observation.reason, 'evidence_incomplete');
 });
 
 test('identity, session and probe problems stay unknown with their own reason', async () => {
@@ -314,18 +322,7 @@ test('identity, session and probe problems stay unknown with their own reason', 
   assert.equal(thrown.reason, 'probe_failed');
 });
 
-test('an expired window reports unknown instead of guessing', async () => {
-  const harness = observe({
-    samples: [quietProbe, quietProbe, quietProbe],
-    policy: { maxSamples: 3, intervalMs: 1_000, windowMs: 0 },
-  });
-  const observation = await harness.observation;
-  assert.equal(observation.receipt, 'unknown');
-  assert.equal(observation.reason, 'window_expired');
-  assert.equal(observation.samples, 1);
-});
-
-test('a submission that never happened is not a negative either', async () => {
+test('a submission that never happened is not observed at all', async () => {
   const harness = observe({ submitted: false, samples: [workingProbe] });
   const observation = await harness.observation;
   assert.equal(observation.receipt, 'unknown');
@@ -333,7 +330,111 @@ test('a submission that never happened is not a negative either', async () => {
   assert.equal(harness.probes(), 0);
 });
 
-test('the observation policy is bounded no matter what a caller passes', () => {
+// ---------------------------------------------------------------------------
+// The budget covers waits and probes
+// ---------------------------------------------------------------------------
+
+test('a probe that returns after the budget is recorded but never classified', async () => {
+  // The coordinator's reproduction: a 3000 ms window, a first probe that only
+  // returns at 4000 ms reporting a started turn. That may not become activity.
+  const harness = observe({
+    samples: [workingProbe],
+    costs: [4_000],
+    policy: { ...policy, windowMs: 3_000, probeTimeoutMs: 4_000 },
+  });
+  const observation = await harness.observation;
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'window_expired');
+  assert.equal(observation.samples, 1);
+  assert.equal(observation.window_ms, 4_000);
+  assert.equal(observation.after?.agent_status, 'working');
+  assert.match(String(observation.detail), /never classified/);
+});
+
+test('a final quiet probe that overruns is not a quiet window either', async () => {
+  // Third quiet probe returns at 5000 ms for a 3000 ms window: the coordinator's
+  // second reproduction, where an overrunning sample used to become a negative.
+  const harness = observe({
+    samples: [quietProbe, quietProbe, quietProbe],
+    costs: [0, 0, 3_000],
+  });
+  const observation = await harness.observation;
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'window_expired');
+  assert.equal(observation.samples, 3);
+  assert.equal(observation.window_ms, 5_000);
+  assert.equal(observation.after?.agent_status, 'idle');
+  assert.notEqual(observation.reason, 'no_turn_activity_observed');
+});
+
+test('the window can be exhausted before a probe starts', async () => {
+  // One probe, then a 2000 ms wait that consumes the whole 2000 ms budget.
+  const harness = observe({
+    samples: [quietProbe, quietProbe],
+    policy: { ...policy, windowMs: 2_000, intervalMs: 2_000 },
+  });
+  const observation = await harness.observation;
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'window_expired');
+  assert.equal(observation.samples, 1);
+  assert.equal(harness.probes(), 1);
+  assert.equal(harness.elapsed(), 2_000);
+});
+
+test('a probe is never asked for more time than the window has left', async () => {
+  const full = observe({ samples: [quietProbe, quietProbe, quietProbe] });
+  await full.observation;
+  // min(probeTimeoutMs, remaining): 1000, then 1000 with 2000 left, then 1000.
+  assert.deepEqual(full.budgets, [1_000, 1_000, 1_000]);
+
+  const capped = observe({
+    samples: [quietProbe, quietProbe],
+    policy: { ...policy, windowMs: 500, probeTimeoutMs: 4_000 },
+  });
+  await capped.observation;
+  assert.deepEqual(capped.budgets, [500]);
+  assert.equal(capped.elapsed(), 500);
+});
+
+test('a transport that hangs records the overrun instead of claiming a bound', async () => {
+  const harness = observe({
+    samples: [quietProbe],
+    costs: [30_000],
+    policy: { ...policy, windowMs: 3_000, probeTimeoutMs: 4_000 },
+  });
+  const observation = await harness.observation;
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'window_expired');
+  assert.equal(observation.window_ms, 30_000);
+  // The budget it was handed was still inside the window.
+  assert.deepEqual(harness.budgets, [3_000]);
+
+  // An overrun beyond the persisted bound is capped so the record stays
+  // readable, and the real elapsed time is stated in the detail.
+  const extreme = observe({
+    samples: [quietProbe],
+    costs: [700_000],
+    policy: { ...policy, windowMs: 3_000, probeTimeoutMs: 4_000 },
+  });
+  const extremeObservation = await extreme.observation;
+  assert.equal(extremeObservation.reason, 'window_expired');
+  assert.equal(extremeObservation.window_ms, 600_000);
+  assert.match(String(extremeObservation.detail), /capped at 600000 ms/);
+});
+
+test('a zero window performs no probe and asks no transport wait', async () => {
+  const harness = observe({
+    samples: [workingProbe],
+    policy: { ...policy, windowMs: 0 },
+  });
+  const observation = await harness.observation;
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'window_expired');
+  assert.equal(observation.samples, 0);
+  assert.equal(harness.probes(), 0);
+});
+
+test('the observation policy is bounded no matter what a caller passes', async () => {
   assert.deepEqual(normalizeDeliveryObservationPolicy(), {
     ...DEFAULT_DELIVERY_OBSERVATION_POLICY,
   });
@@ -342,23 +443,31 @@ test('the observation policy is bounded no matter what a caller passes', () => {
       maxSamples: 99,
       intervalMs: 10_000_000,
       windowMs: 10_000_000,
+      probeTimeoutMs: 10_000_000,
     }),
-    { maxSamples: 8, intervalMs: 30_000, windowMs: 60_000 },
+    {
+      maxSamples: 8,
+      intervalMs: 30_000,
+      windowMs: 60_000,
+      probeTimeoutMs: 30_000,
+    },
   );
   assert.deepEqual(
     normalizeDeliveryObservationPolicy({
       maxSamples: 0,
       intervalMs: -5,
       windowMs: Number.NaN,
+      probeTimeoutMs: 0,
     }),
     {
       maxSamples: 2,
       intervalMs: 0,
       windowMs: DEFAULT_DELIVERY_OBSERVATION_POLICY.windowMs,
+      probeTimeoutMs: 1,
     },
   );
   // The default pause is a timer that a zero bound skips entirely.
-  return delay(0).then(() => undefined);
+  await delay(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -539,32 +648,39 @@ class ScriptedTransport implements HerdrTransport {
 }
 
 function observationOptions(
-  overrides: {
-    readonly maxSamples?: number;
-    readonly intervalMs?: number;
-    readonly windowMs?: number;
-  } = {},
-) {
+  overrides: Partial<DeliveryObservationPolicy> = {},
+): {
+  readonly options: {
+    readonly maxSamples: number;
+    readonly intervalMs: number;
+    readonly windowMs: number;
+    readonly probeTimeoutMs: number;
+    readonly now: () => number;
+    readonly sleep: (milliseconds: number) => Promise<void>;
+  };
+  readonly elapsed: () => number;
+} {
   let current = clock;
   return {
     options: {
       maxSamples: overrides.maxSamples ?? 3,
       intervalMs: overrides.intervalMs ?? 1_000,
       windowMs: overrides.windowMs ?? 3_000,
+      probeTimeoutMs: overrides.probeTimeoutMs ?? 1_500,
       now: () => current,
       sleep: async (milliseconds: number) => {
         current += milliseconds;
       },
-      probeTimeoutMs: 1_234,
     },
     elapsed: () => current - clock,
   };
 }
 
-test('a legitimately accepted message still submits one pointer and records taken', async () => {
-  const value = fixture('observation-taken');
+test('an admitted message still submits one pointer and keeps the delivery contract', async () => {
+  const value = fixture('observation-record');
   try {
     await accepted(value, 'msg-observe-1');
+    // The pointer is delivered, then a turn starts on the same terminal.
     const transport = new ScriptedTransport({
       cwd: value.taskRoot,
       agents: (call, cwd) =>
@@ -596,19 +712,24 @@ test('a legitimately accepted message still submits one pointer and records take
     assert.equal(result.status, 'submitted');
     assert.equal(result.consumed, false);
     assert.equal(result.taskAccepted, false);
-    assert.equal(result.observation?.receipt, 'taken');
-    assert.equal(result.observation?.reason, 'turn_observed');
-    // One pointer, one verify list, one probe.
+    // Observed activity, no message-level receipt.
+    assert.equal(result.observation?.receipt, 'unknown');
+    assert.equal(result.observation?.reason, 'turn_activity_observed');
     assert.equal(transport.prompts.length, 1);
     assert.equal(transport.listCalls.length, 2);
-    assert.deepEqual(transport.listCalls[1], { timeoutMs: 1_234 });
+    // The probe is bounded by the remaining budget, not by a separate cap.
+    assert.deepEqual(transport.listCalls[1], { timeoutMs: 1_500 });
 
     const delivery = readDeliveryRecord(value.taskRoot, 'msg-observe-1');
     assert(delivery);
     assert.equal(delivery.status, 'submitted');
     assert.equal(delivery.attempts.length, 1);
     assert.equal(delivery.attempts[0]?.status, 'submitted');
-    assert.equal(delivery.attempts[0]?.observation?.receipt, 'taken');
+    assert.equal(delivery.attempts[0]?.observation?.receipt, 'unknown');
+    assert.equal(
+      delivery.attempts[0]?.observation?.reason,
+      'turn_activity_observed',
+    );
     assert.equal(
       delivery.attempts[0]?.observation?.after?.agent_status,
       'working',
@@ -618,7 +739,7 @@ test('a legitimately accepted message still submits one pointer and records take
   }
 });
 
-test('a quiet recipient records not_taken without a second submission', async () => {
+test('a quiet recipient records no activity without a second submission', async () => {
   const value = fixture('observation-quiet');
   try {
     await accepted(value, 'msg-observe-2');
@@ -636,7 +757,12 @@ test('a quiet recipient records not_taken without a second submission', async ()
     });
     assert(notified.ok);
     if (!notified.ok) return;
-    assert.equal(notified.value.observation?.receipt, 'not_taken');
+    assert.equal(notified.value.status, 'submitted');
+    assert.equal(notified.value.observation?.receipt, 'unknown');
+    assert.equal(
+      notified.value.observation?.reason,
+      'no_turn_activity_observed',
+    );
     assert.equal(notified.value.observation?.samples, 3);
     assert.equal(notified.value.observation?.window_ms, 2_000);
     assert.equal(timing.elapsed(), 2_000);
@@ -644,7 +770,10 @@ test('a quiet recipient records not_taken without a second submission', async ()
     assert.equal(transport.prompts.length, 1);
     assert.equal(transport.listCalls.length, 4);
     const delivery = readDeliveryRecord(value.taskRoot, 'msg-observe-2');
-    assert.equal(delivery?.attempts[0]?.observation?.receipt, 'not_taken');
+    assert.equal(
+      delivery?.attempts[0]?.observation?.reason,
+      'no_turn_activity_observed',
+    );
     assert.equal(delivery?.status, 'submitted');
   } finally {
     cleanup(value.root);
@@ -697,9 +826,6 @@ test('a failed probe leaves the recorded submission and never resends', async ()
     await accepted(value, 'msg-observe-4');
     let calls = 0;
     const transport = new ScriptedTransport({ cwd: value.taskRoot });
-    const failingProbe = new ScriptedTransport({
-      cwd: value.taskRoot,
-    });
     const timing = observationOptions();
     const notified = await notifyRegisteredMessage({
       taskRoot: value.taskRoot,
@@ -726,7 +852,6 @@ test('a failed probe leaves the recorded submission and never resends', async ()
     });
     assert(notified.ok);
     if (!notified.ok) return;
-    assert.equal(failingProbe.prompts.length, 0);
     assert.equal(notified.value.status, 'submitted');
     assert.equal(notified.value.observation?.receipt, 'unknown');
     assert.equal(notified.value.observation?.reason, 'probe_failed');
@@ -740,15 +865,14 @@ test('a failed probe leaves the recorded submission and never resends', async ()
 });
 
 test('an observation that cannot run leaves the attempt unobserved, not rewritten', async () => {
-  const value = fixture('observation-disabled');
+  const value = fixture('observation-no-signals');
   try {
     await accepted(value, 'msg-observe-5');
-    // A roster without the observation signals: the old transport shape.
+    // A roster without the observation signals: the pre-#20 transport shape.
     const transport = new ScriptedTransport({
       cwd: value.taskRoot,
       agents: (_call, cwd) => [
         coordinatorAgent(cwd),
-        // The pre-#20 roster shape: a status and no counters or identity.
         {
           name: 'pappra-implement',
           harness: 'pi',

@@ -54,11 +54,6 @@ const HERDR_PANE_ID = /^[A-Za-z0-9]+:p[A-Za-z0-9]+$/;
 const LIST_TIMEOUT_MS = 15_000;
 const PROMPT_TIMEOUT_MS = 20_000;
 const MAX_OUTPUT_BYTES = 256 * 1024;
-/**
- * One receipt probe is a roster read with its own bound, so a hung transport
- * cannot stretch the observation window beyond the policy plus this timeout.
- */
-const OBSERVATION_PROBE_TIMEOUT_MS = 4_000;
 
 export interface HerdrAgentObservation {
   readonly nativeIdentityProvenance?: 'owned-pi-sdk-control';
@@ -782,8 +777,6 @@ export interface NotifyObservationOptions extends Partial<DeliveryObservationPol
   /** Monotonic-enough clock for the bounded window; defaults to `Date.now`. */
   readonly now?: () => number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
-  /** Bound for one probe; defaults to the notify probe timeout. */
-  readonly probeTimeoutMs?: number;
 }
 
 export interface NotifyOptions {
@@ -1643,8 +1636,6 @@ export async function notifyRegisteredMessage(
       : normalizeDeliveryObservationPolicy(observationSettings);
   const observationNow = observationSettings?.now ?? Date.now;
   const observationSleep = observationSettings?.sleep ?? delay;
-  const probeTimeoutMs =
-    observationSettings?.probeTimeoutMs ?? OBSERVATION_PROBE_TIMEOUT_MS;
   const verifiedCaller = await transport.verifyCaller(
     options.callerPane === undefined || options.callerPane === null
       ? {}
@@ -1750,10 +1741,14 @@ export async function notifyRegisteredMessage(
    * on every probe, because a name that now resolves elsewhere is not evidence
    * about this recipient. The probe never prompts, waits for a state, or retries.
    */
-  const probeRecipient = async (): Promise<DeliveryObservationProbe> => {
+  const probeRecipient = async (
+    budgetMs: number,
+  ): Promise<DeliveryObservationProbe> => {
     let listed: HerdrListResult;
     try {
-      listed = await transport.list({ timeoutMs: probeTimeoutMs });
+      // The observation loop owns the budget: it never asks for more time than
+      // the window has left, and a reading that arrives late is never classified.
+      listed = await transport.list({ timeoutMs: budgetMs });
     } catch (error) {
       return {
         ok: false,

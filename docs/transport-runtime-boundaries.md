@@ -116,23 +116,25 @@ Shape: `src/schemas/collaboration.ts:353-372`. Written by workflow prepare
 
 #### Delivery records — `notifications/<message_id>.json`, `pappra/collab-delivery/1`
 
-| Field path                                           | Carries                                                         |
-| ---------------------------------------------------- | --------------------------------------------------------------- |
-| `target.herdr_agent`, `.pane_id`                     | the routing target                                              |
-| `target.native_session`                              | `match` / `unknown`                                             |
-| `target.native_session_kind`                         | reported kind (`path`, `id`, …)                                 |
-| `caller.source`                                      | `current` / `explicit`                                          |
-| `caller.pane_id`, `.harness`, `.cwd`, `.observed_at` | what the caller looked like when observed                       |
-| `caller.native_session`, `.native_session_kind`      | caller-side session comparison                                  |
-| `caller.process_affiliation`                         | always `not-established`                                        |
-| `status`                                             | `submitting`/`submitted`/`blocked`/`refused`/`unknown`/`failed` |
-| `attempts[].{at,status,detail,reservation_id}`       | every delivery attempt                                          |
-| `attempts[].observation`                             | bounded receipt evidence: `receipt`, closed `reason`, the before/after transport state, samples, window (optional; older attempts omit it) |
+| Field path                                           | Carries                                                                                                                                                                              |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `target.herdr_agent`, `.pane_id`                     | the routing target                                                                                                                                                                   |
+| `target.native_session`                              | `match` / `unknown`                                                                                                                                                                  |
+| `target.native_session_kind`                         | reported kind (`path`, `id`, …)                                                                                                                                                      |
+| `caller.source`                                      | `current` / `explicit`                                                                                                                                                               |
+| `caller.pane_id`, `.harness`, `.cwd`, `.observed_at` | what the caller looked like when observed                                                                                                                                            |
+| `caller.native_session`, `.native_session_kind`      | caller-side session comparison                                                                                                                                                       |
+| `caller.process_affiliation`                         | always `not-established`                                                                                                                                                             |
+| `status`                                             | `submitting`/`submitted`/`blocked`/`refused`/`unknown`/`failed`                                                                                                                      |
+| `attempts[].{at,status,detail,reservation_id}`       | every delivery attempt                                                                                                                                                               |
+| `attempts[].observation`                             | bounded transport-activity evidence: `receipt` (always `unknown` from a roster read), closed `reason`, the before/after state, samples and window (optional; older attempts omit it) |
 
-Receipt evidence is a **separate fact** from `status`. `submitted` keeps its
-meaning whether the observation says `taken`, `not_taken` or `unknown`; the
-observation is written after the status is recorded, never rewrites it, and
-never authorizes a resend. Shape:
+Observation evidence is a **separate fact** from `status`. `submitted` keeps its
+meaning whatever the observation says; the observation is written after the
+status is recorded, never rewrites it, and never authorizes a resend. A roster
+read is agent-level, so `receipt` cannot become a message-level `taken` or
+`not_taken`: the record names the activity it saw (`turn_activity_observed`) or
+did not see (`no_turn_activity_observed`) and stays `unknown`. Shape:
 `collabDeliveryObservationSchema` in `src/schemas/collaboration.ts`. An attempt
 recorded without it is unobserved, which every reader treats as `unknown`
 without rewriting the file.
@@ -352,19 +354,25 @@ validation versus record acceptance" below.
   outside the closed `applied`/`recorded` allow-list
   (`message_record_state_not_notifiable`). Plan mode applies the same gate and
   still queries no transport.
-- **May claim**: `submitted` plus a bounded receipt observation. `consumed` and
-  `taskAccepted` are typed as the literal `false`
-  (`collab-notify.ts:782`, `:1234`), so a caller cannot even express the
-  stronger claim from the notify result. The observation
-  (`src/app/collab-delivery-observation.ts`) may say `taken` only for a rest →
-  working transition with an advanced state counter on the same terminal, may
-  say `not_taken` only for a complete quiet window, and reports `unknown` for
-  every other signal — including an already working or blocked recipient, a
-  redraw-only revision change, a changed terminal identity, a moved counter
-  without an observed turn, a failed probe and an expired window. It probes the
-  roster through the same `list()` the participant check already uses, at most
-  three times inside a three-second window, and it never prompts, presses a key
-  or resends.
+- **May claim**: `submitted`, and a bounded record of what the recipient's
+  transport did afterwards. `consumed` and `taskAccepted` are typed as the
+  literal `false` (`collab-notify.ts:782`, `:1234`), so a caller cannot even
+  express the stronger claim from the notify result. The observation
+  (`src/app/collab-delivery-observation.ts`) reports **`receipt: unknown`
+  always**, because every signal it can read is agent-level: a turn that starts
+  may belong to this pointer, to another message or to a human, and an
+  unsubmitted pointer looks exactly like an untyped one. What it does record is
+  `turn_activity_observed`, `no_turn_activity_observed`, or an `unknown` reason
+  (an already working or blocked recipient, a redraw-only revision change, a
+  changed terminal identity, a moved counter, a failed probe, an expired
+  window). `taken`/`not_taken` stay defined for a transport that can correlate a
+  state change with one message; nothing here emits them. It probes the roster
+  through the same `list()` the participant check already uses, at most three
+  times inside a three-second budget, hands each probe a timeout clamped to the
+  remaining budget, never classifies a reading that arrives after the budget, and
+  never prompts, presses a key or resends. A transport that ignores the
+  requested timeout can overrun; the record states the elapsed time and keeps
+  `window_expired` rather than claiming a hard bound.
 - **Unsupported implementation must report**: `unavailable` when it cannot
   deliver at all, `unknown` when the effect is ambiguous, and never "delivered".
 
@@ -519,14 +527,14 @@ implementation must not add a new way to claim any of the four.
 `tests/collab/transport-runtime-contract.test.ts` pins the boundaries that no
 existing test pinned. Every other row cites the test that covers it.
 
-| #   | Required case                       | Status                                   | Covered by                                                                                                                                                                                                                                                                                                                                                                             |
-| --- | ----------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | unavailable capability              | existing                                 | `tests/collab/messages.test.ts` — "notification is unavailable outside a verified Herdr caller" (status `herdr_unavailable`, `consumed: false`, no delivery record)                                                                                                                                                                                                                    |
-| 2   | stale identity                      | existing (two separate bounds)        | `tests/collab/capabilities.test.ts` — "Pi replay keeps the native observation time and goes stale" (`capabilities_stale` past the 30-minute card bound, `src/collab/preflight.ts:246`). This covers capability preflight. Reused `attempts[].native` observations now have their own bound in `src/collab/native-observation.ts` — see Known gaps and `tests/collab/native-observation-age.test.ts`                                                                                       |
-| 3   | submitted-not-consumed              | existing                                 | `tests/collab/messages.test.ts` — "notify validates the binding and sends one pointer-only prompt" (`submitted`, `consumed: false`, `taskAccepted: false`, duplicate recorded)                                                                                                                                                                                                         |
-| 4   | unknown delivery / no replay        | existing                                 | `tests/collab/workflow-notifications.test.ts` — "an unknown delivery stays unknown and is never replayed automatically"                                                                                                                                                                                                                                                                |
-| 5   | changed workspace (#13)             | existing                                 | `tests/collab/shell-readiness.test.ts` — "readiness fails closed on pane, workspace, terminal, cwd and agent drift" (`workspace_id_mismatch`); task-root redirect in `tests/collab/messages.test.ts` — "unsafe ids, malformed records, task mismatch and redirected state fail closed"                                                                                                 |
-| 6   | lack of stop proof                  | existing                                 | `tests/collab/rollover.test.ts` — "unknown quiescence and non-complete inventory never authorize transfer" (`old_writer_not_stopped`, `stop_evidence_required`)                                                                                                                                                                                                                        |
+| #   | Required case                       | Status                                            | Covered by                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --- | ----------------------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | unavailable capability              | existing                                          | `tests/collab/messages.test.ts` — "notification is unavailable outside a verified Herdr caller" (status `herdr_unavailable`, `consumed: false`, no delivery record)                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| 2   | stale identity                      | existing (two separate bounds)                    | `tests/collab/capabilities.test.ts` — "Pi replay keeps the native observation time and goes stale" (`capabilities_stale` past the 30-minute card bound, `src/collab/preflight.ts:246`). This covers capability preflight. Reused `attempts[].native` observations now have their own bound in `src/collab/native-observation.ts` — see Known gaps and `tests/collab/native-observation-age.test.ts`                                                                                                                                                                                                                                   |
+| 3   | submitted-not-consumed              | existing                                          | `tests/collab/messages.test.ts` — "notify validates the binding and sends one pointer-only prompt" (`submitted`, `consumed: false`, `taskAccepted: false`, duplicate recorded)                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| 4   | unknown delivery / no replay        | existing                                          | `tests/collab/workflow-notifications.test.ts` — "an unknown delivery stays unknown and is never replayed automatically"                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 5   | changed workspace (#13)             | existing                                          | `tests/collab/shell-readiness.test.ts` — "readiness fails closed on pane, workspace, terminal, cwd and agent drift" (`workspace_id_mismatch`); task-root redirect in `tests/collab/messages.test.ts` — "unsafe ids, malformed records, task mismatch and redirected state fail closed"                                                                                                                                                                                                                                                                                                                                                |
+| 6   | lack of stop proof                  | existing                                          | `tests/collab/rollover.test.ts` — "unknown quiescence and non-complete inventory never authorize transfer" (`old_writer_not_stopped`, `stop_evidence_required`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | 7   | registered-message validation (#17) | decided — notification requires record acceptance | `tests/collab/transport-runtime-contract.test.ts` — "a registered message whose id does not match its registration is refused" (the file-level half) and "notify refuses delivery when the file is valid but the record has not accepted the message" (the record half); `tests/collab/notify-record-acceptance.test.ts` — "notify refuses a registration the protocol rejected, in plan and in apply", "notify refuses a hand-placed envelope the task record never accepted", "notify refuses a file whose content differs from what the record accepted" and "notify still forwards one pointer for a message the record accepted" |
 
 ### Known gaps, stated rather than faked
@@ -534,7 +542,7 @@ existing test pinned. Every other row cites the test that covers it.
 - **Reused transport observations have an age bound; the live path does not need
   one.** A persisted `attempts[].native.observed_at` is dated but nothing compared
   it with `now`, so an old observation that still matched was accepted and never
-  downgraded. #35 closes that for the consumers that *reuse* a recorded
+  downgraded. #35 closes that for the consumers that _reuse_ a recorded
   observation, with one shared evaluation and no schema change:
   `src/collab/native-observation.ts` classifies an observation as `fresh`,
   `expired`, `missing` (`observed_at: null`), `invalid` (unparseable) or `future`
@@ -558,13 +566,13 @@ existing test pinned. Every other row cites the test that covers it.
 
   The consumers, each with the four non-fresh cases treated as non-current:
 
-  | Consumer | fresh | expired | missing | invalid | future |
-  | --- | --- | --- | --- | --- | --- |
-  | Recovery `continue` (`collab-recovery-executor.ts`, `validateAuthority`) | authorizes | `refused`, note names the classification | `refused` (an asserted observation without a date) | `refused` | `refused` |
-  | Rollover pre-transfer eligibility (`collab-rollover.ts`, `inspectOrPlanRollover`) | counts as `confirmed` | `native_observation_stale` drift | same drift | same drift | same drift |
-  | Dispatch retry gate (`collab-workflow/dispatch.ts`, `canRetryReviewClaims`) | refuses | refuses | refuses | refuses | refuses |
-  | History: REPORT body (`collab-workflow/participant.ts`) | reports `native_ref` + `native_age` | reports, never refuses | reports, never refuses | reports, never refuses | reports, never refuses |
-  | History: `workflow inspect` (`collab-workflow/inspect.ts`) | reports `native_observation` + `native_age` | reports, never refuses | reports, never refuses | reports, never refuses | reports, never refuses |
+  | Consumer                                                                          | fresh                                       | expired                                  | missing                                            | invalid                | future                 |
+  | --------------------------------------------------------------------------------- | ------------------------------------------- | ---------------------------------------- | -------------------------------------------------- | ---------------------- | ---------------------- |
+  | Recovery `continue` (`collab-recovery-executor.ts`, `validateAuthority`)          | authorizes                                  | `refused`, note names the classification | `refused` (an asserted observation without a date) | `refused`              | `refused`              |
+  | Rollover pre-transfer eligibility (`collab-rollover.ts`, `inspectOrPlanRollover`) | counts as `confirmed`                       | `native_observation_stale` drift         | same drift                                         | same drift             | same drift             |
+  | Dispatch retry gate (`collab-workflow/dispatch.ts`, `canRetryReviewClaims`)       | refuses                                     | refuses                                  | refuses                                            | refuses                | refuses                |
+  | History: REPORT body (`collab-workflow/participant.ts`)                           | reports `native_ref` + `native_age`         | reports, never refuses                   | reports, never refuses                             | reports, never refuses | reports, never refuses |
+  | History: `workflow inspect` (`collab-workflow/inspect.ts`)                        | reports `native_observation` + `native_age` | reports, never refuses                   | reports, never refuses                             | reports, never refuses | reports, never refuses |
 
   Recovery keeps its existing conservative behaviour for a session mismatch and
   adds nothing to the plan wording: a refusal returns `refused`, writes no
@@ -574,14 +582,14 @@ existing test pinned. Every other row cites the test that covers it.
   are untouched, and a completed transfer keeps its recorded history because its
   observation is post-transfer correlation rather than a live eligibility claim.
   The dispatch retry gate needed no code change: it refuses on any recorded
-  native evidence, so an expired observation still blocks a retry and a *fresh*
+  native evidence, so an expired observation still blocks a retry and a _fresh_
   one never lifts that guard. The history consumers add `native_age` beside the
   recorded observation and never refuse, so an `observed_at: null` record still
   loads.
 
   The live path is untouched because notify already re-observes: every call
   re-reads `transport.list()` and stamps `caller.observed_at =
-  nowIso(options.clock)` (`src/app/collab-notify.ts:1611`), so there is no stored
+nowIso(options.clock)` (`src/app/collab-notify.ts:1611`), so there is no stored
   observation to age there and no delivery rule was added — that change did not
   touch `src/app/collab-notify.ts`. No transport, channel representation,
   message/acceptance semantics or migration is involved: the evaluation reads an
@@ -591,6 +599,7 @@ existing test pinned. Every other row cites the test that covers it.
   into the evaluation through `inspectOrPlanRollover`'s in-process `now` option,
   so a fixture or a replay is judged against its own time rather than the wall
   clock; the CLI keeps `Date.now()` and no request field accepts a clock.
+
 - **Case 6 cannot prove quiescence for interactive Pi.** Interactive Pi exposes
   no stop proof, so the only honest outcomes are refusal and `unknown`; the
   rollover test pins that refusal rather than a positive proof.

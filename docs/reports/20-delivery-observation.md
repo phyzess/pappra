@@ -8,13 +8,13 @@ participant was sent anything.
 
 ## Base and head
 
-| | |
-| --- | --- |
-| repository | `/Users/zimm.yu/personal/YU/pappra` (worktree `/private/tmp/pappra-20-observation`) |
-| branch | `codex/20-delivery-observation`, created from `origin/main` |
-| base | `a351802` — `docs: balance workspace growth and collaborative delivery roadmap (#47)` |
-| head (implementation) | `346c704` — `feat(collab): observe receipt of a delivered pointer (#20)`; the branch tip is that commit plus this report commit |
-| known merged bases confirmed | `a351802` (PR #47), `366f49f` (PR #40, #17) |
+|                              |                                                                                                                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| repository                   | `/Users/zimm.yu/personal/YU/pappra` (worktree `/private/tmp/pappra-20-observation`)                                             |
+| branch                       | `codex/20-delivery-observation`, created from `origin/main`                                                                     |
+| base                         | `a351802` — `docs: balance workspace growth and collaborative delivery roadmap (#47)`                                           |
+| head (implementation)        | `346c704` — `feat(collab): observe receipt of a delivered pointer (#20)`; the branch tip is that commit plus this report commit |
+| known merged bases confirmed | `a351802` (PR #47), `366f49f` (PR #40, #17)                                                                                     |
 
 The worktree was created from `origin/main` after `git fetch origin main`;
 `origin/main` was already `a351802` and the primary checkout was clean. No other
@@ -35,37 +35,37 @@ report names what that review should attack.
 Read-only inspection only. No prompt, no `send-keys`, no `agent wait`, no
 transcript read, no experiment against a live participant.
 
-| Evidence | Result |
-| --- | --- |
-| `herdr --version` | `herdr 0.9.5` (installed CLI on this machine) |
-| `herdr api schema --json` | `protocol: 22`, `schema_version: 1`, five schemas: `error_response`, `event`, `request`, `subscription_event`, `success_response` |
-| `herdr agent list` (live, values not printed) | 9 agents. Present keys: `agent`, `agent_session`, `agent_status`, `cwd`, `focused`, `foreground_cwd`, `pane_id`, `revision`, `screen_detection_skipped`, `state_change_seq`, `tab_id`, `terminal_id`, `terminal_title`, `terminal_title_stripped`, `workspace_id` |
-| same call | `completion_seq` appeared only on entries where it was non-null; `interactive_ready` and `launch_pending` did **not** appear in any entry |
-| `herdr agent --help` / `agent get` / `agent wait` | `agent get <target>` and `agent wait --until <idle\|working\|blocked\|done\|unknown> --timeout <ms>` exist; `--until` without `--timeout` waits indefinitely |
+| Evidence                                          | Result                                                                                                                                                                                                                                                            |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `herdr --version`                                 | `herdr 0.9.5` (installed CLI on this machine)                                                                                                                                                                                                                     |
+| `herdr api schema --json`                         | `protocol: 22`, `schema_version: 1`, five schemas: `error_response`, `event`, `request`, `subscription_event`, `success_response`                                                                                                                                 |
+| `herdr agent list` (live, values not printed)     | 9 agents. Present keys: `agent`, `agent_session`, `agent_status`, `cwd`, `focused`, `foreground_cwd`, `pane_id`, `revision`, `screen_detection_skipped`, `state_change_seq`, `tab_id`, `terminal_id`, `terminal_title`, `terminal_title_stripped`, `workspace_id` |
+| same call                                         | `completion_seq` appeared only on entries where it was non-null; `interactive_ready` and `launch_pending` did **not** appear in any entry                                                                                                                         |
+| `herdr agent --help` / `agent get` / `agent wait` | `agent get <target>` and `agent wait --until <idle\|working\|blocked\|done\|unknown> --timeout <ms>` exist; `--until` without `--timeout` waits indefinitely                                                                                                      |
 
 `AgentInfo` in the bundled schema (the shape `agent list`/`agent get` return):
 
-| Field | Type | Required | Reported meaning |
-| --- | --- | --- | --- |
-| `agent_status` | `idle`/`working`/`blocked`/`done`/`unknown` | yes | what the agent is doing |
-| `state_change_seq` | `uint64`, default `0` | no | counter of detected state changes |
-| `completion_seq` | `uint64` \| `null` | no | "The current idle transition completed work, independently of who has viewed it." |
-| `terminal_id` | `string` | yes | identity of the terminal the agent runs in |
-| `revision` | `uint64` | yes | per-agent update counter |
-| `interactive_ready` | `boolean` | no | whether the pane accepts input |
-| `launch_pending` | `boolean` | no | whether the agent is still launching |
-| `agent_session` | `{source, agent, kind, value}` | no | reported native session |
+| Field               | Type                                        | Required | Reported meaning                                                                  |
+| ------------------- | ------------------------------------------- | -------- | --------------------------------------------------------------------------------- |
+| `agent_status`      | `idle`/`working`/`blocked`/`done`/`unknown` | yes      | what the agent is doing                                                           |
+| `state_change_seq`  | `uint64`, default `0`                       | no       | counter of detected state changes                                                 |
+| `completion_seq`    | `uint64` \| `null`                          | no       | "The current idle transition completed work, independently of who has viewed it." |
+| `terminal_id`       | `string`                                    | yes      | identity of the terminal the agent runs in                                        |
+| `revision`          | `uint64`                                    | yes      | per-agent update counter                                                          |
+| `interactive_ready` | `boolean`                                   | no       | whether the pane accepts input                                                    |
+| `launch_pending`    | `boolean`                                   | no       | whether the agent is still launching                                              |
+| `agent_session`     | `{source, agent, kind, value}`              | no       | reported native session                                                           |
 
 ### Signal semantics as implemented, and their limits
 
-| Signal | Used for | Limit that keeps the conclusion honest |
-| --- | --- | --- |
-| `agent_status` | `idle`/`done` are rest states; `working` is a turn | "working" alone proves nothing when the recipient was already working, and a `working → idle`/`done` shift proves a turn ended without proving which input started it |
-| `state_change_seq` | whether **any** state change happened, and that a `working` sample is new | a redraw or unrelated activity can move it; movement alone is never receipt |
-| `completion_seq` | corroborates that a completed turn is **not** attributable on its own | it says a turn completed, not which prompt it came from |
-| `terminal_id` | the comparison is only valid on the same terminal | a changed id means the program was restarted, so nothing before and after is comparable |
-| `revision` | detects activity that is not a state change | revision-only movement is `unknown`, never receipt and never non-receipt |
-| `interactive_ready` / `launch_pending` | refuse to attribute a turn start to a pane that is not at a prompt | **not reported by `agent list` on 0.9.5**, so this gate is inert for the default transport and cannot fire today (see gaps) |
+| Signal                                 | Used for                                                                  | Limit that keeps the conclusion honest                                                                                                                                |
+| -------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `agent_status`                         | `idle`/`done` are rest states; `working` is a turn                        | "working" alone proves nothing when the recipient was already working, and a `working → idle`/`done` shift proves a turn ended without proving which input started it |
+| `state_change_seq`                     | whether **any** state change happened, and that a `working` sample is new | a redraw or unrelated activity can move it; movement alone is never receipt                                                                                           |
+| `completion_seq`                       | corroborates that a completed turn is **not** attributable on its own     | it says a turn completed, not which prompt it came from                                                                                                               |
+| `terminal_id`                          | the comparison is only valid on the same terminal                         | a changed id means the program was restarted, so nothing before and after is comparable                                                                               |
+| `revision`                             | detects activity that is not a state change                               | revision-only movement is `unknown`, never receipt and never non-receipt                                                                                              |
+| `interactive_ready` / `launch_pending` | refuse to attribute a turn start to a pane that is not at a prompt        | **not reported by `agent list` on 0.9.5**, so this gate is inert for the default transport and cannot fire today (see gaps)                                           |
 
 ### What the API cannot prove
 
@@ -85,28 +85,28 @@ None of the three is consumption, acknowledgement or acceptance.
 
 ### The six facts, kept separate
 
-| Fact | Written by | Never collapsed into |
-| --- | --- | --- |
-| persisted | `send --apply` → `submitMessage` | notification |
-| notified/submitted | `notify --apply` → one pointer handed to a transport | consumed |
-| observed receipt (**new**) | bounded roster observation after the submission | submitted, consumed, accepted |
-| consumed/acknowledged | the recipient's own `ACK` | delivery |
-| reported | the recipient's `REPORT` | acceptance |
-| accepted | the coordinator's explicit decision | anything on this surface |
+| Fact                       | Written by                                           | Never collapsed into          |
+| -------------------------- | ---------------------------------------------------- | ----------------------------- |
+| persisted                  | `send --apply` → `submitMessage`                     | notification                  |
+| notified/submitted         | `notify --apply` → one pointer handed to a transport | consumed                      |
+| observed receipt (**new**) | bounded roster observation after the submission      | submitted, consumed, accepted |
+| consumed/acknowledged      | the recipient's own `ACK`                            | delivery                      |
+| reported                   | the recipient's `REPORT`                             | acceptance                    |
+| accepted                   | the coordinator's explicit decision                  | anything on this surface      |
 
 ## Phase 2 — representation and classification
 
 `pappra/collab-delivery-observation/1` is stored on the delivery **attempt** it
 describes (`attempts[].observation`, optional, strict):
 
-| Field | Content |
-| --- | --- |
-| `receipt` | `taken` \| `not_taken` \| `unknown` |
-| `reason` | closed code (17 values) naming the evidence |
-| `source` | `herdr-agent-state` |
-| `started_at`, `ended_at`, `window_ms`, `samples` | the bound that was actually used |
-| `before`, `after` | normalized transport state (`agent_status`, `terminal_id`, `state_change_seq`, `completion_seq`, `revision`, `interactive_ready`, `launch_pending`, `observed_at`); unreported signals stay `null`, never `0`/`false` |
-| `detail` | bounded human sentence |
+| Field                                            | Content                                                                                                                                                                                                               |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `receipt`                                        | `taken` \| `not_taken` \| `unknown`                                                                                                                                                                                   |
+| `reason`                                         | closed code (17 values) naming the evidence                                                                                                                                                                           |
+| `source`                                         | `herdr-agent-state`                                                                                                                                                                                                   |
+| `started_at`, `ended_at`, `window_ms`, `samples` | the bound that was actually used                                                                                                                                                                                      |
+| `before`, `after`                                | normalized transport state (`agent_status`, `terminal_id`, `state_change_seq`, `completion_seq`, `revision`, `interactive_ready`, `launch_pending`, `observed_at`); unreported signals stay `null`, never `0`/`false` |
+| `detail`                                         | bounded human sentence                                                                                                                                                                                                |
 
 Bound: at most 3 probes, 1 s apart, inside a 3 s window, each probe its own
 4 s transport timeout. `normalizeDeliveryObservationPolicy` clamps anything a
@@ -115,24 +115,24 @@ turn the loop into a watcher.
 
 Decision order, first match wins (`src/app/collab-delivery-observation.ts`):
 
-| # | Condition | Receipt | Reason |
-| --- | --- | --- | --- |
-| 1 | the transport outcome does not establish a submission (`blocked`/`refused`/`failed`) | `unknown` | `submission_not_established` |
-| 2 | recipient was launching / not interactive-ready before | `unknown` | `recipient_not_ready` |
-| 3 | before reading lacks `terminal_id` or `state_change_seq` | `unknown` | `signals_unavailable` |
-| 4 | recipient was already `working` | `unknown` | `recipient_already_working` |
-| 5 | recipient was `blocked` | `unknown` | `recipient_blocked` |
-| 6 | before status is not `idle`/`done` | `unknown` | `recipient_state_unknown` |
-| 7 | a probe fails / the name is gone / pane, harness, cwd or session changed | `unknown` | `probe_failed`, `target_missing`, `target_identity_changed`, `target_session_changed` |
-| 8 | a sample lacks counters | `unknown` | `evidence_incomplete` |
-| 9 | `terminal_id` differs from before | `unknown` | `terminal_changed` |
-| 10 | a sample is not interactive-ready | `unknown` | `recipient_not_ready` |
-| 11 | `working` **and** `state_change_seq` advanced past the before value | **`taken`** | `turn_observed` |
-| 12 | `working` without a moved counter | `unknown` | `evidence_incomplete` |
-| 13 | status moved, but not into `working` | `unknown` | `recipient_state_changed` |
-| 14 | `state_change_seq`, `completion_seq` or `revision` moved while at rest | `unknown` | `unattributed_activity` |
-| 15 | the window expired before the sample budget was collected | `unknown` | `window_expired` |
-| 16 | all samples quiet, budget complete | **`not_taken`** | `no_observed_turn` |
+| #   | Condition                                                                            | Receipt         | Reason                                                                                |
+| --- | ------------------------------------------------------------------------------------ | --------------- | ------------------------------------------------------------------------------------- |
+| 1   | the transport outcome does not establish a submission (`blocked`/`refused`/`failed`) | `unknown`       | `submission_not_established`                                                          |
+| 2   | recipient was launching / not interactive-ready before                               | `unknown`       | `recipient_not_ready`                                                                 |
+| 3   | before reading lacks `terminal_id` or `state_change_seq`                             | `unknown`       | `signals_unavailable`                                                                 |
+| 4   | recipient was already `working`                                                      | `unknown`       | `recipient_already_working`                                                           |
+| 5   | recipient was `blocked`                                                              | `unknown`       | `recipient_blocked`                                                                   |
+| 6   | before status is not `idle`/`done`                                                   | `unknown`       | `recipient_state_unknown`                                                             |
+| 7   | a probe fails / the name is gone / pane, harness, cwd or session changed             | `unknown`       | `probe_failed`, `target_missing`, `target_identity_changed`, `target_session_changed` |
+| 8   | a sample lacks counters                                                              | `unknown`       | `evidence_incomplete`                                                                 |
+| 9   | `terminal_id` differs from before                                                    | `unknown`       | `terminal_changed`                                                                    |
+| 10  | a sample is not interactive-ready                                                    | `unknown`       | `recipient_not_ready`                                                                 |
+| 11  | `working` **and** `state_change_seq` advanced past the before value                  | **`taken`**     | `turn_observed`                                                                       |
+| 12  | `working` without a moved counter                                                    | `unknown`       | `evidence_incomplete`                                                                 |
+| 13  | status moved, but not into `working`                                                 | `unknown`       | `recipient_state_changed`                                                             |
+| 14  | `state_change_seq`, `completion_seq` or `revision` moved while at rest               | `unknown`       | `unattributed_activity`                                                               |
+| 15  | the window expired before the sample budget was collected                            | `unknown`       | `window_expired`                                                                      |
+| 16  | all samples quiet, budget complete                                                   | **`not_taken`** | `no_observed_turn`                                                                    |
 
 Only two of these can produce a positive or negative receipt, and both need
 correlation the API can supply: same name, pane, harness, cwd, native session and
@@ -161,44 +161,44 @@ terminal, a rest state before, and an unbroken observation window.
 
 ## Write scope
 
-| File | Change |
-| --- | --- |
-| `src/app/collab-delivery-observation.ts` (new) | bounded probe loop, classification, policy normalization |
-| `src/app/collab-notify.ts` | receipt signals on `HerdrAgentObservation`, `list({timeoutMs})`, probe closure, observation wiring, `updateReservedAttempt` split, `NotifyResult.observation` |
-| `src/schemas/collaboration.ts` | `collabDeliveryObservationSchema`, receipt/reason/state schemas, optional `attempts[].observation` |
-| `src/cli/commands/collaboration-message.ts` | one bounded `receipt:` line in the human `notify` output |
-| `tests/collab/delivery-observation.test.ts` (new) | classification matrix, wiring, persistence, read contract, bounds |
-| `tests/collab/bootstrap-app-cli.test.ts` | one field (`observation: null`) on the existing `NotifyResult` fixture |
-| `docs/collaboration-messages.md` | six facts, new "Observed receipt" section, reason codes, read contract |
-| `docs/collaboration-reference.md` | receipt observation in the visible-bootstrap delivery step |
-| `docs/transport-runtime-boundaries.md` | delivery-record field table, `HerdrTransport` seam note, §3.3 "may claim" |
-| `skills/pappra/references/collaboration.md` + `src/assets/integrations/skills/pappra/references/collaboration.md` | observed receipt and the unobserved read contract (byte-identical mirror, enforced by `tests/hosts/skill-mirror.test.ts`) |
+| File                                                                                                              | Change                                                                                                                                                        |
+| ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/app/collab-delivery-observation.ts` (new)                                                                    | bounded probe loop, classification, policy normalization                                                                                                      |
+| `src/app/collab-notify.ts`                                                                                        | receipt signals on `HerdrAgentObservation`, `list({timeoutMs})`, probe closure, observation wiring, `updateReservedAttempt` split, `NotifyResult.observation` |
+| `src/schemas/collaboration.ts`                                                                                    | `collabDeliveryObservationSchema`, receipt/reason/state schemas, optional `attempts[].observation`                                                            |
+| `src/cli/commands/collaboration-message.ts`                                                                       | one bounded `receipt:` line in the human `notify` output                                                                                                      |
+| `tests/collab/delivery-observation.test.ts` (new)                                                                 | classification matrix, wiring, persistence, read contract, bounds                                                                                             |
+| `tests/collab/bootstrap-app-cli.test.ts`                                                                          | one field (`observation: null`) on the existing `NotifyResult` fixture                                                                                        |
+| `docs/collaboration-messages.md`                                                                                  | six facts, new "Observed receipt" section, reason codes, read contract                                                                                        |
+| `docs/collaboration-reference.md`                                                                                 | receipt observation in the visible-bootstrap delivery step                                                                                                    |
+| `docs/transport-runtime-boundaries.md`                                                                            | delivery-record field table, `HerdrTransport` seam note, §3.3 "may claim"                                                                                     |
+| `skills/pappra/references/collaboration.md` + `src/assets/integrations/skills/pappra/references/collaboration.md` | observed receipt and the unobserved read contract (byte-identical mirror, enforced by `tests/hosts/skill-mirror.test.ts`)                                     |
 
 Not touched: workspace/machine schema, `doctor`/`status`, configuration-authority
 docs (task B), README, `AGENTS.md`, roadmap, package/lockfile, global settings.
 
 ## Acceptance results
 
-| # | Requirement | Test | Result |
-| --- | --- | --- | --- |
-| 1 | an admitted message still submits exactly one pointer and keeps the `submitted`/`consumed`/`taskAccepted` contract | `delivery-observation.test.ts` "a legitimately accepted message still submits one pointer and records taken"; `notify-record-acceptance.test.ts` "notify still forwards one pointer for a message the record accepted" | pass |
-| 2 | #17 rejections still reach no transport, create no delivery record and never observe | `notify-record-acceptance.test.ts` (stale epoch, hand-placed envelope, content swap; `listCalls === 0`, no `notifications/*.json`); `delivery-observation.test.ts` "planned notification observes nothing and writes no delivery state" | pass |
-| 3 | corroborated receipt, and non-receipt where the API supports it | `delivery-observation.test.ts` "a corroborated turn start is taken…", "a complete quiet window is not_taken…" | pass |
-| 4 | missing signal, redraw-only activity, an already working recipient, a changed terminal, wrong identity, an expired window | `delivery-observation.test.ts` "missing signals…", "a moved counter without a turn…", "an already-working recipient…", "a changed terminal identity…", "identity, session and probe problems…", "an expired window…" | pass |
-| 5 | an observation failure or timeout never resubmits, keys or fabricates success | "a failed probe leaves the recorded submission and never resends" (one prompt, status `submitted`, receipt `unknown`); "an expired window reports unknown instead of guessing" | pass |
-| 6 | old/new delivery records read and stay bounded; no #17/#35 regression | "an older delivery record without an observation still reads as unobserved" (byte-identical file after reading); `notify-record-acceptance.test.ts`, `native-observation-age.test.ts`, `messages.test.ts` unchanged and green | pass |
+| #   | Requirement                                                                                                               | Test                                                                                                                                                                                                                                    | Result |
+| --- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| 1   | an admitted message still submits exactly one pointer and keeps the `submitted`/`consumed`/`taskAccepted` contract        | `delivery-observation.test.ts` "a legitimately accepted message still submits one pointer and records taken"; `notify-record-acceptance.test.ts` "notify still forwards one pointer for a message the record accepted"                  | pass   |
+| 2   | #17 rejections still reach no transport, create no delivery record and never observe                                      | `notify-record-acceptance.test.ts` (stale epoch, hand-placed envelope, content swap; `listCalls === 0`, no `notifications/*.json`); `delivery-observation.test.ts` "planned notification observes nothing and writes no delivery state" | pass   |
+| 3   | corroborated receipt, and non-receipt where the API supports it                                                           | `delivery-observation.test.ts` "a corroborated turn start is taken…", "a complete quiet window is not_taken…"                                                                                                                           | pass   |
+| 4   | missing signal, redraw-only activity, an already working recipient, a changed terminal, wrong identity, an expired window | `delivery-observation.test.ts` "missing signals…", "a moved counter without a turn…", "an already-working recipient…", "a changed terminal identity…", "identity, session and probe problems…", "an expired window…"                    | pass   |
+| 5   | an observation failure or timeout never resubmits, keys or fabricates success                                             | "a failed probe leaves the recorded submission and never resends" (one prompt, status `submitted`, receipt `unknown`); "an expired window reports unknown instead of guessing"                                                          | pass   |
+| 6   | old/new delivery records read and stay bounded; no #17/#35 regression                                                     | "an older delivery record without an observation still reads as unobserved" (byte-identical file after reading); `notify-record-acceptance.test.ts`, `native-observation-age.test.ts`, `messages.test.ts` unchanged and green           | pass   |
 
 ## Tests run
 
-| Command | Result |
-| --- | --- |
-| `npx tsc -p tsconfig.build.json --noEmit` and `-p tsconfig.test.json --noEmit` | clean |
-| `pnpm source:check` | `Source language policy passed.` |
-| `pnpm format:check` | `All matched files use Prettier code style!` |
-| `node --test .build/test/tests/collab/*.test.js` (whole collaboration suite) | 789 tests, 786 pass, 0 fail, 3 skipped |
-| `node --test .build/test/tests/collab/delivery-observation.test.js` | 21 tests, 21 pass |
+| Command                                                                                                           | Result                                          |
+| ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- |
+| `npx tsc -p tsconfig.build.json --noEmit` and `-p tsconfig.test.json --noEmit`                                    | clean                                           |
+| `pnpm source:check`                                                                                               | `Source language policy passed.`                |
+| `pnpm format:check`                                                                                               | `All matched files use Prettier code style!`    |
+| `node --test .build/test/tests/collab/*.test.js` (whole collaboration suite)                                      | 789 tests, 786 pass, 0 fail, 3 skipped          |
+| `node --test .build/test/tests/collab/delivery-observation.test.js`                                               | 21 tests, 21 pass                               |
 | `node --test .build/test/tests/hosts/skill-mirror.test.js .build/test/tests/hosts/pi-bootstrap-extension.test.js` | 20 tests, 20 pass (skill mirror byte-identical) |
-| `node --test .build/test/tests/docs/*.test.js .build/test/tests/usage/*.test.js` | 36 tests, 36 pass |
+| `node --test .build/test/tests/docs/*.test.js .build/test/tests/usage/*.test.js`                                  | 36 tests, 36 pass                               |
 
 Tests use an injected clock and an injected sleeper, so no test sleeps in real
 time: the three-sample window advances a fake clock by exactly 2 000 ms. The

@@ -385,10 +385,19 @@ export const COLLAB_DELIVERY_OBSERVATION_SCHEMA =
   'pappra/collab-delivery-observation/1';
 
 /**
- * What a receipt observation may conclude. `taken` and `not_taken` are bounded
- * statements about observed transport state around one submission; `unknown`
- * is every case the signals cannot attribute. None of the three is
- * consumption, acknowledgement or acceptance.
+ * What a receipt observation may conclude about *this* pointer.
+ *
+ * `taken` and `not_taken` are message-level receipts: they require evidence that
+ * correlates an observed state change with the one message that was delivered.
+ * `unknown` is everything a transport cannot attribute to this pointer.
+ *
+ * No supported transport provides message-level correlation — the Herdr roster
+ * read reports agent-level status and counters, so a turn that starts may have
+ * been started by this pointer, by another message or by a human, and a pointer
+ * sitting unsubmitted looks identical to one that was never typed. The
+ * observation therefore records `unknown` with the activity it did observe, and
+ * never emits `taken` or `not_taken` from roster signals. None of the three
+ * values is consumption, acknowledgement or acceptance.
  */
 export const collabDeliveryReceiptSchema = z.enum([
   'taken',
@@ -402,10 +411,10 @@ export type CollabDeliveryReceipt = z.infer<typeof collabDeliveryReceiptSchema>;
  * so a reader never has to infer why a delivery stayed unknown.
  */
 export const COLLAB_DELIVERY_OBSERVATION_REASONS = [
-  /** `taken`: the recipient left its rest state for a working turn. */
-  'turn_observed',
-  /** `not_taken`: a complete window of resting, unchanged samples. */
-  'no_observed_turn',
+  /** A working turn started on the same terminal; not attributable to this pointer. */
+  'turn_activity_observed',
+  /** No turn started inside the window; a queued or untyped pointer looks the same. */
+  'no_turn_activity_observed',
   /** The transport did not report the terminal identity or state counter. */
   'signals_unavailable',
   /** The transport outcome does not establish that anything was submitted. */
@@ -464,8 +473,8 @@ export type CollabDeliveryAgentState = z.infer<
 
 /**
  * Receipt evidence recorded beside a delivery attempt. It is an observation, not
- * a status: `submitted` keeps its meaning whether the receipt is taken,
- * not_taken or unknown.
+ * a status: `submitted` keeps its meaning whatever the receipt says, including
+ * the `unknown` every roster-signal observation records.
  */
 export const collabDeliveryObservationSchema = z.strictObject({
   schema: z.literal(COLLAB_DELIVERY_OBSERVATION_SCHEMA),
