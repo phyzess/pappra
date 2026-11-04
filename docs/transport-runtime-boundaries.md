@@ -127,6 +127,15 @@ Shape: `src/schemas/collaboration.ts:353-372`. Written by workflow prepare
 | `caller.process_affiliation`                         | always `not-established`                                        |
 | `status`                                             | `submitting`/`submitted`/`blocked`/`refused`/`unknown`/`failed` |
 | `attempts[].{at,status,detail,reservation_id}`       | every delivery attempt                                          |
+| `attempts[].observation`                             | bounded receipt evidence: `receipt`, closed `reason`, the before/after transport state, samples, window (optional; older attempts omit it) |
+
+Receipt evidence is a **separate fact** from `status`. `submitted` keeps its
+meaning whether the observation says `taken`, `not_taken` or `unknown`; the
+observation is written after the status is recorded, never rewrites it, and
+never authorizes a resend. Shape:
+`collabDeliveryObservationSchema` in `src/schemas/collaboration.ts`. An attempt
+recorded without it is unobserved, which every reader treats as `unknown`
+without rewriting the file.
 
 Shape: `src/schemas/collaboration.ts:365-432`. Written by
 `src/app/collab-notify.ts` and read by `readDeliveryRecord`
@@ -184,6 +193,9 @@ They say nothing about what a second channel would look like (§5).
   `agent prompt` (`:647`).
 - Injected: `notifyRegisteredMessage` falls back to it at `:1530`; tests pass a
   fake instead (`tests/collab/messages.test.ts` `FakeTransport`).
+- Receipt observation (#20) adds no operation: it takes its "before" reading
+  from the roster `list()` the participant check already ran, and each bounded
+  probe is one more `list()` call with its own timeout.
 
 **2. `HerdrBootstrapOps`** — `src/app/collab-bootstrap-transport.ts:196-241`
 
@@ -340,9 +352,19 @@ validation versus record acceptance" below.
   outside the closed `applied`/`recorded` allow-list
   (`message_record_state_not_notifiable`). Plan mode applies the same gate and
   still queries no transport.
-- **May claim**: `submitted` only. `consumed` and `taskAccepted` are typed as
-  the literal `false` (`collab-notify.ts:782`, `:1234`), so a caller cannot even
-  express the stronger claim from the notify result.
+- **May claim**: `submitted` plus a bounded receipt observation. `consumed` and
+  `taskAccepted` are typed as the literal `false`
+  (`collab-notify.ts:782`, `:1234`), so a caller cannot even express the
+  stronger claim from the notify result. The observation
+  (`src/app/collab-delivery-observation.ts`) may say `taken` only for a rest →
+  working transition with an advanced state counter on the same terminal, may
+  say `not_taken` only for a complete quiet window, and reports `unknown` for
+  every other signal — including an already working or blocked recipient, a
+  redraw-only revision change, a changed terminal identity, a moved counter
+  without an observed turn, a failed probe and an expired window. It probes the
+  roster through the same `list()` the participant check already uses, at most
+  three times inside a three-second window, and it never prompts, presses a key
+  or resends.
 - **Unsupported implementation must report**: `unavailable` when it cannot
   deliver at all, `unknown` when the effect is ambiguous, and never "delivered".
 

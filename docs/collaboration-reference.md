@@ -187,7 +187,15 @@ For `target.choice: "sibling"`, apply:
 5. Notifies the registered message pointer once through the existing message
    protocol, which forwards it only when the task record accepted that exact
    message. A successful prompt submission is reported as `submitted`, not as
-   consumed or accepted.
+   consumed or accepted. A bounded receipt observation is recorded beside that
+   status: `taken` when the recipient left a rest state for a working turn on
+   the same terminal, `not_taken` when a complete quiet window shows no turn
+   start, and `unknown` for every signal that cannot be attributed — an already
+   working recipient, a redraw-only change, a changed terminal identity, a moved
+   counter without an observed turn, a failed probe or an expired window. It
+   reuses the roster read and adds bounded probes only, never a resend or a key
+   press; see
+   [collaboration-messages.md](collaboration-messages.md#observed-receipt).
 
 If readiness fails or is unknown before startup, cleanup is limited to the pane
 returned by this request's successful split. Before `pane close`, apply rechecks

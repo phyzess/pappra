@@ -286,6 +286,11 @@ export async function runCollaborationMessageCommand(
           ...(value.deliveryPath === null
             ? []
             : [`  delivery: ${value.deliveryPath}`]),
+          ...(value.observation === null
+            ? []
+            : [
+                `  receipt: ${value.observation.receipt} (${value.observation.reason}), ${String(value.observation.samples)} sample(s) over ${String(value.observation.window_ms)} ms`,
+              ]),
         ]
       : [`Notification ${value.status}: ${String(value.detail)}`],
     ok ? 0 : 1,

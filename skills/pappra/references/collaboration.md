@@ -126,7 +126,14 @@ state `applied` or `recorded`, so a protocol-refused or hand-placed envelope is
 refused (`message_not_recorded`, `message_content_not_recorded`,
 `message_record_state_not_notifiable`) before any transport call. A successful
 `notify` means one prompt was submitted to a named Herdr agent; it does not mean
-the recipient read it, consumed it, or accepted the work.
+the recipient read it, consumed it, or accepted the work. Beside `submitted`,
+`notify` records a bounded receipt observation: `taken` only for a rest → working
+turn start on the same terminal, `not_taken` only for a complete quiet window,
+and `unknown` for an already working recipient, a redraw-only change, a changed
+terminal identity, a moved counter without an observed turn, a missing signal, a
+failed probe or an expired window. Probes are at most three, one second apart,
+inside a three-second window; nothing is retyped, resent or keyed, and
+`not_taken` never authorizes a resend.
 
 ## Envelope
 
@@ -671,6 +678,14 @@ is delivery evidence, not a second task record. Each retry reserves a distinct
 attempt under a task-private lock, so concurrent retries cannot lose an attempt
 or exceed the bound. Retries are explicit operator actions with `--retry` on the
 same message identity.
+
+Each attempted delivery also carries `observation` for that attempt:
+`receipt` is `taken`, `not_taken` or `unknown`, with a closed `reason`, the
+before/after transport state, the sample count and the observed window. It is
+written after the status and never changes it. An attempt recorded before this
+evidence existed has no `observation`, which reads as unobserved; nothing
+rewrites the file. Missing evidence is never inferred into a receipt, and a
+recorded `not_taken` is a fact for a human decision, not a retry authorization.
 
 ## Working loop
 
