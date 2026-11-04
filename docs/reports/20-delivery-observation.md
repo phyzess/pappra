@@ -2,11 +2,14 @@
 
 Fourth candidate. Coordinator preflight rejected `4ebb888` for its receipt
 semantics and budget; the independent review of `7119f93` returned F1–F5 (fixed in
-`32444a6`), and the targeted review of `f523532` returned F6–F8 (fixed in
-`af52665`). This change still alters delivery and persisted semantics,
-so it stops here and awaits the targeted re-review. Nothing was pushed, no PR was
-opened, no issue was closed or edited, no release or external message happened,
-and no real participant was sent anything.
+`32444a6`), and the targeted review of `f523532` returned F6–F8, fixed in
+`af52665` and now **passed** by the independent technical review. This revision
+changes nothing but this report's verification record (D1): the counts, who ran
+them, and the one unreproduced failure. The change still alters delivery and
+persisted semantics, so the wider independent review of the second write,
+concurrency, crash and old-record contracts remains outstanding. Nothing was
+pushed, no PR was opened, no issue was closed or edited, no release or external
+message happened, and no real participant was sent anything.
 
 **Scope of this observation, stated plainly.** It is a manual/API on-demand
 observation: `notify --observe`, or a caller passing an observation policy. The
@@ -234,15 +237,45 @@ after the delivery status is durable, so the reservation window is not widened.
 
 ## Verification
 
-| Command                                                                                                                          | Result                                                                                                                                         |
-| -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| `npx tsc -p tsconfig.build.json --noEmit`, `-p tsconfig.test.json --noEmit`                                                      | clean                                                                                                                                          |
-| `pnpm source:check`                                                                                                              | `Source language policy passed.`                                                                                                               |
-| `pnpm format:check`                                                                                                              | `All matched files use Prettier code style!`                                                                                                   |
-| `node --test --test-concurrency=4 .build/test/tests/collab/*.test.js`                                                            | 803 tests, 800 pass, 0 fail, 3 skipped                                                                                                         |
-| `node --test .build/test/tests/collab/delivery-observation.test.js .build/test/tests/collab/transport-guard-passthrough.test.js` | 34 tests, 34 pass                                                                                                                              |
-| `node --test .build/test/tests/collab/messages-cli.test.js`                                                                      | 3 tests, 3 pass (read-back of a saved observation and of an old record, the `--observe` routing cases, and the most-recent-attempt regression) |
-| `node --test .build/test/tests/hosts/skill-mirror.test.js .build/test/tests/docs/*.test.js .build/test/tests/cli/*.test.js`      | 46 tests, 46 pass                                                                                                                              |
+Every number below names who ran it and on which candidate. A count this author
+did not run is attributed to the reviewer who did, never presented as the
+author's own run.
+
+| Check                                                                                                                            | Result                                                                                                                                         | Executed by              | Candidate                                                    |
+| -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ | ------------------------------------------------------------ |
+| `npx tsc -p tsconfig.build.json --noEmit` and `-p tsconfig.test.json --noEmit`                                                   | clean                                                                                                                                          | author                   | `d0673c8` (F6–F8 report)                                     |
+| `pnpm source:check`                                                                                                              | `Source language policy passed.`                                                                                                               | author                   | `d0673c8`                                                    |
+| `pnpm format:check`                                                                                                              | `All matched files use Prettier code style!`                                                                                                   | author                   | `d0673c8`                                                    |
+| `node --test --test-concurrency=4 .build/test/tests/collab/*.test.js`                                                            | **807 tests, 804 pass, 0 fail, 3 skipped**                                                                                                     | author                   | `d0673c8`                                                    |
+| `node --test .build/test/tests/collab/delivery-observation.test.js .build/test/tests/collab/transport-guard-passthrough.test.js` | **37 tests, 37 pass**                                                                                                                          | **independent reviewer** | F6–F8 candidate (`af52665` implementation, `d0673c8` report) |
+| the same pair, before the three F7/F8 tests existed                                                                              | 34 tests, 34 pass                                                                                                                              | author                   | `f523532` (F1–F5 candidate)                                  |
+| `delivery-observation.test.js` alone, after the F7/F8 tests were added                                                           | 34 tests, 34 pass                                                                                                                              | author                   | `d0673c8`                                                    |
+| `node --test .build/test/tests/collab/messages-cli.test.js`                                                                      | 3 tests, 3 pass (read-back of a saved observation and of an old record, the `--observe` routing cases, and the most-recent-attempt regression) | author                   | `d0673c8`                                                    |
+| directed set: `delivery-observation`, `transport-guard-passthrough`, `messages-cli`, `hosts/skill-mirror`, `docs/*`, `cli/*`     | 86 tests, 86 pass                                                                                                                              | author                   | `d0673c8`                                                    |
+| `git diff --check` (working tree, then `f523532..HEAD`)                                                                          | no whitespace errors                                                                                                                           | author                   | `d0673c8`                                                    |
+
+The explicit 37/37 pair count is the reviewer's independent result for this
+candidate. The author never ran that exact two-file invocation after adding the
+three F7/F8 tests: the author's last pair run predates them (34/34 at `f523532`),
+and the added tests were verified by the author through the single-file run
+(34/34) and, together with the guard tests, inside the 86-test directed set above
+— so the pair's 37 tests did pass in the author's runs, but the pair figure itself
+is quoted from the reviewer rather than restated as an author command.
+
+### One unreproduced single-run failure
+
+The first full collaboration run on this candidate reported **807 tests, 803
+pass, 1 fail, 3 skipped**. That run's output was piped through a summary filter,
+so the failing test's name and message were never captured and cannot be
+reported; the run log was not kept.
+
+Three subsequent runs of the same command each reported **807 / 804 / 0 fail /
+3 skipped**, and a timing-sensitive subset (`pane-reclaim`, `workflow-await`,
+`recovery-executor`, `process`) reported 71/71. The failure did not reproduce.
+
+This is recorded as an unreproduced single-run failure at `d0673c8`. It is not
+inferred to be a pre-existing problem, not attributed to a specific test, and not
+treated as evidence of stability either.
 
 ### Documentation formatting
 
@@ -275,7 +308,11 @@ The skill reference mirror is byte-identical (`cmp` clean) and
 
 ## Diff against `f523532`
 
-The targeted fixes only: the composed-then-bounded detail and the numberless
+Two report-only revisions follow `af52665`: the F6–F8 report commit and this D1
+correction (verification counts, their executor, and the unreproduced failure).
+Neither changes code.
+
+The implementation diff is the targeted fixes only: the composed-then-bounded detail and the numberless
 truncation marker (`src/app/collab-delivery-observation.ts`), the
 most-recent-attempt summary (`src/cli/commands/collaboration-message.ts`), their
 tests, the read-back wording in `docs/collaboration-messages.md` and the skill
@@ -308,7 +345,7 @@ the skill reference and its mirror.
   minimal context because `BootstrapContext` is internal. The work-execution guard
   is covered on both paths.
 
-## For the targeted re-review
+## Review record and outstanding questions
 
 1. F1: is forwarding `list(options)` in both guards sufficient, and does the
    extraction of `guardedWorkExecutionTransport` preserve the prompt/authority
@@ -321,9 +358,8 @@ the skill reference and its mirror.
    the right (and only) read-back surface?
 4. F4/F5: are the late-failure/late-reading distinction and the two-clock
    responsibilities documented as narrowly as the code delivers them?
-5. F6/F7/F8: is "most recent attempt, never borrow an earlier observation" the
-   right read-back rule, does the composed-then-bounded detail keep both facts in
-   one field, and is the numberless truncation marker acceptable?
+5. ~~F6/F7/F8: most-recent-attempt read-back, composed-then-bounded detail, and
+   the numberless truncation marker.~~ Passed the independent technical review;
+   this revision only corrects the verification record it was asked to fix.
 6. Still outstanding for the independent review: the second write, concurrency,
-   crash windows and old-record reads.
    crash windows and old-record reads.
