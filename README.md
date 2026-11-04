@@ -34,6 +34,12 @@ them, and none of it is lost with the chat.
 
 Use only the parts you need.
 
+Pappra's dandelion-seed identity expresses a broader direction: bring reusable working
+capabilities into a workspace, grow project knowledge, and carry work across agents and
+environments. Workspace adoption and knowledge growth are as important as collaborative
+execution and delivery. The [product roadmap](docs/roadmap.md) separates current capabilities,
+accepted foundations and the next work packages; planned outcomes are not claims of support.
+
 ## See it
 
 A checkpoint is a saved note about one task: what it is, how you know it is done, where it stopped. A
