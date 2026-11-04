@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme/hero.zh-CN.svg" width="100%" alt="Pappra：Agent 的会话会结束，任务不会。图中是两个会话之间的交接，并嵌入了一段真实的 pappra resume 输出：目标、上下文状态，以及交给下一个会话的下一步；其余输出行已省略。">
+  <img src="docs/assets/readme/hero.zh-CN.svg" width="100%" alt="Pappra 与青风蒲公英种子标志：Agent 的会话会结束，任务不会。图中是两个会话之间的交接，并嵌入了一段真实的 pappra resume 输出：目标、上下文状态，以及交给下一个会话的下一步；其余输出行已省略。">
 </p>
 
 **编码 Agent 的会话会结束，任务不会。Pappra 把目标、已经做过的决定和下一步保存成你项目里的

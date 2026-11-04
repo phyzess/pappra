@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/readme/hero.svg" width="100%" alt="Pappra: your agent's session ends, the task does not. A hand-off from one session to the next, built around an excerpt of real pappra resume output: the objective, the context status and the next step handed to the next session; the other lines are omitted.">
+  <img src="docs/assets/readme/hero.svg" width="100%" alt="Pappra and its floating dandelion seed logo: your agent's session ends, the task does not. A hand-off from one session to the next, built around an excerpt of real pappra resume output: the objective, the context status and the next step handed to the next session; the other lines are omitted.">
 </p>
 
 **Your coding agent's session ends; the task does not. Pappra keeps the goal, the decisions and
