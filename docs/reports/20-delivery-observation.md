@@ -1,23 +1,34 @@
 # Task C report — delivery observation (#20)
 
-Third candidate. Coordinator preflight rejected `4ebb888` for its receipt
-semantics and budget; the independent review of `7119f93` then returned a
-needs-fix set (F1–F5), fixed here in `32444a6`. This change still alters delivery
-and persisted semantics, so it stops here and awaits the targeted re-review.
-Nothing was pushed, no PR was opened, no issue was closed or edited, no release or
-external message happened, and no real participant was sent anything.
+Fourth candidate. Coordinator preflight rejected `4ebb888` for its receipt
+semantics and budget; the independent review of `7119f93` returned F1–F5 (fixed in
+`32444a6`), and the targeted review of `f523532` returned F6–F8 (fixed in
+`af52665`). This change still alters delivery and persisted semantics,
+so it stops here and awaits the targeted re-review. Nothing was pushed, no PR was
+opened, no issue was closed or edited, no release or external message happened,
+and no real participant was sent anything.
+
+**Scope of this observation, stated plainly.** It is a manual/API on-demand
+observation: `notify --observe`, or a caller passing an observation policy. The
+automatic dispatch paths (visible bootstrap, work-execution dispatch, workflow
+ack/report/accept) do **not** observe — they notify exactly as before, with no
+probe and no wait. Every record this implementation writes keeps
+`receipt: unknown`, and there is **no real-host delivery proof**: whether a real
+prompt on a real pane starts a turn, how fast, and whether a redraw moves
+`revision` all remain unverified, and no live experiment was run.
 
 ## Base and head
 
-|                              |                                                                                                                                                                   |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| repository                   | `/Users/zimm.yu/personal/YU/pappra` (worktree `/private/tmp/pappra-20-observation`)                                                                               |
-| branch                       | `codex/20-delivery-observation`, created from `origin/main`                                                                                                       |
-| base                         | `a351802` — `docs: balance workspace growth and collaborative delivery roadmap (#47)`                                                                             |
-| first candidate              | `346c704` implementation, `4ebb888` report — rejected by preflight                                                                                                |
-| second candidate             | `cec2b81` implementation, `7119f93` report — needs-fix from independent review                                                                                    |
-| head (implementation)        | `32444a6` — `fix(collab): forward the probe budget, protect the delivery record, observe on request (#20)`; the branch tip is that commit plus this report commit |
-| known merged bases confirmed | `a351802` (PR #47), `366f49f` (PR #40, #17)                                                                                                                       |
+|                              |                                                                                                                                                      |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| repository                   | `/Users/zimm.yu/personal/YU/pappra` (worktree `/private/tmp/pappra-20-observation`)                                                                  |
+| branch                       | `codex/20-delivery-observation`, created from `origin/main`                                                                                          |
+| base                         | `a351802` — `docs: balance workspace growth and collaborative delivery roadmap (#47)`                                                                |
+| first candidate              | `346c704` implementation, `4ebb888` report — rejected by preflight                                                                                   |
+| second candidate             | `cec2b81` implementation, `7119f93` report — needs-fix from independent review                                                                       |
+| third candidate              | `32444a6` implementation, `f523532` report — targeted review returned F6–F8                                                                          |
+| head (implementation)        | `af52665` — `fix(collab): report the most recent attempt and bound the composed detail (#20)`; the branch tip is that commit plus this report commit |
+| known merged bases confirmed | `a351802` (PR #47), `366f49f` (PR #40, #17)                                                                                                          |
 
 `origin/main` was already `a351802` when the worktree was created; no other
 branch, worktree or uncommitted change was touched. `pnpm dev:setup` prepared this
@@ -61,7 +72,7 @@ guard still refuses a foreign recipient before anything is prompted.
 
 | Requirement                                              | Implementation                                                                                                                                                                                                                                                                                                                                                                                                   |
 | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| untrusted `detail` is bounded and marked                 | `boundDetail()` in `collab-delivery-observation.ts` shortens only the free-text detail: the observation's own `detail` at 1 024 chars (its schema bound), the attempt `detail` at 4 096 in the write path. A shortened value ends with ` …[truncated N chars]`                                                                                                                                                   |
+| untrusted `detail` is bounded and marked                 | `boundDetail()` in `collab-delivery-observation.ts` shortens only the free-text detail: the observation's own `detail` at 1 024 chars (its schema bound), the attempt `detail` at 4 096 in the write path. A shortened value ends with ` …[truncated]`                                                                                                                                                           |
 | never truncate identity or state to make a "legal" value | no identity or state field is ever shortened. An observation whose state is out of schema is rejected by the writer instead of being trimmed into a different value that looks valid                                                                                                                                                                                                                             |
 | validate before the atomic publish                       | `writeDelivery` validates the candidate against `pappra/collab-delivery/1` before the temp file is created, and `updateReservedAttempt` pre-checks so it can report the precise code instead of a generic write failure                                                                                                                                                                                          |
 | failure keeps the valid status/attempts and says so      | `updateReservedAttempt` now returns a typed outcome (`delivery_state_busy`, `delivery_state_unreadable`, `delivery_record_invalid`, `delivery_state_unwritable`). On failure nothing is written; the result reports `observation: null` and appends `The transport observation (receipt/reason) was not recorded (<code>: <detail>)` to its detail, so an unrecorded value is never presented as stored evidence |
@@ -100,11 +111,12 @@ which are unchanged and green.
   (`run.ts`, `collaboration-routing/native.ts`,
   `collaboration-routing/execution.ts`) the same way `--retry` already is. No
   global policy framework was introduced.
-- **Read-back.** `message read` reports the saved observation for the delivered
-  attempt (`receipt: unknown (no_turn_activity_observed), 3 sample(s) over
-2000 ms`) and `receipt: unobserved` when the record has none — an old record and
-  a notification sent without `--observe` look the same and neither becomes an
-  `unknown` receipt. The JSON `delivery` object already carries the observation.
+- **Read-back.** `message read` reports the saved observation of the **most
+  recent** attempt together with that attempt's status
+  (`receipt: unknown (no_turn_activity_observed), 3 sample(s) over 2000 ms; most
+recent attempt submitted`), and `unobserved for the most recent attempt
+(<status>)` when that attempt has no observation — see F6. The JSON `delivery`
+  object keeps every attempt, so earlier observations stay readable.
   `message list` and `workflow inspect` are untouched, and nothing watches in the
   background.
 
@@ -142,6 +154,64 @@ notification with `clock = 2026-11-12T08:00:00Z` and an observation clock starti
 at `2030-05-06T07:08:09Z`, then asserts the record carries the first and
 `started_at`/`ended_at`/`window_ms` the second.
 
+## F6–F8, item by item (targeted review of `f523532`)
+
+### F6 — `message read` reports the most recent attempt
+
+The behaviour was already "last attempt", but the comment, the user document and
+the previous report described it as "the attempt that delivered the pointer",
+which is a different claim once a retry exists. All three now say the same thing:
+the human summary describes the **most recent** attempt and never borrows an
+earlier attempt's evidence.
+
+`receipt:` now carries the attempt status it refers to:
+
+- an observation exists: `unknown (reason), N sample(s) over M ms; most recent attempt <status>`;
+- no observation: `unobserved for the most recent attempt (<status>)`;
+- no delivery at all: `not-notified`.
+
+Regression ("message read summarises the most recent attempt and JSON keeps
+earlier evidence", `tests/collab/messages-cli.test.ts`): attempt 1 is `submitted`
+with a bounded observation, attempt 2 is a refused `--retry` sent **without**
+observation. The human summary prints `receipt: unobserved for the most recent
+attempt (refused)` and never prints the earlier `no_turn_activity_observed`; the
+JSON result keeps both attempts, with `attempts[0].observation.receipt ===
+"unknown"` and no observation on `attempts[1]`.
+
+### F7 — the detail is composed first and bounded once
+
+The previous `finish()` bounded the free-text detail and then appended the
+over-run note, so an over-long transport error plus a >600 000 ms elapsed time
+produced a detail longer than the schema allows — which the F2 validation would
+then reject, losing the real elapsed time and the cap explanation.
+
+`observationDetail()` now builds the complete sentence first and bounds once. The
+over-run note is appended _after_ the free-text part has been shortened to leave
+room for it, so both facts always survive and the field stays within 1 024
+characters. `window_ms` is 600 000 with the true elapsed time in the note.
+
+Test: "an over-long error and an over-run window are both kept inside the bound" —
+a 5 000-character probe error with a 700 000 ms probe on a 3 000 ms window yields
+`window_ms: 600000`, a detail ≤ 1 024 that contains the truncation marker, the
+`capped at 600000 ms` sentence and `ran for 700000 ms`, and an observation that
+passes `collabDeliveryObservationSchema`. The companion case ("an over-run window
+without a long error keeps the whole note") asserts the exact composed sentence.
+Both use the injected clock; nothing waits.
+
+### F8 — the truncation marker is exact and the bound is respected
+
+The old marker printed `text.length - limit` as the removed count, which
+understated the cut by the marker's own length, and the arithmetic had to be
+computed against the space the count itself consumes. The marker is now
+` …[truncated]` with no number: it cannot misreport, and `boundDetail` returns a
+value of at most `limit` characters (exactly `limit` when it shortens, by
+construction). A bound smaller than the marker still returns a bounded value
+rather than overshooting.
+
+Test: "the truncation marker is exact and never exceeds the field bound" asserts
+the exact length, the marker suffix, the kept prefix, the pass-through case, the
+`null` case and the degenerate small-bound case.
+
 ## What the observation still says (unchanged from `cec2b81`)
 
 `receipt` is `unknown` on every path. A Herdr roster read is agent-level: no
@@ -164,15 +234,15 @@ after the delivery status is durable, so the reservation window is not widened.
 
 ## Verification
 
-| Command                                                                                                                          | Result                                                                         |
-| -------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `npx tsc -p tsconfig.build.json --noEmit`, `-p tsconfig.test.json --noEmit`                                                      | clean                                                                          |
-| `pnpm source:check`                                                                                                              | `Source language policy passed.`                                               |
-| `pnpm format:check`                                                                                                              | `All matched files use Prettier code style!`                                   |
-| `node --test --test-concurrency=4 .build/test/tests/collab/*.test.js`                                                            | 803 tests, 800 pass, 0 fail, 3 skipped                                         |
-| `node --test .build/test/tests/collab/delivery-observation.test.js .build/test/tests/collab/transport-guard-passthrough.test.js` | 34 tests, 34 pass                                                              |
-| `node --test .build/test/tests/collab/messages-cli.test.js`                                                                      | 2 tests, 2 pass (includes the two read-back and two `--observe` routing cases) |
-| `node --test .build/test/tests/hosts/skill-mirror.test.js .build/test/tests/docs/*.test.js .build/test/tests/cli/*.test.js`      | 46 tests, 46 pass                                                              |
+| Command                                                                                                                          | Result                                                                                                                                         |
+| -------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `npx tsc -p tsconfig.build.json --noEmit`, `-p tsconfig.test.json --noEmit`                                                      | clean                                                                                                                                          |
+| `pnpm source:check`                                                                                                              | `Source language policy passed.`                                                                                                               |
+| `pnpm format:check`                                                                                                              | `All matched files use Prettier code style!`                                                                                                   |
+| `node --test --test-concurrency=4 .build/test/tests/collab/*.test.js`                                                            | 803 tests, 800 pass, 0 fail, 3 skipped                                                                                                         |
+| `node --test .build/test/tests/collab/delivery-observation.test.js .build/test/tests/collab/transport-guard-passthrough.test.js` | 34 tests, 34 pass                                                                                                                              |
+| `node --test .build/test/tests/collab/messages-cli.test.js`                                                                      | 3 tests, 3 pass (read-back of a saved observation and of an old record, the `--observe` routing cases, and the most-recent-attempt regression) |
+| `node --test .build/test/tests/hosts/skill-mirror.test.js .build/test/tests/docs/*.test.js .build/test/tests/cli/*.test.js`      | 46 tests, 46 pass                                                                                                                              |
 
 ### Documentation formatting
 
@@ -202,6 +272,14 @@ npx prettier --check --ignore-path /dev/null \
 The skill reference mirror is byte-identical (`cmp` clean) and
 `tests/hosts/skill-mirror.test.ts` passes. The whole-repository gate
 (`pnpm check`) is left to the coordinator's integration run.
+
+## Diff against `f523532`
+
+The targeted fixes only: the composed-then-bounded detail and the numberless
+truncation marker (`src/app/collab-delivery-observation.ts`), the
+most-recent-attempt summary (`src/cli/commands/collaboration-message.ts`), their
+tests, the read-back wording in `docs/collaboration-messages.md` and the skill
+reference (+ mirror), and this report. No schema, admission or retry change.
 
 ## Diff against `7119f93`
 
@@ -243,5 +321,9 @@ the skill reference and its mirror.
    the right (and only) read-back surface?
 4. F4/F5: are the late-failure/late-reading distinction and the two-clock
    responsibilities documented as narrowly as the code delivers them?
-5. Still outstanding for the independent review: the second write, concurrency,
+5. F6/F7/F8: is "most recent attempt, never borrow an earlier observation" the
+   right read-back rule, does the composed-then-bounded detail keep both facts in
+   one field, and is the numberless truncation marker acceptable?
+6. Still outstanding for the independent review: the second write, concurrency,
+   crash windows and old-record reads.
    crash windows and old-record reads.
