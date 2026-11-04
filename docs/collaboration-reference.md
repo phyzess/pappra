@@ -188,8 +188,9 @@ command>`; argument values are encoded as literal Nushell strings, with no
 5. Notifies the registered message pointer once through the existing message
    protocol, which forwards it only when the task record accepted that exact
    message. A successful prompt submission is reported as `submitted`, not as
-   consumed or accepted. A bounded observation of the recipient's transport is
-   recorded beside that status, and it is not a receipt: every signal a supported
+   consumed or accepted. On request (`--observe`), a bounded observation of the
+   recipient's transport is recorded beside that status, and it is not a receipt:
+   every signal a supported
    Herdr reports is agent-level, so the record stays `receipt: unknown` and names
    the activity instead — `turn_activity_observed` when a turn started on that
    terminal (cause unknown), `no_turn_activity_observed` when a complete quiet
@@ -198,8 +199,10 @@ command>`; argument values are encoded as literal Nushell strings, with no
    a moved counter, a failed probe or an expired budget. `taken`/`not_taken`
    remain defined for a transport that can correlate a state change with one
    message; none emits them today. It reuses the roster read and adds bounded
-   probes only, never a resend or a key press; see
-   [collaboration-messages.md](collaboration-messages.md#observed-receipt).
+   probes only, never a resend or a key press. Without `--observe` no probe and no
+   wait are added at all. A rejected or failed observation write leaves the
+   recorded status and attempts intact and is reported as not recorded; see
+   [collaboration-messages.md](collaboration-messages.md#observed-receipt-on-request).
 
 If readiness fails or is unknown before startup, cleanup is limited to the pane
 returned by this request's successful split. Before `pane close`, apply rechecks

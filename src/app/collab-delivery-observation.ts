@@ -38,6 +38,13 @@ import type {
  *   requested timeout can overrun the budget; there is no cancellation path
  *   from here into the transport, so the record states the overrun instead of
  *   claiming a hard wall-clock limit.
+ *
+ * Two different clocks meet here, and they are not interchangeable. `now()` is
+ * the observation's own budget clock: it measures the window and is advanced by
+ * the loop's sleeps. It is deliberately separate from the caller's fixed record
+ * timestamp (the delivery record's `at`/`updated_at`), which says when the
+ * attempt was recorded and never drives a deadline. A test that needs both to
+ * agree must inject both explicitly.
  */
 
 /** Structural problems a probe can detect before any state comparison. */
@@ -85,6 +92,22 @@ export const MAX_DELIVERY_OBSERVATION_SAMPLES = 8;
 export const MAX_DELIVERY_OBSERVATION_INTERVAL_MS = 30_000;
 export const MAX_DELIVERY_OBSERVATION_WINDOW_MS = 60_000;
 export const MAX_DELIVERY_OBSERVATION_PROBE_TIMEOUT_MS = 30_000;
+
+/**
+ * Bound for the free-text `detail` of an observation (the persisted schema caps
+ * it at 1024). Only this diagnostic is shortened: identity and state fields are
+ * never truncated, because a shortened terminal id or status would look like a
+ * valid different value. An observation that is otherwise outside the schema is
+ * rejected by the writer instead of being trimmed into shape.
+ */
+export const MAX_OBSERVATION_DETAIL_CHARS = 1024;
+
+/** Shortens a detail that is over `limit`, marking the cut explicitly. */
+export function boundDetail(text: string | null, limit: number): string | null {
+  if (text === null || text.length <= limit) return text;
+  const marker = ` …[truncated ${String(text.length - limit)} chars]`;
+  return `${text.slice(0, Math.max(0, limit - marker.length))}${marker}`;
+}
 
 /** A negative needs at least two independent samples to be a window. */
 export const MIN_DELIVERY_OBSERVATION_SAMPLES = 2;
@@ -159,9 +182,15 @@ export interface ObserveDeliveryReceiptInput {
   /**
    * One bounded read of the recipient. `budgetMs` never exceeds the remaining
    * observation budget; a transport that honours it cannot stretch the window.
+   *
+   * A probe that reports a problem keeps its own diagnosis even when it returns
+   * late: "the read failed" and "the window is spent" are different facts. Only
+   * a reading is refused after the budget, because a late state would be
+   * attributed to a window that has already ended.
    */
   readonly probe: (budgetMs: number) => Promise<DeliveryObservationProbe>;
   readonly policy: DeliveryObservationPolicy;
+  /** The budget clock. It measures the window and is advanced by `sleep`. */
   readonly now: () => number;
   readonly sleep: (milliseconds: number) => Promise<void>;
 }
@@ -204,7 +233,10 @@ export async function observeDeliveryReceipt(
     const endedAt = Math.max(startedAt, input.now());
     const elapsed = endedAt - startedAt;
     const recorded = Math.min(elapsed, MAX_RECORDED_WINDOW_MS);
-    const detail = fields.detail ?? null;
+    const detail = boundDetail(
+      fields.detail ?? null,
+      MAX_OBSERVATION_DETAIL_CHARS,
+    );
     return {
       schema: 'pappra/collab-delivery-observation/1',
       receipt: 'unknown',
@@ -295,8 +327,10 @@ export async function observeDeliveryReceipt(
       });
     }
     samples += 1;
-    // A probe that reports a specific problem keeps that reason: a missing
-    // target, a changed identity and a failed read are different evidence.
+    // A late failure is still a failure diagnosis (`probe_failed`, or the
+    // specific target problem); it is checked before the budget so the record
+    // says what went wrong rather than only that time ran out. A late *reading*
+    // is different and is refused below.
     if (!probe.ok)
       return finish(probe.reason, {
         samples,

@@ -7,6 +7,7 @@ import { notificationsDir } from '../collab/store.js';
 import type { Message, TaskRecord } from '../collab/types.js';
 import {
   collabBindingSchema,
+  collabDeliverySchema,
   type CollabBinding,
   type CollabBindingParticipant,
   type CollabDelivery,
@@ -16,6 +17,7 @@ import {
   type CollabDeliveryStatus,
 } from '../schemas/collaboration.js';
 import {
+  boundDetail,
   delay,
   normalizeDeliveryObservationPolicy,
   observeDeliveryReceipt,
@@ -790,9 +792,10 @@ export interface NotifyOptions {
   readonly transport?: HerdrTransport;
   readonly clock?: number;
   /**
-   * Bounded receipt observation after a submission. Missing means the default
-   * policy; `false` records no observation at all (the attempt then stays
-   * unobserved, which every reader treats as unknown).
+   * Bounded transport observation after a submission. It is off unless a caller
+   * asks for it: omitting this (or passing `false`) keeps the notification
+   * exactly as it was before #20 — no probe, no extra wait, no observation in
+   * the record. Pass a policy (or `{}` for the defaults) to observe.
    */
   readonly observation?: NotifyObservationOptions | false;
 }
@@ -1177,6 +1180,23 @@ async function ensureNotificationsDirectory(
   return { ok: true, value: directory };
 }
 
+/**
+ * Renders one schema issue as a bounded sentence. It is diagnostic text only:
+ * the record is never reshaped to fit, because a shortened identity or status
+ * would be a different value that happens to look valid.
+ */
+function schemaIssue(error: {
+  readonly issues: readonly {
+    readonly path: readonly PropertyKey[];
+    readonly message: string;
+  }[];
+}): string {
+  const first = error.issues[0];
+  if (first === undefined) return 'invalid delivery document';
+  const where = first.path.map((part) => String(part)).join('.');
+  return `${where === '' ? '<root>' : where}: ${first.message}`;
+}
+
 function writeDelivery(
   taskRoot: string,
   directory: string,
@@ -1186,6 +1206,13 @@ function writeDelivery(
   if (!notificationsDirectorySyncOk(taskRoot, directory)) {
     throw new Error(`Delivery metadata directory is unsafe: ${directory}`);
   }
+  // Last gate before the atomic publish: a record that no reader could parse is
+  // never written over an intact one.
+  const validated = collabDeliverySchema.safeParse(delivery);
+  if (!validated.success)
+    throw new Error(
+      `Delivery record failed validation: ${schemaIssue(validated.error)}`,
+    );
   const temporary = path.join(
     directory,
     `${path.basename(file)}.tmp-${process.pid}-${Date.now()}`,
@@ -1629,7 +1656,9 @@ export async function notifyRegisteredMessage(
   // Receipt observation is a bounded read-only probe loop, never a watcher and
   // never a second submission. It starts only after a prompt outcome is recorded.
   const observationSettings =
-    options.observation === false ? null : options.observation;
+    options.observation === undefined || options.observation === false
+      ? null
+      : options.observation;
   const observationPolicy =
     observationSettings === null
       ? null
@@ -2006,21 +2035,38 @@ export async function notifyRegisteredMessage(
           now: observationNow,
           sleep: observationSleep,
         });
-  const observationRecorded =
-    receipt !== null &&
-    reservationId !== null &&
-    recordAttemptObservation({
-      taskRoot,
-      directory: directory.value,
-      deliveryFile,
-      reservationId,
-      observation: receipt,
-      clock: options.clock,
-    }) !== null;
+  // The observation is recorded only if its own guarded write succeeds. When it
+  // does not, the already recorded status and attempts stay exactly as they are,
+  // the result names what was observed and why it was not stored, and the
+  // unrecorded value is not presented as stored evidence.
+  const observationWrite =
+    receipt === null || reservationId === null
+      ? null
+      : recordAttemptObservation({
+          taskRoot,
+          directory: directory.value,
+          deliveryFile,
+          reservationId,
+          observation: receipt,
+          clock: options.clock,
+        });
+  const observationRecorded = observationWrite !== null && observationWrite.ok;
+  const observationFailure =
+    receipt !== null && observationWrite !== null && !observationWrite.ok
+      ? observationWrite
+      : null;
   const detail =
     result.status === 'unavailable'
       ? `Herdr was not callable; nothing was submitted${result.detail === null ? '' : `: ${result.detail}`}`
       : result.detail;
+  const observationNote =
+    receipt === null
+      ? null
+      : observationRecorded
+        ? null
+        : observationFailure === null
+          ? `The transport observation (${receipt.receipt}/${receipt.reason}) was not recorded.`
+          : `The transport observation (${receipt.receipt}/${receipt.reason}) was not recorded (${observationFailure.code}: ${observationFailure.detail}).`;
   return {
     ok: true,
     value: resultOf(base, {
@@ -2033,10 +2079,10 @@ export async function notifyRegisteredMessage(
       attempts: finalized.attempts.length,
       priorStatus: existing?.status ?? null,
       detail:
-        receipt === null || observationRecorded
+        observationNote === null
           ? detail
-          : `${detail === null ? '' : `${detail} `}The receipt observation could not be written to the delivery record.`,
-      observation: receipt,
+          : `${detail === null ? '' : `${detail} `}${observationNote}`,
+      observation: observationRecorded ? receipt : null,
     }),
   };
 }
@@ -2045,14 +2091,38 @@ export async function notifyRegisteredMessage(
 const reservations = new Map<string, string>();
 
 /**
+ * Why a guarded reserved-attempt update did not happen. These are diagnostics
+ * for the caller, never a status: the record on disk is left exactly as it was.
+ */
+export type ReservedAttemptFailure = {
+  readonly ok: false;
+  readonly code:
+    | 'delivery_state_busy'
+    | 'delivery_state_unreadable'
+    | 'delivery_record_invalid'
+    | 'delivery_state_unwritable';
+  readonly detail: string;
+};
+
+export type ReservedAttemptUpdate =
+  | { readonly ok: true; readonly delivery: CollabDelivery }
+  | ReservedAttemptFailure;
+
+/** The persisted schema caps a free-text attempt detail at 4096. */
+const MAX_ATTEMPT_DETAIL_CHARS = 4096;
+
+/**
  * Updates only this invocation's reserved attempt. A changed reservation, a lost
- * attempt or an unreadable record is never overwritten; the caller reports an
- * unknown outcome instead.
+ * attempt, an unreadable record or a candidate the schema would reject is never
+ * written over an intact one; the caller reports the failure and the record on
+ * disk keeps its last valid status and attempts.
  *
  * Two writes share this one guarded update: the transport outcome first, so the
  * delivery status is durable as soon as the prompt returns exactly as it was
- * before #20, then an additive receipt observation for the same reservation. The
- * observation write can only add evidence — it never changes a status.
+ * before #20, then an additive observation for the same reservation. The second
+ * write can only add evidence — it never changes a status. Only the free-text
+ * `detail` is bounded; identity and state values are never shortened, so a value
+ * that is out of schema rejects the write instead of being trimmed into shape.
  */
 function updateReservedAttempt(input: {
   readonly taskRoot: string;
@@ -2066,20 +2136,39 @@ function updateReservedAttempt(input: {
   };
   readonly observation?: CollabDeliveryObservation;
   readonly clock: number | undefined;
-}): CollabDelivery | null {
+}): ReservedAttemptUpdate {
   const lockPath = lockPathFor(input.deliveryFile);
   const lock = acquireDeliveryLock(lockPath);
-  if (lock !== 'acquired') return null;
+  if (lock !== 'acquired')
+    return {
+      ok: false,
+      code:
+        lock === 'busy' ? 'delivery_state_busy' : 'delivery_state_unwritable',
+      detail:
+        lock === 'busy'
+          ? 'another notification holds the delivery lock'
+          : `the delivery lock could not be created at ${lockPath}`,
+    };
   try {
     const current = readDeliveryRecord(
       input.taskRoot,
       path.basename(input.deliveryFile, '.json'),
     );
-    if (current === null) return null;
+    if (current === null)
+      return {
+        ok: false,
+        code: 'delivery_state_unreadable',
+        detail: 'the delivery record could not be read back',
+      };
     const index = current.attempts.findIndex(
       (attempt) => attempt.reservation_id === input.reservationId,
     );
-    if (index < 0) return null;
+    if (index < 0)
+      return {
+        ok: false,
+        code: 'delivery_state_unreadable',
+        detail: 'the reserved attempt is no longer in the delivery record',
+      };
     const attempts = current.attempts.map((attempt, position) =>
       position === index
         ? {
@@ -2088,7 +2177,10 @@ function updateReservedAttempt(input: {
               ? {}
               : {
                   status: input.outcome.status,
-                  detail: input.outcome.detail,
+                  detail: boundDetail(
+                    input.outcome.detail,
+                    MAX_ATTEMPT_DETAIL_CHARS,
+                  ),
                 }),
             ...(input.observation === undefined
               ? {}
@@ -2102,12 +2194,25 @@ function updateReservedAttempt(input: {
       attempts,
       updated_at: nowIso(input.clock),
     };
+    // Validate the candidate before the atomic publish, so a write that no
+    // reader could parse never replaces a valid record.
+    const validated = collabDeliverySchema.safeParse(next);
+    if (!validated.success)
+      return {
+        ok: false,
+        code: 'delivery_record_invalid',
+        detail: `the candidate record failed validation (${schemaIssue(validated.error)})`,
+      };
     try {
       writeDelivery(input.taskRoot, input.directory, input.deliveryFile, next);
-    } catch {
-      return null;
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'delivery_state_unwritable',
+        detail: errorMessage(error),
+      };
     }
-    return next;
+    return { ok: true, delivery: next };
   } finally {
     releaseDeliveryLock(lockPath);
   }
@@ -2132,14 +2237,15 @@ function finalizeDelivery(input: {
     outcome: { status: input.status, detail: input.detail },
     clock: input.clock,
   });
-  if (next !== null) reservations.delete(input.deliveryFile);
-  return next;
+  if (!next.ok) return null;
+  reservations.delete(input.deliveryFile);
+  return next.delivery;
 }
 
 /**
- * Adds receipt evidence to the same reserved attempt. A failure here leaves the
- * recorded delivery outcome intact and is reported to the caller; it never
- * rewrites the status and never triggers a second submission.
+ * Adds observation evidence to the same reserved attempt. A failure here leaves
+ * the recorded delivery outcome intact and is reported to the caller with its
+ * own code; it never rewrites the status and never triggers a second submission.
  */
 function recordAttemptObservation(input: {
   readonly taskRoot: string;
@@ -2148,7 +2254,7 @@ function recordAttemptObservation(input: {
   readonly reservationId: string;
   readonly observation: CollabDeliveryObservation;
   readonly clock: number | undefined;
-}): CollabDelivery | null {
+}): ReservedAttemptUpdate {
   return updateReservedAttempt({
     taskRoot: input.taskRoot,
     directory: input.directory,

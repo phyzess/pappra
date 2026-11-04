@@ -29,6 +29,7 @@ export async function handleMessages(
     if (values.limit !== undefined) provided.add('limit');
     if (values.apply === true) provided.add('apply');
     if (values.retry === true) provided.add('retry');
+    if (values.observe === true) provided.add('observe');
     if (values['caller-pane'] !== undefined) provided.add('caller-pane');
     const allowedByAction: Record<CollaborationMessageAction, Set<string>> = {
       send: new Set(['message', 'apply']),
@@ -39,6 +40,7 @@ export async function handleMessages(
         'binding',
         'apply',
         'retry',
+        'observe',
         'caller-pane',
       ]),
     };
@@ -103,6 +105,7 @@ export async function handleMessages(
         bindingFile: values.binding ?? null,
         apply: values.apply === true,
         retry: values.retry === true,
+        observe: values.observe === true,
         limit: values.limit ?? null,
         callerPane: values['caller-pane'] ?? null,
       },

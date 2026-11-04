@@ -99,6 +99,7 @@ export async function handleDirectRun(
     values['message-id'] !== undefined ||
     values.binding !== undefined ||
     values.retry === true ||
+    values.observe === true ||
     values['caller-pane'] !== undefined ||
     values.assignment !== undefined ||
     values['max-age-minutes'] !== undefined ||

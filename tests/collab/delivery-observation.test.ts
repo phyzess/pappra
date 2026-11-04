@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import { buildMessage } from '../../src/collab/envelope.js';
@@ -19,6 +19,7 @@ import {
 } from '../../src/app/collab-notify.js';
 import {
   DEFAULT_DELIVERY_OBSERVATION_POLICY,
+  MAX_OBSERVATION_DETAIL_CHARS,
   delay,
   normalizeDeliveryObservationPolicy,
   observeDeliveryReceipt,
@@ -1004,6 +1005,394 @@ test('an older delivery record without an observation still reads as unobserved'
     // Missing is unobserved; reading never rewrites the file.
     assert.equal(delivery.attempts[0]?.observation, undefined);
     assert.equal(readFileSync(file, 'utf8'), before);
+  } finally {
+    cleanup(value.root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// On demand: nothing is observed unless a caller asks for it
+// ---------------------------------------------------------------------------
+
+test('a notification without an explicit request observes nothing and waits for nothing', async () => {
+  const value = fixture('observation-default-off');
+  try {
+    await accepted(value, 'msg-observe-off');
+    const transport = new ScriptedTransport({ cwd: value.taskRoot });
+    const notified = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-off',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+    });
+    assert(notified.ok);
+    if (!notified.ok) return;
+    assert.equal(notified.value.status, 'submitted');
+    assert.equal(notified.value.observation, null);
+    // Exactly the pre-#20 traffic: one caller resolution, one roster read, one
+    // prompt. No probe, no wait.
+    assert.equal(transport.prompts.length, 1);
+    assert.equal(transport.listCalls.length, 1);
+    assert.deepEqual(transport.listCalls[0], {});
+    const delivery = readDeliveryRecord(value.taskRoot, 'msg-observe-off');
+    assert.equal(delivery?.status, 'submitted');
+    assert.equal(delivery?.attempts[0]?.observation, undefined);
+  } finally {
+    cleanup(value.root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// A broken observation never damages the delivery record
+// ---------------------------------------------------------------------------
+
+const TRUNCATION_MARKER = /\[truncated \d+ chars\]$/;
+
+test('an over-long diagnostic is bounded and marked, and the observation is kept', async () => {
+  const value = fixture('observation-long-detail');
+  try {
+    await accepted(value, 'msg-observe-long');
+    const transport = new ScriptedTransport({ cwd: value.taskRoot });
+    const timing = observationOptions();
+    const notified = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-long',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport: {
+        id: transport.id,
+        verifyCaller: () => transport.verifyCaller(),
+        list: (options) =>
+          transport.listCalls.length === 0
+            ? transport.list(options)
+            : Promise.resolve({
+                ok: false as const,
+                status: 'failed' as const,
+                detail: `agent list failed: ${'x'.repeat(5_000)}`,
+              }),
+        prompt: (agentName, text) => transport.prompt(agentName, text),
+      },
+      clock,
+      observation: timing.options,
+    });
+    assert(notified.ok);
+    if (!notified.ok) return;
+    const observation = notified.value.observation;
+    assert(observation);
+    assert.equal(observation.receipt, 'unknown');
+    assert.equal(observation.reason, 'probe_failed');
+    assert(observation.detail !== null);
+    assert(observation.detail.length <= MAX_OBSERVATION_DETAIL_CHARS);
+    assert.match(observation.detail, TRUNCATION_MARKER);
+    // It is still stored: only the free-text diagnostic was shortened.
+    const delivery = readDeliveryRecord(value.taskRoot, 'msg-observe-long');
+    assert.equal(delivery?.attempts[0]?.observation?.reason, 'probe_failed');
+  } finally {
+    cleanup(value.root);
+  }
+});
+
+test('an over-long attempt detail is bounded and marked, and the status is kept', async () => {
+  const value = fixture('observation-long-transport-detail');
+  try {
+    await accepted(value, 'msg-observe-long-transport');
+    const transport = new ScriptedTransport({
+      cwd: value.taskRoot,
+      prompt: {
+        status: 'submitted',
+        detail: `herdr said: ${'y'.repeat(5_000)}`,
+      },
+    });
+    const notified = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-long-transport',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+    });
+    assert(notified.ok);
+    if (!notified.ok) return;
+    assert.equal(notified.value.status, 'submitted');
+    const delivery = readDeliveryRecord(
+      value.taskRoot,
+      'msg-observe-long-transport',
+    );
+    assert(delivery);
+    assert.equal(delivery.status, 'submitted');
+    const attemptDetail = delivery.attempts[0]?.detail ?? '';
+    assert(attemptDetail.length <= 4_096);
+    assert.match(attemptDetail, TRUNCATION_MARKER);
+  } finally {
+    cleanup(value.root);
+  }
+});
+
+test('an observation the schema would reject is not recorded, and the status survives', async () => {
+  const value = fixture('observation-invalid');
+  try {
+    await accepted(value, 'msg-observe-invalid');
+    // A transport reporting a 300-character status: the state field is not
+    // trimmed into shape, so the observation is refused instead.
+    const transport = new ScriptedTransport({
+      cwd: value.taskRoot,
+      agents: (call, cwd) =>
+        call === 0
+          ? [coordinatorAgent(cwd), agent(cwd)]
+          : [coordinatorAgent(cwd), agent(cwd, { status: `z`.repeat(300) })],
+    });
+    const timing = observationOptions();
+    const notified = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-invalid',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+      observation: timing.options,
+    });
+    assert(notified.ok);
+    if (!notified.ok) return;
+    assert.equal(notified.value.status, 'submitted');
+    // The unrecorded value is not presented as stored evidence.
+    assert.equal(notified.value.observation, null);
+    assert.match(String(notified.value.detail), /not recorded/);
+    assert.match(String(notified.value.detail), /delivery_record_invalid/);
+    assert.match(String(notified.value.detail), /agent_status/);
+
+    // The already-valid status and attempts are intact and readable.
+    const delivery = readDeliveryRecord(value.taskRoot, 'msg-observe-invalid');
+    assert(delivery);
+    assert.equal(delivery.status, 'submitted');
+    assert.equal(delivery.attempts.length, 1);
+    assert.equal(delivery.attempts[0]?.status, 'submitted');
+    assert.equal(delivery.attempts[0]?.observation, undefined);
+
+    // A later notify reports the recorded outcome, not a broken record.
+    const again = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-invalid',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+    });
+    assert(again.ok);
+    if (!again.ok) return;
+    assert.equal(again.value.status, 'already_recorded');
+  } finally {
+    cleanup(value.root);
+  }
+});
+
+test('a failed observation write leaves the delivery record intact', async () => {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+  const value = fixture('observation-write-failure');
+  const directory = notificationsDir(value.taskRoot);
+  try {
+    await accepted(value, 'msg-observe-write');
+    mkdirSync(directory, { recursive: true });
+    const transport = new ScriptedTransport({ cwd: value.taskRoot });
+    const timing = observationOptions();
+    let failed = false;
+    const baseSleep = timing.options.sleep;
+    const notified = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-write',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+      observation: {
+        ...timing.options,
+        // Once the observation is running, the delivery directory stops
+        // accepting writes: the status is already durable, so only the additive
+        // observation write can fail.
+        sleep: async (milliseconds: number) => {
+          if (!failed) {
+            failed = true;
+            chmodSync(directory, 0o500);
+          }
+          await baseSleep(milliseconds);
+        },
+      },
+    });
+    assert(notified.ok);
+    if (!notified.ok) return;
+    assert.equal(notified.value.status, 'submitted');
+    assert.equal(notified.value.observation, null);
+    assert.match(String(notified.value.detail), /not recorded/);
+    assert.match(String(notified.value.detail), /delivery_state_unwritable/);
+
+    chmodSync(directory, 0o700);
+    const delivery = readDeliveryRecord(value.taskRoot, 'msg-observe-write');
+    assert(delivery);
+    assert.equal(delivery.status, 'submitted');
+    assert.equal(delivery.attempts.length, 1);
+    assert.equal(delivery.attempts[0]?.status, 'submitted');
+    assert.equal(delivery.attempts[0]?.observation, undefined);
+
+    const again = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-write',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+    });
+    assert(again.ok);
+    if (!again.ok) return;
+    assert.equal(again.value.status, 'already_recorded');
+  } finally {
+    try {
+      chmodSync(directory, 0o700);
+    } catch {
+      // The directory may not exist when the fixture was never completed.
+    }
+    cleanup(value.root);
+  }
+});
+
+test('a retry keeps its own attempt and observation', async () => {
+  const value = fixture('observation-retry');
+  try {
+    await accepted(value, 'msg-observe-retry');
+    const transport = new ScriptedTransport({ cwd: value.taskRoot });
+    const timing = observationOptions();
+    const first = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-retry',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport,
+      clock,
+      observation: timing.options,
+    });
+    assert(first.ok);
+    if (!first.ok) return;
+    assert.equal(first.value.observation?.reason, 'no_turn_activity_observed');
+
+    const second = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-retry',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: true,
+      transport,
+      clock,
+      observation: observationOptions().options,
+    });
+    assert(second.ok);
+    if (!second.ok) return;
+    assert.equal(second.value.attempts, 2);
+    assert.equal(second.value.observation?.reason, 'no_turn_activity_observed');
+
+    const delivery = readDeliveryRecord(value.taskRoot, 'msg-observe-retry');
+    assert(delivery);
+    assert.equal(delivery.attempts.length, 2);
+    for (const attempt of delivery.attempts) {
+      assert.equal(attempt.status, 'submitted');
+      assert.equal(attempt.observation?.receipt, 'unknown');
+      assert.equal(attempt.observation?.reason, 'no_turn_activity_observed');
+    }
+    // One pointer per attempt, never a resend inside one attempt.
+    assert.equal(transport.prompts.length, 2);
+  } finally {
+    cleanup(value.root);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Late failure versus late reading
+// ---------------------------------------------------------------------------
+
+test('a late failure keeps its diagnosis while a late reading does not', async () => {
+  const lateFailure = await observe({
+    samples: [
+      { ok: false, reason: 'probe_failed', detail: 'agent list timed out' },
+    ],
+    costs: [4_000],
+    policy: { ...policy, windowMs: 3_000, probeTimeoutMs: 4_000 },
+  }).observation;
+  // "the read failed" is a diagnosis about the probe, not about the budget.
+  assert.equal(lateFailure.receipt, 'unknown');
+  assert.equal(lateFailure.reason, 'probe_failed');
+  assert.equal(lateFailure.samples, 1);
+
+  const lateReading = await observe({
+    samples: [workingProbe],
+    costs: [4_000],
+    policy: { ...policy, windowMs: 3_000, probeTimeoutMs: 4_000 },
+  }).observation;
+  // A reading that arrives after the budget is never classified.
+  assert.equal(lateReading.receipt, 'unknown');
+  assert.equal(lateReading.reason, 'window_expired');
+  assert.equal(lateReading.after?.agent_status, 'working');
+});
+
+// ---------------------------------------------------------------------------
+// Two clocks, two jobs
+// ---------------------------------------------------------------------------
+
+test('the record clock and the observation clock stay independent', async () => {
+  const value = fixture('observation-clocks');
+  const recordClock = Date.parse('2026-11-12T08:00:00Z');
+  const observationBase = Date.parse('2030-05-06T07:08:09Z');
+  try {
+    await accepted(value, 'msg-observe-clocks');
+    const transport = new ScriptedTransport({ cwd: value.taskRoot });
+    let observationNowMs = observationBase;
+    const notified = await notifyRegisteredMessage({
+      taskRoot: value.taskRoot,
+      messageId: 'msg-observe-clocks',
+      bindingFile: value.bindingFile,
+      apply: true,
+      retry: false,
+      transport,
+      // The record says when the attempt happened.
+      clock: recordClock,
+      observation: {
+        maxSamples: 3,
+        intervalMs: 1_000,
+        windowMs: 3_000,
+        probeTimeoutMs: 1_500,
+        // The budget is measured on its own clock.
+        now: () => observationNowMs,
+        sleep: async (milliseconds: number) => {
+          observationNowMs += milliseconds;
+        },
+      },
+    });
+    assert(notified.ok);
+    if (!notified.ok) return;
+    const observation = notified.value.observation;
+    assert(observation);
+    assert.equal(
+      observation.started_at,
+      new Date(observationBase).toISOString(),
+    );
+    assert.equal(
+      observation.ended_at,
+      new Date(observationBase + 2_000).toISOString(),
+    );
+    assert.equal(observation.window_ms, 2_000);
+
+    const delivery = readDeliveryRecord(value.taskRoot, 'msg-observe-clocks');
+    assert(delivery);
+    // The persisted record keeps the record clock, never the budget clock.
+    assert.equal(delivery.attempts[0]?.at, new Date(recordClock).toISOString());
+    assert.equal(delivery.created_at, new Date(recordClock).toISOString());
+    assert.equal(delivery.updated_at, new Date(recordClock).toISOString());
   } finally {
     cleanup(value.root);
   }

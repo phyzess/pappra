@@ -109,6 +109,10 @@ pappra collab message notify --task-root <abs-task-root> \
 # Send exactly one pointer-only Herdr prompt for a message the record accepted.
 pappra collab message notify --task-root <abs-task-root> \
   --message-id <id> --binding <abs-binding.json> --apply --json
+
+# Same, plus the bounded post-delivery observation (off without --observe).
+pappra collab message notify --task-root <abs-task-root> \
+  --message-id <id> --binding <abs-binding.json> --apply --observe --json
 ```
 
 ```sh
@@ -126,9 +130,10 @@ state `applied` or `recorded`, so a protocol-refused or hand-placed envelope is
 refused (`message_not_recorded`, `message_content_not_recorded`,
 `message_record_state_not_notifiable`) before any transport call. A successful
 `notify` means one prompt was submitted to a named Herdr agent; it does not mean
-the recipient read it, consumed it, or accepted the work. Beside `submitted`,
-`notify` records a bounded observation of the recipient's transport, and that is
-not a receipt: Herdr reports agent-level state only, so `receipt` stays `unknown`
+the recipient read it, consumed it, or accepted the work. With `--observe`,
+`notify` also records a bounded observation of the recipient's transport, and
+that is not a receipt: Herdr reports agent-level state only, so `receipt` stays
+`unknown`
 and the reason names the activity — `turn_activity_observed` (a turn started on
 that terminal; its cause is unknown) or `no_turn_activity_observed` (a complete
 quiet window; a queued pointer looks the same), or an unknown reason for an
@@ -139,6 +144,11 @@ change with one message and are never derived from these signals. Probes are at
 most three, one second apart, inside a three-second budget, each with a timeout
 clamped to what remains, and a reading that arrives late is never classified.
 Nothing is retyped, resent or keyed, and no observation authorizes a resend.
+Without `--observe` no probe and no wait are added. The record is validated before
+its atomic publish, only the free-text detail is bounded (with a truncation
+marker), and a rejected or failed observation leaves the recorded status and
+attempts intact and is reported as not recorded. `message read` shows the saved
+observation, or `receipt: unobserved` for a record that has none.
 
 ## Envelope
 

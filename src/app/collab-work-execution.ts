@@ -1091,6 +1091,56 @@ function asObservation(value: {
   };
 }
 
+/**
+ * Wraps the delivery transport with the work-execution guard. The guard owns the
+ * prompt: it refuses a dispatch without a final authority callback, and refuses a
+ * callback that throws or declines. It owns nothing else — `verifyCaller` and
+ * `list` (including its per-call bound) are forwarded unchanged, so a caller's
+ * own observation budget reaches the underlying transport intact.
+ */
+export function guardedWorkExecutionTransport(
+  transport: HerdrTransport,
+  finalAuthorityCheck:
+    | (() => Promise<{ readonly ok: boolean; readonly reason: string }>)
+    | undefined,
+): HerdrTransport {
+  return {
+    id: `${transport.id}:work-execution-guard`,
+    verifyCaller: (callerOptions) => transport.verifyCaller(callerOptions),
+    list: (listOptions) => transport.list(listOptions),
+    prompt: async (
+      agent,
+      promptText,
+      registered,
+    ): Promise<HerdrPromptResult> => {
+      if (!finalAuthorityCheck)
+        return {
+          status: 'blocked',
+          effect: 'none',
+          detail:
+            'Final work authority callback is missing; no prompt was sent.',
+        };
+      let authority: { readonly ok: boolean; readonly reason: string };
+      try {
+        authority = await finalAuthorityCheck();
+      } catch (error) {
+        return {
+          status: 'blocked',
+          effect: 'none',
+          detail: `Final work authority check failed: ${error instanceof Error ? error.message : String(error)}`,
+        };
+      }
+      if (!authority.ok)
+        return {
+          status: 'blocked',
+          effect: 'none',
+          detail: `Final work authority check refused the prompt: ${authority.reason}`,
+        };
+      return transport.prompt(agent, promptText, registered);
+    },
+  };
+}
+
 export interface WorkExecutionHerdrAdapterOptions {
   readonly transport?: HerdrTransport;
 }
@@ -1117,41 +1167,10 @@ export function createHerdrWorkExecutionAdapter(
       const transport =
         options.transport ??
         createHerdrTransport({ taskRoot: request.taskRoot });
-      const guardedTransport: HerdrTransport = {
-        id: `${transport.id}:work-execution-guard`,
-        verifyCaller: (callerOptions) => transport.verifyCaller(callerOptions),
-        list: () => transport.list(),
-        prompt: async (
-          agent,
-          promptText,
-          registered,
-        ): Promise<HerdrPromptResult> => {
-          if (!request.finalAuthorityCheck)
-            return {
-              status: 'blocked',
-              effect: 'none',
-              detail:
-                'Final work authority callback is missing; no prompt was sent.',
-            };
-          let authority: { readonly ok: boolean; readonly reason: string };
-          try {
-            authority = await request.finalAuthorityCheck();
-          } catch (error) {
-            return {
-              status: 'blocked',
-              effect: 'none',
-              detail: `Final work authority check failed: ${error instanceof Error ? error.message : String(error)}`,
-            };
-          }
-          if (!authority.ok)
-            return {
-              status: 'blocked',
-              effect: 'none',
-              detail: `Final work authority check refused the prompt: ${authority.reason}`,
-            };
-          return transport.prompt(agent, promptText, registered);
-        },
-      };
+      const guardedTransport = guardedWorkExecutionTransport(
+        transport,
+        request.finalAuthorityCheck,
+      );
       return asObservation(
         await notifyRegisteredMessage({
           taskRoot: request.taskRoot,

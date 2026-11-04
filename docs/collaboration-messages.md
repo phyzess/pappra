@@ -35,7 +35,7 @@ pappra collab message list   --task-root <abs> [--limit <1-100>]
 pappra collab message read   --task-root <abs> --message-id <id>
 pappra collab message notify --task-root <abs> --message-id <id> \
                              --binding <abs-binding.json> [--caller-pane <id>] \
-                             [--apply] [--retry]
+                             [--apply] [--retry] [--observe]
 ```
 
 `--json` returns `pappra/collaboration-message/1` for every action.
@@ -256,13 +256,17 @@ including an unrecognized code from a future Herdr version — is `unknown` with
 the code preserved, because a parseable error does not prove the command stopped
 before submitting. There is no automatic resend.
 
-## Observed receipt
+## Observed receipt (on request)
 
-`notify --apply` also records a bounded observation of the recipient's own
-transport state, beside the delivery status rather than inside it. The status
-answers "did the transport accept the pointer". The observation answers only
-"what did the recipient's transport do afterwards", because that is all a
-supported Herdr reports.
+`notify --apply --observe` additionally records a bounded observation of the
+recipient's own transport state, beside the delivery status rather than inside
+it. It is **off by default**: without `--observe`, `notify` sends one pointer and
+returns, with no probe and no extra wait, exactly as it did before this
+observation existed. A caller using the API opts in by passing an observation
+policy (an empty object takes the defaults). The status answers "did the
+transport accept the pointer"; the observation answers only "what did the
+recipient's transport do afterwards", because that is all a supported Herdr
+reports.
 
 **Roster signals are not a receipt.** Every signal below is agent-level: none of
 them names the prompt that caused a change. A turn that starts after a pointer is
@@ -299,10 +303,22 @@ The budget covers waiting _and_ probing:
 
 - a probe is only started while budget remains;
 - the transport timeout it is given is `min(probe timeout, remaining budget)`, so
-  a cooperating transport cannot stretch the window;
+  a cooperating transport cannot stretch the window; a delivery guard that
+  wraps the transport forwards that bound unchanged;
 - a reading that arrives after the budget is kept as raw evidence and is never
   classified — the outcome is `window_expired`, not an activity conclusion;
+- a **failure** that arrives late is still a failure: "the read failed" and "the
+  window is spent" are different facts, so a late failing probe keeps
+  `probe_failed` (or the specific target problem) instead of being flattened into
+  `window_expired`;
 - `window_ms` is the time that actually elapsed.
+
+Two clocks are involved and they are not interchangeable. The delivery record's
+`at`/`updated_at` come from the caller's fixed record clock (`--apply` runs use
+one stamped time). The observation's budget is measured on its own clock, which
+advances only when the loop waits. Neither substitutes for the other: a record
+timestamp never shortens a deadline, and a budget reading never rewrites a
+record timestamp.
 
 There is no unconditional hard wall-clock limit. `notify` has no cancellation
 path into a transport, so a transport that ignores the requested timeout can
@@ -365,14 +381,36 @@ schema bound of 600 000 ms, with the true value in `detail`) and the reason stay
 }
 ```
 
-The observation is additive. It is written after the delivery outcome is already
-recorded, it never changes a status, and it never affects `--retry`: an observed
-`no_turn_activity_observed` is evidence for an operator decision, not an
-automatic resend authorization. An attempt recorded before this observation
-existed carries no `observation` field; that reads as unobserved — never as
-`unknown`, and never as a value Pappra writes back into an old file.
-`observation: false` disables the probes for a caller that must add no transport
-traffic, and the attempt is then unobserved in the same way.
+The observation is additive and it can never damage the delivery evidence:
+
+- the status and its attempt are written first, exactly as before, and stay
+  durable on their own;
+- the observation is a second guarded write that can only add evidence, never
+  change a status;
+- the candidate record is validated against `pappra/collab-delivery/1` **before**
+  the atomic publish, so a candidate no reader could parse never replaces a valid
+  record;
+- an untrusted free-text `detail` is bounded and marked when shortened
+  (`…[truncated N chars]`). Identity and state values are never shortened: a
+  trimmed terminal id or status would be a different value that merely looks
+  valid, so an observation whose state is out of schema is **rejected** instead;
+- when the observation is rejected or its write fails, the already-recorded
+  status and attempts remain readable, the result reports
+  `observation: null` with an explicit "not recorded" reason, and a later
+  `notify`/`notify --retry` still reports the recorded outcome rather than a
+  broken record.
+
+It never affects `--retry`: an observed `no_turn_activity_observed` is evidence
+for an operator decision, not an automatic resend authorization. An attempt
+recorded before this observation existed carries no `observation` field; that
+reads as unobserved — never as `unknown`, and never as a value Pappra writes back
+into an old file.
+
+`message read` shows the saved observation for the attempt that delivered the
+pointer, and reports `receipt: unobserved` when the record has none (an old
+record or a notification sent without `--observe`). The observation is available
+in the `delivery` object of the same command's JSON result; `message list` stays
+bounded and does not read observations back.
 
 ## Native capability evidence
 

@@ -349,6 +349,53 @@ test('installed CLI persists, reads, lists and reports truthful notification sta
     assert.equal(invalidCallerValue.ok, false);
     assert.equal(invalidCallerValue.code, 'caller_pane_invalid');
 
+    const listWithObserve = run(
+      [
+        'collab',
+        'message',
+        'list',
+        '--task-root',
+        taskRoot,
+        '--observe',
+        '--json',
+      ],
+      root,
+    );
+    assert.equal(listWithObserve.status, 2);
+    const listObserveValue = JSON.parse(listWithObserve.stdout) as {
+      ok: boolean;
+      code: string;
+    };
+    assert.equal(listObserveValue.ok, false);
+    assert.equal(listObserveValue.code, 'invalid_arguments');
+
+    const notifyWithObserve = run(
+      [
+        'collab',
+        'message',
+        'notify',
+        '--task-root',
+        taskRoot,
+        '--message-id',
+        'msg-cli-1',
+        '--binding',
+        binding,
+        '--apply',
+        '--observe',
+        '--json',
+      ],
+      root,
+      envWithoutHerdr(),
+    );
+    // Routing accepts the flag; the outcome is still the transport's refusal.
+    assert.equal(notifyWithObserve.status, 1, notifyWithObserve.stderr);
+    const observedValue = JSON.parse(notifyWithObserve.stdout) as {
+      status: string;
+      observation: unknown;
+    };
+    assert.equal(observedValue.status, 'herdr_unavailable');
+    assert.equal(observedValue.observation, null);
+
     const sendWithCallerPane = run(
       [
         'collab',
@@ -376,6 +423,164 @@ test('installed CLI persists, reads, lists and reports truthful notification sta
     const explicitHelp = run(['collab', 'message', '--help'], root);
     assert.equal(explicitHelp.status, 0, explicitHelp.stderr);
     assert.match(explicitHelp.stdout, /--caller-pane <id>/);
+    assert.match(explicitHelp.stdout, /--observe/);
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('message read reports a saved observation, and an unobserved record as unobserved', () => {
+  const root = realpathSync(makeTempDir('c0-message-cli-receipt'));
+  try {
+    const domain = join(root, 'domain');
+    mkdirSync(domain, { recursive: true });
+    const taskRoot = join(domain, 'tasks', 'receipt-task');
+    initTask(taskRoot, {
+      taskId: 'receipt-task',
+      domainRoot: domain,
+      coordinator: {
+        agent_id: 'coordinator',
+        session_id: 'coordinator-session',
+        harness: 'codex',
+        owner_epoch: 1,
+        since: '2026-10-21T09:00:00+08:00',
+      },
+      clock,
+    });
+    const at = new Date(clock).toISOString();
+    const record = (messageId: string, observation: unknown) => ({
+      schema: 'pappra/collab-delivery/1',
+      message_id: messageId,
+      message_path: join(taskRoot, 'messages', `${messageId}.json`),
+      message_digest: `sha256:${'0'.repeat(64)}`,
+      task_id: 'receipt-task',
+      task_root: taskRoot,
+      recipient: { agent_id: 'worker', harness: 'pi' },
+      target: {
+        herdr_agent: 'pappra-implement',
+        pane_id: 'w3:p3',
+        native_session: 'unknown',
+      },
+      status: 'submitted',
+      attempts: [
+        {
+          at,
+          status: 'submitted',
+          detail: null,
+          reservation_id: `reservation-${messageId}`,
+          ...(observation === null ? {} : { observation }),
+        },
+      ],
+      created_at: at,
+      updated_at: at,
+    });
+    const messages = join(taskRoot, 'messages');
+    const notifications = join(taskRoot, 'notifications');
+    mkdirSync(messages, { recursive: true });
+    mkdirSync(notifications, { recursive: true });
+    for (const messageId of ['msg-receipt-observed', 'msg-receipt-old']) {
+      writeFileSync(
+        join(messages, `${messageId}.json`),
+        `${JSON.stringify(
+          buildMessage(
+            {
+              type: 'STATUS_QUERY',
+              message_id: messageId,
+              task_id: 'receipt-task',
+              from: {
+                agent_id: 'coordinator',
+                session_id: 'coordinator-session',
+                harness: 'codex',
+              },
+              to: {
+                agent_id: 'worker',
+                session_id: 'worker-session',
+                harness: 'pi',
+              },
+            },
+            { clock },
+          ),
+          null,
+          2,
+        )}\n`,
+      );
+    }
+    writeFileSync(
+      join(notifications, 'msg-receipt-observed.json'),
+      `${JSON.stringify(
+        record('msg-receipt-observed', {
+          schema: 'pappra/collab-delivery-observation/1',
+          receipt: 'unknown',
+          reason: 'no_turn_activity_observed',
+          source: 'herdr-agent-state',
+          started_at: at,
+          ended_at: at,
+          window_ms: 2_000,
+          samples: 3,
+          before: {
+            observed_at: at,
+            agent_status: 'idle',
+            terminal_id: 'terminal-1',
+            state_change_seq: 5,
+            completion_seq: 4,
+            revision: 10,
+            interactive_ready: null,
+            launch_pending: null,
+          },
+          after: {
+            observed_at: at,
+            agent_status: 'idle',
+            terminal_id: 'terminal-1',
+            state_change_seq: 5,
+            completion_seq: 4,
+            revision: 10,
+            interactive_ready: null,
+            launch_pending: null,
+          },
+          detail: 'No working turn was observed.',
+        }),
+        null,
+        2,
+      )}\n`,
+    );
+    writeFileSync(
+      join(notifications, 'msg-receipt-old.json'),
+      `${JSON.stringify(record('msg-receipt-old', null), null, 2)}\n`,
+    );
+
+    const observed = run(
+      [
+        'collab',
+        'message',
+        'read',
+        '--task-root',
+        taskRoot,
+        '--message-id',
+        'msg-receipt-observed',
+      ],
+      root,
+    );
+    assert.equal(observed.status, 0, observed.stderr);
+    assert.match(
+      observed.stdout,
+      /receipt: unknown \(no_turn_activity_observed\), 3 sample\(s\) over 2000 ms/,
+    );
+
+    const old = run(
+      [
+        'collab',
+        'message',
+        'read',
+        '--task-root',
+        taskRoot,
+        '--message-id',
+        'msg-receipt-old',
+      ],
+      root,
+    );
+    assert.equal(old.status, 0, old.stderr);
+    // An old record has no observation: it is unobserved, not an unknown receipt.
+    assert.match(old.stdout, /receipt: unobserved/);
   } finally {
     cleanup(root);
   }

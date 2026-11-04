@@ -129,12 +129,17 @@ Shape: `src/schemas/collaboration.ts:353-372`. Written by workflow prepare
 | `attempts[].{at,status,detail,reservation_id}`       | every delivery attempt                                                                                                                                                               |
 | `attempts[].observation`                             | bounded transport-activity evidence: `receipt` (always `unknown` from a roster read), closed `reason`, the before/after state, samples and window (optional; older attempts omit it) |
 
-Observation evidence is a **separate fact** from `status`. `submitted` keeps its
-meaning whatever the observation says; the observation is written after the
+Observation evidence is a **separate fact** from `status`, and it is **off by
+default**: `notify` probes nothing and waits for nothing unless the caller opts in
+(CLI `--observe`, or an observation policy through the API). `submitted` keeps
+its meaning whatever the observation says; the observation is written after the
 status is recorded, never rewrites it, and never authorizes a resend. A roster
 read is agent-level, so `receipt` cannot become a message-level `taken` or
 `not_taken`: the record names the activity it saw (`turn_activity_observed`) or
-did not see (`no_turn_activity_observed`) and stays `unknown`. Shape:
+did not see (`no_turn_activity_observed`) and stays `unknown`. The write path
+validates the candidate record before its atomic publish and bounds only the
+free-text `detail`; a rejected or failed observation leaves the recorded status
+and attempts intact and is reported as "not recorded". Shape:
 `collabDeliveryObservationSchema` in `src/schemas/collaboration.ts`. An attempt
 recorded without it is unobserved, which every reader treats as `unknown`
 without rewriting the file.
@@ -366,13 +371,17 @@ validation versus record acceptance" below.
   (an already working or blocked recipient, a redraw-only revision change, a
   changed terminal identity, a moved counter, a failed probe, an expired
   window). `taken`/`not_taken` stay defined for a transport that can correlate a
-  state change with one message; nothing here emits them. It probes the roster
-  through the same `list()` the participant check already uses, at most three
-  times inside a three-second budget, hands each probe a timeout clamped to the
-  remaining budget, never classifies a reading that arrives after the budget, and
-  never prompts, presses a key or resends. A transport that ignores the
-  requested timeout can overrun; the record states the elapsed time and keeps
-  `window_expired` rather than claiming a hard bound.
+  state change with one message; nothing here emits them. When a caller opts in
+  it probes the roster through the same `list()` the participant check already
+  uses, at most three times inside a three-second budget, hands each probe a
+  timeout clamped to the remaining budget (the delivery guards forward that bound
+  unchanged), and never classifies a reading that arrives after the budget —
+  while a late _failure_ keeps its own diagnosis. It never prompts, presses a key
+  or resends. The record's `at`/`updated_at` come from the caller's record clock
+  and the budget is measured on the observation's own clock; neither stands in
+  for the other. A transport that ignores the requested timeout can overrun; the
+  record states the elapsed time and keeps `window_expired` rather than claiming
+  a hard bound.
 - **Unsupported implementation must report**: `unavailable` when it cannot
   deliver at all, `unknown` when the effect is ambiguous, and never "delivered".
 
