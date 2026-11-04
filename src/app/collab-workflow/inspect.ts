@@ -8,6 +8,7 @@ import {
 import fs from 'node:fs';
 import { emptyResult, type WorkflowResult } from './types.js';
 import { findAttempt } from '../../collab/lifecycle.js';
+import { nativeObservationAgeSummary } from '../../collab/native-observation.js';
 import { resolveUserDataDir } from '../../install/data-dir.js';
 import {
   adviseHandoff,
@@ -244,6 +245,9 @@ export async function inspectWorkflow(
         assignment_message_id: attempt.assignment_message_id,
         assignment_digest: attempt.assignment_digest,
         native_observation: attempt.native?.observation ?? 'unknown',
+        // The recorded observation is reported as-is; its age classification is reported
+        // beside it so a stale one cannot read as current. Inspect refuses nothing.
+        native_age: nativeObservationAgeSummary(attempt.native),
         active_claims: (record.claims ?? []).filter(
           (claim) =>
             claim.released_at === null &&

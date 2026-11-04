@@ -219,6 +219,7 @@ export async function planSessionTransition(
   }
   const rolloverResult = await inspectOrPlanRollover(
     buildRolloverRequest(request, context.value.task.record),
+    { now },
   );
   if (!rolloverResult.ok)
     return failureReport(
@@ -486,6 +487,7 @@ export async function applySessionTransition(
     );
   const rolloverResult = await inspectOrPlanRollover(
     buildRolloverRequest(request, context.value.task.record),
+    { now },
   );
   if (!rolloverResult.ok)
     return failureReport(
@@ -594,6 +596,7 @@ export async function applySessionTransition(
     if (hostBefore.proof_support !== 'available') {
       const currentRollover = await inspectOrPlanRollover(
         buildRolloverRequest(request, currentTask.value.record),
+        { now },
       );
       const blocker =
         hostBefore.unavailable_code ?? 'host_stop_proof_unavailable';

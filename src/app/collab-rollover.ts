@@ -7,6 +7,7 @@ import {
 } from '../collab/envelope.js';
 import { findHandoff } from '../collab/handoff.js';
 import { findAttempt } from '../collab/lifecycle.js';
+import { evaluateNativeObservationAge } from '../collab/native-observation.js';
 import * as rollover from '../collab/rollover.js';
 import type {
   AppliedMessage,
@@ -1120,9 +1121,22 @@ function correlateEvidence(options: {
   };
 }
 
+/**
+ * In-process options for the rollover inspection. Deliberately not a wire field: the
+ * collaboration request schema refuses an inline clock, so a caller that already owns a
+ * clock (a session transition, a replay or a fixture) passes it here and everything else
+ * keeps the wall clock.
+ */
+export interface RolloverInspectionOptions {
+  /** Injected clock, called wherever the inspection judges an observation's age. */
+  readonly now?: () => number;
+}
+
 export async function inspectOrPlanRollover(
   input: unknown,
+  options: RolloverInspectionOptions = {},
 ): Promise<RolloverResult> {
+  const now = options.now ?? Date.now;
   const validated = validateRolloverRequest(input);
   if (validated.ok === false) return validated;
   const request = validated.value;
@@ -1328,23 +1342,38 @@ export async function inspectOrPlanRollover(
     }
     const native = attempt.native;
     const expectedNative = postTransfer ? successorNative : pinnedSource;
+    // Age is judged against the caller's clock: a transition, replay or fixture owns the
+    // time its observations were taken with, and the wall clock is only the default.
+    const nativeAge = evaluateNativeObservationAge(native, { now: now() });
     if (native.observation !== 'confirmed')
       drift.push({
         code: 'native_unconfirmed',
         detail: `The recorded attempt native observation is ${native.observation}.`,
       });
-    else if (expectedNative !== null) {
-      if (
-        expectedNative.session_id !== native.session_id ||
-        expectedNative.runner !== native.runner ||
-        expectedNative.run_id !== native.run_id
-      )
+    else {
+      // A confirmed observation still has to be current to justify the transfer. This is
+      // the transfer eligibility judgement only: the claim records, holders and transfer
+      // mechanics are untouched, and a completed transfer keeps its recorded history.
+      if (!postTransfer && !nativeAge.fresh)
         drift.push({
-          code: postTransfer ? 'successor_native_drift' : 'source_native_drift',
-          detail: postTransfer
-            ? 'The recorded native identity no longer matches the pinned successor.'
-            : 'The recorded source native identity no longer matches the identity pinned at intent creation.',
+          code: 'native_observation_stale',
+          detail: `The recorded source native observation is ${nativeAge.classification} and cannot count as confirmed for a transfer. ${nativeAge.detail}`,
         });
+      if (expectedNative !== null) {
+        if (
+          expectedNative.session_id !== native.session_id ||
+          expectedNative.runner !== native.runner ||
+          expectedNative.run_id !== native.run_id
+        )
+          drift.push({
+            code: postTransfer
+              ? 'successor_native_drift'
+              : 'source_native_drift',
+            detail: postTransfer
+              ? 'The recorded native identity no longer matches the pinned successor.'
+              : 'The recorded source native identity no longer matches the identity pinned at intent creation.',
+          });
+      }
     }
   }
 

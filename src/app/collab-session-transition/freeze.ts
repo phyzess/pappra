@@ -944,6 +944,7 @@ async function freezeAndPrepare(
     };
   const roll = await inspectOrPlanRollover(
     buildRolloverRequest(request, refreshed.value.record),
+    { now },
   );
   const report = reportForContext(
     'apply',

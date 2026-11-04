@@ -44,7 +44,7 @@ not call either one.
 | `src/collab/store.ts`                                     | task record persistence, `STATE_SCHEMA`                           | core    |
 | `src/collab/persisted-messages.ts`                        | registered-message reader, delivery records                       | core    |
 | `src/collab/lifecycle.ts`                                 | attempt state, native evidence recording                          | core    |
-| `src/collab/admission.ts`, `src/collab/preflight.ts`      | capability card checks, the only age bound in the system          | core    |
+| `src/collab/admission.ts`, `src/collab/preflight.ts`      | capability card checks (`capabilities_stale`, 30 minutes)         | core    |
 | `src/collab/resources.ts`, `src/collab/work-plan.ts`      | claims and plan state                                             | core    |
 | `src/app/collab-state.ts`, `collab-task-store.ts`         | guarded read/write of the record                                  | core    |
 | `src/app/collab-messages.ts`                              | message service over the persisted reader                         | core    |
@@ -157,9 +157,12 @@ Shape: `src/schemas/collaboration.ts:365-432`. Written by
 | `limits`, `reloadRequired`, `trustRequired` | explicit ceilings instead of inference                           |
 
 Shape: `src/schemas/host.ts:55-69`, states at `:34-42`. The collaboration
-capability card adds `observed_at`, which is the only field in the system that
-is aged: `src/collab/preflight.ts:246` adds `capabilities_stale` past
-`maxAgeMinutes` (default 30, `src/app/collab-preflight.ts:96`).
+capability card adds `observed_at`, aged by that card's own bound:
+`src/collab/preflight.ts:246` adds `capabilities_stale` past `maxAgeMinutes`
+(default 30, `src/app/collab-preflight.ts:96`). That is one of two age bounds,
+not the only one: a reused `attempts[].native.observed_at` is aged by
+`NATIVE_OBSERVATION_MAX_AGE_MINUTES` (30) in `src/collab/native-observation.ts`,
+for a different subject and purpose.
 
 ## 2. Seams
 
@@ -486,7 +489,7 @@ only characterizes. Every other row cites the test that covers it.
 | #   | Required case                       | Status                                   | Covered by                                                                                                                                                                                                                                                                                                                                                                             |
 | --- | ----------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | unavailable capability              | existing                                 | `tests/collab/messages.test.ts` — "notification is unavailable outside a verified Herdr caller" (status `herdr_unavailable`, `consumed: false`, no delivery record)                                                                                                                                                                                                                    |
-| 2   | stale identity                      | existing (capability preflight only)     | `tests/collab/capabilities.test.ts` — "Pi replay keeps the native observation time and goes stale" (`capabilities_stale` past the 30-minute card bound, `src/collab/preflight.ts:246`). This covers capability preflight; transport-level observations have no age bound at all (see Known gaps)                                                                                       |
+| 2   | stale identity                      | existing (two separate bounds)        | `tests/collab/capabilities.test.ts` — "Pi replay keeps the native observation time and goes stale" (`capabilities_stale` past the 30-minute card bound, `src/collab/preflight.ts:246`). This covers capability preflight. Reused `attempts[].native` observations now have their own bound in `src/collab/native-observation.ts` — see Known gaps and `tests/collab/native-observation-age.test.ts`                                                                                       |
 | 3   | submitted-not-consumed              | existing                                 | `tests/collab/messages.test.ts` — "notify validates the binding and sends one pointer-only prompt" (`submitted`, `consumed: false`, `taskAccepted: false`, duplicate recorded)                                                                                                                                                                                                         |
 | 4   | unknown delivery / no replay        | existing                                 | `tests/collab/workflow-notifications.test.ts` — "an unknown delivery stays unknown and is never replayed automatically"                                                                                                                                                                                                                                                                |
 | 5   | changed workspace (#13)             | existing                                 | `tests/collab/shell-readiness.test.ts` — "readiness fails closed on pane, workspace, terminal, cwd and agent drift" (`workspace_id_mismatch`); task-root redirect in `tests/collab/messages.test.ts` — "unsafe ids, malformed records, task mismatch and redirected state fail closed"                                                                                                 |
@@ -495,24 +498,66 @@ only characterizes. Every other row cites the test that covers it.
 
 ### Known gaps, stated rather than faked
 
-- **Transport observations have no independent age bound.** The only age bound in
-  the system is the capability card's `observed_at`
-  (`src/collab/preflight.ts:246`, default 30 minutes,
-  `src/app/collab-preflight.ts:96`), and it covers capability preflight and
-  nothing else. Transport-level observations are not aged at all: a pane/session
-  observation is compared exactly, its `observed_at` is recorded in
-  `attempts[].native.observed_at` and in the delivery record's
-  `caller.observed_at`, but an old observation that still matches is accepted and
-  is never downgraded to `unknown`. The 30-minute card bound does **not** cover
-  this layer, and this page claims no such coverage. Proposed checkpoint for a
-  later implementation: the identity-observation step itself, inside
-  `verifyLiveParticipant` (`src/app/collab-notify.ts:1198`) before a match is
-  accepted, reading a per-attempt or per-binding maximum age and reporting
-  `unknown` — with no delivery attempt and no `match` claim — when the
-  observation is older than that; the same check would apply when recording
-  `attempts[].native`. Implementing it needs its own issue, its own tests and its
-  own migration decision; G2 only names the gap and the checkpoint, and the
-  implementation is tracked separately from #33 rather than delivered here.
+- **Reused transport observations have an age bound; the live path does not need
+  one.** A persisted `attempts[].native.observed_at` is dated but nothing compared
+  it with `now`, so an old observation that still matched was accepted and never
+  downgraded. #35 closes that for the consumers that *reuse* a recorded
+  observation, with one shared evaluation and no schema change:
+  `src/collab/native-observation.ts` classifies an observation as `fresh`,
+  `expired`, `missing` (`observed_at: null`), `invalid` (unparseable) or `future`
+  (more than a minute ahead of `now`). `NATIVE_OBSERVATION_MAX_AGE_MINUTES = 30`
+  is the one named bound; it is deliberately its own native-observation bound,
+  not the 30-second session quiescence window (`MAX_QUIESCENCE_AGE_MS`,
+  `src/app/collab-session-transition/journal.ts:110`), and it is only
+  numerically equal to the capability card default because a settled runtime
+  observation is still a useful statement about a live session for about that
+  long. `unknown` is the floor: an attempt that recorded nothing
+  (`observation: 'unknown'` and no ids) is `missing`/not asserted rather than
+  "assume unchanged", and only `fresh` may be treated as current.
+
+  A clock that is not a finite number dates nothing, so it fails closed: the
+  verdict is `invalid` and names the clock, and a decision consumer refuses it
+  like any other non-fresh case. The REPORT body is the one persisted reader, so
+  it publishes a clock-independent projection — the recorded `observed_at`, the
+  bound and whether a native fact is asserted, never `age_ms` or a
+  classification — and a resend at another time stays a duplicate instead of a
+  `content_conflict`.
+
+  The consumers, each with the four non-fresh cases treated as non-current:
+
+  | Consumer | fresh | expired | missing | invalid | future |
+  | --- | --- | --- | --- | --- | --- |
+  | Recovery `continue` (`collab-recovery-executor.ts`, `validateAuthority`) | authorizes | `refused`, note names the classification | `refused` (an asserted observation without a date) | `refused` | `refused` |
+  | Rollover pre-transfer eligibility (`collab-rollover.ts`, `inspectOrPlanRollover`) | counts as `confirmed` | `native_observation_stale` drift | same drift | same drift | same drift |
+  | Dispatch retry gate (`collab-workflow/dispatch.ts`, `canRetryReviewClaims`) | refuses | refuses | refuses | refuses | refuses |
+  | History: REPORT body (`collab-workflow/participant.ts`) | reports `native_ref` + `native_age` | reports, never refuses | reports, never refuses | reports, never refuses | reports, never refuses |
+  | History: `workflow inspect` (`collab-workflow/inspect.ts`) | reports `native_observation` + `native_age` | reports, never refuses | reports, never refuses | reports, never refuses | reports, never refuses |
+
+  Recovery keeps its existing conservative behaviour for a session mismatch and
+  adds nothing to the plan wording: a refusal returns `refused`, writes no
+  reservation, issues no controller effect and changes no claim record. Rollover
+  changes the transfer **eligibility judgement** only — the recorded observation
+  is still reported as recorded, claim records, holders and transfer mechanics
+  are untouched, and a completed transfer keeps its recorded history because its
+  observation is post-transfer correlation rather than a live eligibility claim.
+  The dispatch retry gate needed no code change: it refuses on any recorded
+  native evidence, so an expired observation still blocks a retry and a *fresh*
+  one never lifts that guard. The history consumers add `native_age` beside the
+  recorded observation and never refuse, so an `observed_at: null` record still
+  loads.
+
+  The live path is untouched because notify already re-observes: every call
+  re-reads `transport.list()` and stamps `caller.observed_at =
+  nowIso(options.clock)` (`src/app/collab-notify.ts:1559`), so there is no stored
+  observation to age there and no delivery rule was added — `git diff` shows no
+  change to `src/app/collab-notify.ts`. No transport, channel representation,
+  message/acceptance semantics or migration is involved: the evaluation reads an
+  existing nullable field. Where the caller already owns a clock — a session
+  transition (`src/app/collab-session-transition.ts`,
+  `src/app/collab-session-transition/freeze.ts`) or a replay — it is threaded
+  into the evaluation through `inspectOrPlanRollover`'s in-process `now` option,
+  so a fixture or a replay is judged against its own time rather than the wall
+  clock; the CLI keeps `Date.now()` and no request field accepts a clock.
 - **Case 6 cannot prove quiescence for interactive Pi.** Interactive Pi exposes
   no stop proof, so the only honest outcomes are refusal and `unknown`; the
   rollover test pins that refusal rather than a positive proof.
