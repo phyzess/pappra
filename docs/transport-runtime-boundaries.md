@@ -182,7 +182,7 @@ They say nothing about what a second channel would look like (§5).
 - Every CLI call inside it: `pane current --pane` (`:383`),
   `pane current --current` (`:454`), `agent list` (`:518`),
   `agent prompt` (`:647`).
-- Injected: `notifyRegisteredMessage` falls back to it at `:1478`; tests pass a
+- Injected: `notifyRegisteredMessage` falls back to it at `:1530`; tests pass a
   fake instead (`tests/collab/messages.test.ts` `FakeTransport`).
 
 **2. `HerdrBootstrapOps`** — `src/app/collab-bootstrap-transport.ts:196-241`
@@ -301,7 +301,7 @@ is exactly what that host can prove.
 
 - **Guarantees**: a participant resolves to exactly one live match, and every
   compared field agrees — name, pane, harness, cwd and any reported native
-  session (`collab-notify.ts:1198-1277`). A capability card records what the
+  session (`collab-notify.ts:1243-1322`). A capability card records what the
   executable reported, with `unsupported` and `unknown` as first-class states.
 - **Refuses**: zero matches, more than one match, a pane/harness/cwd mismatch, a
   reported session that differs from the message target, an archived identity
@@ -318,23 +318,30 @@ is exactly what that host can prove.
 
 ### 3.3 Submission
 
-Delivers a pointer to a message whose **file** is registered at the requested id.
-Registration of the file is not the same as acceptance by the task record — see
-"File validation versus record acceptance" below.
+Delivers a pointer to a message whose **file** is registered at the requested id
+and whose acceptance the task record holds. Registration of the file is not the
+same as acceptance by the task record, and both are required — see "File
+validation versus record acceptance" below.
 
 - **Guarantees**: the file passes `readRegisteredMessageSafe`
-  (`src/collab/persisted-messages.ts:404`) and `message.task_id` matches the
-  record before any transport call, and every outcome is persisted as a delivery
-  attempt (`notifications/<message_id>.json`).
+  (`src/collab/persisted-messages.ts:404`), `message.task_id` matches the record,
+  and the freshly read record holds an `applied` or `recorded` `record.messages`
+  entry for that id with the same content digest — all before any transport call
+  — and every outcome is persisted as a delivery attempt
+  (`notifications/<message_id>.json`).
 - **Refuses**: an unsafe id, a file that is missing, a symlink, redirected,
   oversized, not JSON, or fails protocol validation, a file whose `message_id`
   differs from the requested id, a task mismatch, a digest that changed after
   validation, a binding that changed mid-flight, a second implicit send, more
   than the bounded retry count, and delivery with no verified caller.
-- **Does not refuse today**: a valid file that the task record has not accepted.
-  Whether it should is #17's decision, not G2's.
+- **Also refuses (#17)**: a valid file the task record has not accepted
+  (`message_not_recorded`), an accepted id whose file content differs from the
+  accepted content (`message_content_not_recorded`), and an entry in any state
+  outside the closed `applied`/`recorded` allow-list
+  (`message_record_state_not_notifiable`). Plan mode applies the same gate and
+  still queries no transport.
 - **May claim**: `submitted` only. `consumed` and `taskAccepted` are typed as
-  the literal `false` (`collab-notify.ts:782`, `:1189`), so a caller cannot even
+  the literal `false` (`collab-notify.ts:782`, `:1234`), so a caller cannot even
   express the stronger claim from the notify result.
 - **Unsupported implementation must report**: `unavailable` when it cannot
   deliver at all, `unknown` when the effect is ambiguous, and never "delivered".
@@ -348,11 +355,16 @@ Two different checks, in two different functions:
 | File validation         | `readRegisteredMessageSafe` (`src/collab/persisted-messages.ts:404`)                            | the bytes at `messages/<id>.json` are a regular, unredirected, well-formed envelope whose `message_id` equals the requested id and whose `task_id` equals the record's id |
 | Record acceptance state | `readMessageFromTaskRoot` (`src/collab/persisted-messages.ts:796`, record lookup at `:802-805`) | the task record itself holds an entry for that id; the result field is `entry` and it may be `null`                                                                       |
 
-`notifyRegisteredMessage` calls only the first. It never reads `record.messages`,
-so a valid file the task record has not accepted is still delivered today.
-Whether it should refuse is #17's decision, not G2's. The behaviour is
-characterized by the second test in
-`tests/collab/transport-runtime-contract.test.ts`.
+`notifyRegisteredMessage` requires both (#17). File validation runs first, then
+the record-acceptance gate (`recordAcceptanceFailure`, `src/app/collab-notify.ts`)
+reads `record.messages` from the freshly opened record — once before any delivery
+reservation and again in the last revalidation before submission, so no async
+seam remains before the prompt. The same rule already governs the owned-Pi
+sibling path (`deliverManagedPiMessage`, `src/app/managed-pi-delivery.ts`). A
+valid file the record has not accepted is refused, in plan and in apply. The
+behaviour is pinned by the second test in
+`tests/collab/transport-runtime-contract.test.ts` and by
+`tests/collab/notify-record-acceptance.test.ts`.
 
 ### 3.4 Result observation
 
@@ -483,8 +495,7 @@ implementation must not add a new way to claim any of the four.
 ## 6. Characterization coverage
 
 `tests/collab/transport-runtime-contract.test.ts` pins the boundaries that no
-existing test pinned, including one behaviour that #17 has to decide and that G2
-only characterizes. Every other row cites the test that covers it.
+existing test pinned. Every other row cites the test that covers it.
 
 | #   | Required case                       | Status                                   | Covered by                                                                                                                                                                                                                                                                                                                                                                             |
 | --- | ----------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -494,7 +505,7 @@ only characterizes. Every other row cites the test that covers it.
 | 4   | unknown delivery / no replay        | existing                                 | `tests/collab/workflow-notifications.test.ts` — "an unknown delivery stays unknown and is never replayed automatically"                                                                                                                                                                                                                                                                |
 | 5   | changed workspace (#13)             | existing                                 | `tests/collab/shell-readiness.test.ts` — "readiness fails closed on pane, workspace, terminal, cwd and agent drift" (`workspace_id_mismatch`); task-root redirect in `tests/collab/messages.test.ts` — "unsafe ids, malformed records, task mismatch and redirected state fail closed"                                                                                                 |
 | 6   | lack of stop proof                  | existing                                 | `tests/collab/rollover.test.ts` — "unknown quiescence and non-complete inventory never authorize transfer" (`old_writer_not_stopped`, `stop_evidence_required`)                                                                                                                                                                                                                        |
-| 7   | registered-message validation (#17) | characterized — decision deferred to #17 | Not covered. Two tests in `tests/collab/transport-runtime-contract.test.ts` pin only today's behaviour: "a registered message whose id does not match its registration is refused" (the file-level half) and "notify attempts delivery when the file is valid but the record has not accepted the message" (the open half). Whether the second must refuse is #17's decision, not G2's |
+| 7   | registered-message validation (#17) | decided — notification requires record acceptance | `tests/collab/transport-runtime-contract.test.ts` — "a registered message whose id does not match its registration is refused" (the file-level half) and "notify refuses delivery when the file is valid but the record has not accepted the message" (the record half); `tests/collab/notify-record-acceptance.test.ts` — "notify refuses a registration the protocol rejected, in plan and in apply", "notify refuses a hand-placed envelope the task record never accepted", "notify refuses a file whose content differs from what the record accepted" and "notify still forwards one pointer for a message the record accepted" |
 
 ### Known gaps, stated rather than faked
 
@@ -548,9 +559,9 @@ only characterizes. Every other row cites the test that covers it.
 
   The live path is untouched because notify already re-observes: every call
   re-reads `transport.list()` and stamps `caller.observed_at =
-  nowIso(options.clock)` (`src/app/collab-notify.ts:1559`), so there is no stored
-  observation to age there and no delivery rule was added — `git diff` shows no
-  change to `src/app/collab-notify.ts`. No transport, channel representation,
+  nowIso(options.clock)` (`src/app/collab-notify.ts:1611`), so there is no stored
+  observation to age there and no delivery rule was added — that change did not
+  touch `src/app/collab-notify.ts`. No transport, channel representation,
   message/acceptance semantics or migration is involved: the evaluation reads an
   existing nullable field. Where the caller already owns a clock — a session
   transition (`src/app/collab-session-transition.ts`,

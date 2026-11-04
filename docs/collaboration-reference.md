@@ -91,8 +91,10 @@ The bounded request uses schema `pappra/collab-bootstrap-request/1`. It pins:
   receiver context.
 - `bootstrap`: absolute exported bundle path, canonical bundle-manifest digest,
   colocated config path/digest and exact extension entry.
-- `message_pointer`: one already-registered message id/path/digest. Arbitrary
-  prompt text is not accepted.
+- `message_pointer`: one already-registered message id/path/digest whose message
+  the task record accepted; notification refuses a registered file with no
+  matching `applied`/`recorded` record entry. Arbitrary prompt text is not
+  accepted.
 - `binding_ref`: a task-local `pappra/collab-binding/1` file. This is needed by
   the existing registered-message router to resolve the caller and recipient
   explicitly. If it is absent, plan/apply returns `binding_ref_required`; no
@@ -183,7 +185,8 @@ For `target.choice: "sibling"`, apply:
    report. A separate task-local binding is written only after this exact
    SDK-native identity is verified.
 5. Notifies the registered message pointer once through the existing message
-   protocol. A successful prompt submission is reported as `submitted`, not as
+   protocol, which forwards it only when the task record accepted that exact
+   message. A successful prompt submission is reported as `submitted`, not as
    consumed or accepted.
 
 If readiness fails or is unknown before startup, cleanup is limited to the pane

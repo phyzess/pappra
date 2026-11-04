@@ -67,7 +67,10 @@ import {
   type HerdrPromptResult,
   type HerdrTransport,
 } from '../../src/app/collab-notify.js';
-import { readDeliveryRecord } from '../../src/app/collab-messages.js';
+import {
+  readDeliveryRecord,
+  sendMessageFromFile,
+} from '../../src/app/collab-messages.js';
 
 /**
  * #35 — the shared native-observation age bound.
@@ -633,10 +636,10 @@ interface NotifyFixture {
 }
 
 /** One registered STATUS_QUERY, a live matching transport list and a matching binding. */
-function notifyFixture(
+async function notifyFixture(
   label: string,
   prepare: (taskRoot: string, clock: number) => void = () => undefined,
-): NotifyFixture {
+): Promise<NotifyFixture> {
   const root = makeTempDir(`native-age-${label}`);
   const clock = NOTIFY_CLOCK;
   const taskRoot = join(root, 'domain', 'tasks', 'sample');
@@ -661,10 +664,18 @@ function notifyFixture(
     },
     { clock },
   );
-  writeFileSync(
-    join(taskRoot, 'messages', 'msg-native-age-1.json'),
-    `${JSON.stringify(message, null, 2)}\n`,
-  );
+  // Registered through the protocol, not hand-placed: notify forwards only a
+  // message the task record accepted (an `applied`/`recorded` entry with a
+  // matching content digest), so a hand-written envelope file is no longer a
+  // valid fixture for a deliverable message.
+  const envelopeFile = join(root, 'envelope-msg-native-age-1.json');
+  writeFileSync(envelopeFile, `${JSON.stringify(message, null, 2)}\n`);
+  const sent = await sendMessageFromFile(taskRoot, envelopeFile, {
+    apply: true,
+    clock,
+  });
+  assert.equal(sent.ok, true, JSON.stringify(sent));
+  assert.equal(sent.ok && sent.value.status, 'accepted', JSON.stringify(sent));
   const bindingFile = join(taskRoot, 'binding.json');
   writeFileSync(
     bindingFile,
@@ -730,7 +741,7 @@ function notifyFixture(
 }
 
 test('notify is untouched: a live match still delivers and dates the caller from the clock', async () => {
-  const fixture = notifyFixture('notify');
+  const fixture = await notifyFixture('notify');
   try {
     const notified = await fixture.notify();
     assert.equal(notified.ok, true, JSON.stringify(notified));
@@ -754,42 +765,45 @@ test('notify is untouched: a live match still delivers and dates the caller from
 });
 
 test('an expired attempt observation does not disturb the live notify match', async () => {
-  const fixture = notifyFixture('notify-stale-attempt', (taskRoot, clock) => {
-    const written = transact(taskRoot, {
-      actor: 'fixture',
-      purpose: 'add-expired-native-attempt',
-      apply: (record) => {
-        record.attempts.push({
-          subtask_id: 'old-work',
-          attempt: 1,
-          state: 'reported',
-          owner_epoch: 1,
-          assignee: WRITER,
-          assignment_message_id: 'msg-old-assignment',
-          assignment_ref: null,
-          assignment_digest: null,
-          input_revision: null,
-          created_at: new Date(clock - 60 * MINUTE).toISOString(),
-          updated_at: new Date(clock - 55 * MINUTE).toISOString(),
-          native: {
-            runner: 'pi',
-            session_id: WRITER.session_id,
-            run_id: 'run-old',
-            mission_id: null,
-            observation: 'confirmed',
-            observed_at: new Date(
-              clock - (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 15) * MINUTE,
-            ).toISOString(),
-            evidence_ref: 'herdr:agent:w9:p2:settled',
-          },
-          approval: null,
-          transitions: [],
-        });
-        return { record };
-      },
-    });
-    assert.equal(written.ok, true, JSON.stringify(written));
-  });
+  const fixture = await notifyFixture(
+    'notify-stale-attempt',
+    (taskRoot, clock) => {
+      const written = transact(taskRoot, {
+        actor: 'fixture',
+        purpose: 'add-expired-native-attempt',
+        apply: (record) => {
+          record.attempts.push({
+            subtask_id: 'old-work',
+            attempt: 1,
+            state: 'reported',
+            owner_epoch: 1,
+            assignee: WRITER,
+            assignment_message_id: 'msg-old-assignment',
+            assignment_ref: null,
+            assignment_digest: null,
+            input_revision: null,
+            created_at: new Date(clock - 60 * MINUTE).toISOString(),
+            updated_at: new Date(clock - 55 * MINUTE).toISOString(),
+            native: {
+              runner: 'pi',
+              session_id: WRITER.session_id,
+              run_id: 'run-old',
+              mission_id: null,
+              observation: 'confirmed',
+              observed_at: new Date(
+                clock - (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 15) * MINUTE,
+              ).toISOString(),
+              evidence_ref: 'herdr:agent:w9:p2:settled',
+            },
+            approval: null,
+            transitions: [],
+          });
+          return { record };
+        },
+      });
+      assert.equal(written.ok, true, JSON.stringify(written));
+    },
+  );
   try {
     const attempt = readRecord(fixture.taskRoot)!.attempts.at(-1)!;
     assert.equal(
