@@ -270,6 +270,7 @@ in the same roster read that participant verification already performs:
 | `completion_seq`   | counter for a completed turn                | a completed turn alone is not attributable          |
 | `terminal_id`      | identity of the agent's terminal            | a changed id means a restart, so nothing compares   |
 | `revision`         | per-agent update counter                    | movement alone forces `unknown`, never receipt      |
+| `interactive_ready`, `launch_pending` | whether the pane is at an input prompt | only where a read reports them; an absent flag makes no readiness claim |
 
 The "before" reading is the roster entry participant verification already
 validated, so the observation adds no call and no seam around the final
