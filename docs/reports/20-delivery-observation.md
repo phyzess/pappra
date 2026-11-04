@@ -6,8 +6,11 @@ semantics and budget; the independent review of `7119f93` returned F1–F5 (fixe
 `af52665` and now **passed** by the independent technical review. This revision
 changes nothing but this report's verification record (D1): the counts, who ran
 them, and the one unreproduced failure. The change still alters delivery and
-persisted semantics, so the wider independent review of the second write,
-concurrency, crash and old-record contracts remains outstanding. Nothing was
+persisted semantics. Independent technical review covered the second write,
+injected retry/reservation and write-failure cases, and old-record reads.
+Formal Pappra workflow admission and acceptance remain outstanding; real
+cross-process concurrency, process-kill crash tests and an old-binary run were
+not performed. Nothing was
 pushed, no PR was opened, no issue was closed or edited, no release or external
 message happened, and no real participant was sent anything.
 
@@ -361,5 +364,7 @@ the skill reference and its mirror.
 5. ~~F6/F7/F8: most-recent-attempt read-back, composed-then-bounded detail, and
    the numberless truncation marker.~~ Passed the independent technical review;
    this revision only corrects the verification record it was asked to fix.
-6. Still outstanding for the independent review: the second write, concurrency,
-   crash windows and old-record reads.
+6. Formal Pappra workflow admission and coordinator acceptance remain
+   outstanding. Prior independent technical review includes injected
+   second-write/retry cases and old-record reads; it is not evidence of real
+   cross-process pressure, process-kill crash tests or an old-binary run.
