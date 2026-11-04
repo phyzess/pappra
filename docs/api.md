@@ -55,6 +55,17 @@ and the recovery adapter both read, and which imports no application module.
 `collab` or `adapters`; host modules may not import `app` or `adapters`; and
 infrastructure may import only `infra` and `schemas`.
 
+## Configuration authority
+
+Configuration lives in two layers with different owners. The committed
+`.pappra/workspace.json` is shared through version control;
+`.pappra/local/machine.json` is checkout-local. Every field of both schemas is
+classified as descriptive or authority-bearing, together with the condition that
+must still hold before it has an effect, so a shared declaration can never be
+mistaken for an authorization. `src/schemas/config-authority.ts` is the table,
+`pappra doctor` reports it as the `workspace.authority` check, and
+[configuration authority](configuration-authority.md) is the contract.
+
 ## Experimental surface
 
 Collaboration, automation and managed-Pi APIs are experimental: their wire

@@ -12,6 +12,11 @@ import {
   type DoctorReport,
   type DoctorSeverity,
 } from '../schemas/doctor.js';
+import {
+  CROSS_LAYER_VALUE_COMPOSITIONS,
+  inspectConfigAuthority,
+  summarizeConfigAuthority,
+} from '../schemas/config-authority.js';
 import type { MachineConfig } from '../schemas/machine.js';
 import type { WorkspaceConfig } from '../schemas/workspace.js';
 import { isPathInside } from '../schemas/paths.js';
@@ -1015,6 +1020,58 @@ function hostChecks(
   });
 }
 
+/**
+ * Reports the field-level authority classification of both configuration
+ * layers. It classifies declarations only: no executable is resolved, spawned
+ * or executed, and a shared value is never treated as an authorization.
+ */
+function configAuthorityCheck(input: {
+  readonly configPath: string;
+  readonly machinePath: string | null;
+  readonly workspaceDigest: string | null;
+  readonly machineDigest: string | null;
+  readonly observedAt: string;
+}): DoctorCheck {
+  const inspection = inspectConfigAuthority();
+  const shared = summarizeConfigAuthority('shared');
+  const machine = summarizeConfigAuthority('private');
+  const compositions = CROSS_LAYER_VALUE_COMPOSITIONS.map((entry) => entry.id);
+  const gaps = inspection.violations;
+  const summary =
+    `${gaps.length > 0 ? `Classification gaps: ${gaps.slice(0, 4).join('; ')}. ` : ''}` +
+    `Shared ${shared.file} classifies ${shared.total} field(s): ${shared.descriptive} descriptive, ${shared.authorityBearing} authority-bearing (${shared.explicitCommand} command-gated, ${shared.localBinding} checkout-local-binding, ${shared.noConsumer} with no consumer today) and ${shared.openContainers} open container. ` +
+    `${machine.total} machine.json field(s) are classified as checkout-local. ` +
+    `No field is defined in both layers; ${compositions.length} read-time composition(s) keep their own source layer (${compositions.join(', ')}). ` +
+    'No validation executable was resolved, spawned or executed.';
+  return makeCheck({
+    id: 'workspace.authority',
+    code: diagnosticCodes.doctor_config_authority,
+    status: gaps.length === 0 ? 'ok' : 'warning',
+    severity: gaps.length === 0 ? 'info' : 'warning',
+    title: 'Configuration authority classification',
+    summary,
+    source: input.configPath,
+    observedAt: input.observedAt,
+    coverage: 'schema field classification only; no executable resolved or run',
+    evidence: [
+      fileEvidence(input.configPath, input.observedAt, input.workspaceDigest),
+      ...(input.machinePath === null
+        ? []
+        : [
+            fileEvidence(
+              input.machinePath,
+              input.observedAt,
+              input.machineDigest,
+            ),
+          ]),
+    ],
+    nextActions: [
+      'Read docs/configuration-authority.md before giving a shared-layer authority-bearing field an execution path.',
+      "Grant authority-bearing behaviour through this checkout's machine.json or an explicit command, not by editing the committed workspace.json alone.",
+    ],
+  });
+}
+
 function toolCheck(
   name: 'codegraph' | 'serena',
   preference: string | null,
@@ -1443,6 +1500,15 @@ export async function runDoctor(
         ],
       }),
     );
+    checks.push(
+      configAuthorityCheck({
+        configPath,
+        machinePath,
+        workspaceDigest: workspaceInspection.digest,
+        machineDigest: machineInspection.digest,
+        observedAt,
+      }),
+    );
     checks.push(await inspectInstallState(root, observedAt));
   } else {
     for (const [id, title] of [
@@ -1451,6 +1517,7 @@ export async function runDoctor(
       ['workspace.repositories', 'Repositories and worktrees'],
       ['workspace.knowledge', 'Knowledge and rules'],
       ['workspace.validation', 'Validation command candidates'],
+      ['workspace.authority', 'Configuration authority classification'],
       ['install.workspace', 'Managed workspace installation state'],
     ] as const) {
       checks.push(
@@ -1714,6 +1781,7 @@ export async function runDoctor(
         'repositories',
         'knowledge',
         'validation',
+        'configuration-authority',
         'workspace-install-state',
         'runtime-passive-state',
         'current-runtime-archive-state',
