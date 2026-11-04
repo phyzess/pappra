@@ -20,15 +20,17 @@ import {
 import {
   DEFAULT_DELIVERY_OBSERVATION_POLICY,
   MAX_OBSERVATION_DETAIL_CHARS,
+  boundDetail,
   delay,
   normalizeDeliveryObservationPolicy,
   observeDeliveryReceipt,
   type DeliveryObservationPolicy,
   type DeliveryObservationProbe,
 } from '../../src/app/collab-delivery-observation.js';
-import type {
-  CollabDeliveryAgentState,
-  CollabDeliveryObservation,
+import {
+  collabDeliveryObservationSchema,
+  type CollabDeliveryAgentState,
+  type CollabDeliveryObservation,
 } from '../../src/schemas/collaboration.js';
 import { cleanup, makeTempDir } from '../workspace/fixtures.js';
 
@@ -1049,7 +1051,7 @@ test('a notification without an explicit request observes nothing and waits for 
 // A broken observation never damages the delivery record
 // ---------------------------------------------------------------------------
 
-const TRUNCATION_MARKER = /\[truncated \d+ chars\]$/;
+const TRUNCATION_MARKER = /…\[truncated\]/;
 
 test('an over-long diagnostic is bounded and marked, and the observation is kept', async () => {
   const value = fixture('observation-long-detail');
@@ -1396,4 +1398,69 @@ test('the record clock and the observation clock stay independent', async () => 
   } finally {
     cleanup(value.root);
   }
+});
+
+test('the truncation marker is exact and never exceeds the field bound', () => {
+  const long = 'a'.repeat(2_000);
+  const bounded = boundDetail(long, 1_024);
+  assert(bounded !== null);
+  // Exactly the field bound, ending in the fixed marker: no digit count can be
+  // off, and no off-by-one can push the value over the schema limit.
+  assert.equal(bounded.length, 1_024);
+  assert.match(bounded, /…\[truncated\]$/);
+  assert.equal(
+    bounded.slice(0, 1_024 - ' …[truncated]'.length),
+    'a'.repeat(1_024 - ' …[truncated]'.length),
+  );
+  assert.equal(boundDetail('short', 1_024), 'short');
+  assert.equal(boundDetail(null, 1_024), null);
+  // A bound smaller than the marker still yields a value inside the bound.
+  assert.equal(boundDetail(long, 3), ' …[');
+});
+
+test('an over-long error and an over-run window are both kept inside the bound', async () => {
+  // Both facts at once: a 5 000-character transport error and a probe that
+  // overran the 600 000 ms recordable window. The composed detail must fit the
+  // schema, keep the real elapsed time and keep the cap explanation.
+  const harness = observe({
+    samples: [
+      {
+        ok: false,
+        reason: 'probe_failed',
+        detail: `agent list failed: ${'x'.repeat(5_000)}`,
+      },
+    ],
+    costs: [700_000],
+    policy: { ...policy, windowMs: 3_000, probeTimeoutMs: 4_000 },
+  });
+  const observation = await harness.observation;
+  assert.equal(observation.receipt, 'unknown');
+  assert.equal(observation.reason, 'probe_failed');
+  assert.equal(observation.window_ms, 600_000);
+  const detail = String(observation.detail);
+  assert(detail.length <= MAX_OBSERVATION_DETAIL_CHARS);
+  assert.match(detail, TRUNCATION_MARKER);
+  assert.match(detail, /capped at 600000 ms/);
+  assert.match(detail, /ran for 700000 ms/);
+  // The finished observation still validates against the persisted schema.
+  const validated = collabDeliveryObservationSchema.safeParse(observation);
+  assert.equal(validated.success, true);
+});
+
+test('an over-run window without a long error keeps the whole note', async () => {
+  const harness = observe({
+    samples: [quietProbe],
+    costs: [700_000],
+    policy: { ...policy, windowMs: 3_000, probeTimeoutMs: 4_000 },
+  });
+  const observation = await harness.observation;
+  assert.equal(observation.window_ms, 600_000);
+  assert.equal(
+    observation.detail,
+    'Sample 1 returned after the 3000 ms budget; its reading is recorded but never classified. The recorded window is capped at 600000 ms; the prober ran for 700000 ms.',
+  );
+  assert.equal(
+    collabDeliveryObservationSchema.safeParse(observation).success,
+    true,
+  );
 });

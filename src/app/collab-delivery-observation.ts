@@ -102,11 +102,19 @@ export const MAX_DELIVERY_OBSERVATION_PROBE_TIMEOUT_MS = 30_000;
  */
 export const MAX_OBSERVATION_DETAIL_CHARS = 1024;
 
-/** Shortens a detail that is over `limit`, marking the cut explicitly. */
+/**
+ * Shortens a detail that is over `limit`. The marker carries no number on
+ * purpose: a digit count would have to be computed against the space it itself
+ * consumes, so a bug there would either misreport the cut or push the result over
+ * the field's limit. The result never exceeds `limit`.
+ */
+const TRUNCATION_MARKER = ' …[truncated]';
+
 export function boundDetail(text: string | null, limit: number): string | null {
   if (text === null || text.length <= limit) return text;
-  const marker = ` …[truncated ${String(text.length - limit)} chars]`;
-  return `${text.slice(0, Math.max(0, limit - marker.length))}${marker}`;
+  if (limit <= TRUNCATION_MARKER.length)
+    return TRUNCATION_MARKER.slice(0, Math.max(0, limit));
+  return `${text.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
 /** A negative needs at least two independent samples to be a window. */
@@ -195,6 +203,24 @@ export interface ObserveDeliveryReceiptInput {
   readonly sleep: (milliseconds: number) => Promise<void>;
 }
 
+/**
+ * Builds the complete diagnostic first, then bounds it once. The overrun note is
+ * appended after the free-text part is shortened, so both facts survive together:
+ * an over-long transport error never pushes the record over the schema limit, and
+ * the real elapsed time and the recorded cap stay readable in the same field.
+ */
+function observationDetail(
+  detail: string | null,
+  elapsedMs: number,
+): string | null {
+  if (elapsedMs <= MAX_RECORDED_WINDOW_MS)
+    return boundDetail(detail, MAX_OBSERVATION_DETAIL_CHARS);
+  const note = `The recorded window is capped at ${String(MAX_RECORDED_WINDOW_MS)} ms; the prober ran for ${String(elapsedMs)} ms.`;
+  const room = MAX_OBSERVATION_DETAIL_CHARS - note.length - 1;
+  const head = boundDetail(detail, room);
+  return head === null ? note : `${head} ${note}`;
+}
+
 const REST_STATUSES: readonly string[] = ['idle', 'done'];
 
 function notReady(state: CollabDeliveryAgentState): boolean {
@@ -233,10 +259,6 @@ export async function observeDeliveryReceipt(
     const endedAt = Math.max(startedAt, input.now());
     const elapsed = endedAt - startedAt;
     const recorded = Math.min(elapsed, MAX_RECORDED_WINDOW_MS);
-    const detail = boundDetail(
-      fields.detail ?? null,
-      MAX_OBSERVATION_DETAIL_CHARS,
-    );
     return {
       schema: 'pappra/collab-delivery-observation/1',
       receipt: 'unknown',
@@ -248,10 +270,7 @@ export async function observeDeliveryReceipt(
       samples: fields.samples ?? 0,
       before,
       after: fields.after ?? null,
-      detail:
-        recorded === elapsed
-          ? detail
-          : `${detail === null ? '' : `${detail} `}The recorded window is capped at ${String(MAX_RECORDED_WINDOW_MS)} ms; the prober ran for ${String(elapsed)} ms.`,
+      detail: observationDetail(fields.detail ?? null, elapsed),
     };
   };
 

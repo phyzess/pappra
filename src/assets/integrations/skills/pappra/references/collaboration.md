@@ -147,8 +147,10 @@ Nothing is retyped, resent or keyed, and no observation authorizes a resend.
 Without `--observe` no probe and no wait are added. The record is validated before
 its atomic publish, only the free-text detail is bounded (with a truncation
 marker), and a rejected or failed observation leaves the recorded status and
-attempts intact and is reported as not recorded. `message read` shows the saved
-observation, or `receipt: unobserved` for a record that has none.
+attempts intact and is reported as not recorded. `message read` summarises the
+most recent attempt: its status and either that attempt's observation or
+`receipt: unobserved for the most recent attempt (<status>)`; earlier attempts
+keep their own observations in the record and in the JSON `delivery` object.
 
 ## Envelope
 

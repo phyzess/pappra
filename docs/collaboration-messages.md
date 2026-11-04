@@ -390,10 +390,15 @@ The observation is additive and it can never damage the delivery evidence:
 - the candidate record is validated against `pappra/collab-delivery/1` **before**
   the atomic publish, so a candidate no reader could parse never replaces a valid
   record;
-- an untrusted free-text `detail` is bounded and marked when shortened
-  (`…[truncated N chars]`). Identity and state values are never shortened: a
-  trimmed terminal id or status would be a different value that merely looks
-  valid, so an observation whose state is out of schema is **rejected** instead;
+- an untrusted free-text `detail` is composed first and then bounded once, and is
+  marked when shortened (`…[truncated]`, deliberately without a count so no
+  arithmetic can push the field over its limit). An over-long transport error and
+  an over-run window are kept together in that one field: the recording window is
+  capped at the schema bound, the true elapsed time and the cap are both stated,
+  and the finished observation still validates. Identity and state values are
+  never shortened: a trimmed terminal id or status would be a different value
+  that merely looks valid, so an observation whose state is out of schema is
+  **rejected** instead;
 - when the observation is rejected or its write fails, the already-recorded
   status and attempts remain readable, the result reports
   `observation: null` with an explicit "not recorded" reason, and a later
@@ -406,11 +411,14 @@ recorded before this observation existed carries no `observation` field; that
 reads as unobserved — never as `unknown`, and never as a value Pappra writes back
 into an old file.
 
-`message read` shows the saved observation for the attempt that delivered the
-pointer, and reports `receipt: unobserved` when the record has none (an old
-record or a notification sent without `--observe`). The observation is available
-in the `delivery` object of the same command's JSON result; `message list` stays
-bounded and does not read observations back.
+`message read` summarises the **most recent** delivery attempt: its status, and
+either that attempt's observation or `receipt: unobserved for the most recent
+attempt (<status>)`. A missing observation is never filled in from an earlier
+attempt — an old record, a notification sent without `--observe`, and a retry
+that was refused all read as unobserved for the attempt they describe. Earlier
+attempts keep their own observations in the record and in the `delivery` object
+of the same command's JSON result, which returns every attempt; `message list`
+stays bounded and does not read observations back.
 
 ## Native capability evidence
 

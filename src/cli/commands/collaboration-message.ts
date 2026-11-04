@@ -49,16 +49,22 @@ const SUCCESS_STATUSES = new Set([
 ]);
 
 /**
- * Reads one saved observation back from the attempt that actually delivered the
- * pointer. An absent observation is reported as unobserved — an old record and an
- * observation that was never requested look the same, and neither becomes an
- * `unknown` receipt.
+ * Reads the saved observation of the **most recent** delivery attempt, which is
+ * also the attempt whose status the summary reports. An attempt without an
+ * observation is reported as unobserved — an old record and an observation that
+ * was never requested look the same, and neither becomes an `unknown` receipt.
+ * Earlier attempts keep their own observations in the record and in the JSON
+ * result; this human summary never mixes a later attempt's status with an earlier
+ * attempt's evidence.
  */
 function receiptLine(delivery: CollabDelivery | null): string {
   if (delivery === null) return 'not-notified';
-  const observation = delivery.attempts.at(-1)?.observation;
-  if (observation === undefined) return 'unobserved';
-  return `${observation.receipt} (${observation.reason}), ${String(observation.samples)} sample(s) over ${String(observation.window_ms)} ms`;
+  const latest = delivery.attempts.at(-1);
+  if (latest === undefined) return 'unobserved';
+  const observation = latest.observation;
+  if (observation === undefined)
+    return `unobserved for the most recent attempt (${latest.status})`;
+  return `${observation.receipt} (${observation.reason}), ${String(observation.samples)} sample(s) over ${String(observation.window_ms)} ms; most recent attempt ${latest.status}`;
 }
 
 function emit(
