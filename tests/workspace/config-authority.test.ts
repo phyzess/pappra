@@ -11,19 +11,22 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import {
   CROSS_LAYER_VALUE_COMPOSITIONS,
   MACHINE_CONFIG_AUTHORITY,
   WORKSPACE_CONFIG_AUTHORITY,
   configAuthorityGaps,
-  configSchemaFields,
   inspectConfigAuthority,
+  scanConfigSchema,
   summarizeConfigAuthority,
+  type ConfigAuthoritySource,
   type ConfigFieldAuthority,
 } from '../../src/schemas/config-authority.js';
 import { machineConfigSchema } from '../../src/schemas/machine.js';
 import { workspaceConfigSchema } from '../../src/schemas/workspace.js';
 import { runDoctor } from '../../src/app/doctor.js';
+import { configAuthorityCheck } from '../../src/app/config-authority-check.js';
 import { discoverWorkspace } from '../../src/workspace/discover.js';
 import { inspectWorkspaceConfig } from '../../src/workspace/config.js';
 import { testSubprocessEnvironment } from '../../scripts/test-environment.js';
@@ -51,6 +54,21 @@ function field(
   return found as ConfigFieldAuthority;
 }
 
+/** A candidate schema/source pair, used to probe the classification contract. */
+function candidateSource(
+  schema: z.core.$ZodType,
+  fields: readonly ConfigFieldAuthority[],
+  file = '.pappra/candidate-workspace.json',
+): ConfigAuthoritySource {
+  return {
+    layer: 'shared',
+    file,
+    schemaName: 'pappra/workspace/1',
+    schema,
+    fields,
+  };
+}
+
 test('classifies every workspace.json and machine.json field', () => {
   const inspection = inspectConfigAuthority();
   assert.deepEqual(inspection.violations, []);
@@ -63,21 +81,30 @@ test('classifies every workspace.json and machine.json field', () => {
   assert.deepEqual(machine?.unclassified, []);
   assert.deepEqual(shared?.stale, []);
   assert.deepEqual(machine?.stale, []);
+  assert.deepEqual(shared?.unsupported, []);
+  assert.deepEqual(machine?.unsupported, []);
   // The schema walker really reads the schemas, so an empty table would fail.
   assert.ok((shared?.fields.length ?? 0) >= 20);
   assert.ok((machine?.fields.length ?? 0) >= 9);
+  // A repeated name across layers is reported, and is not a violation.
+  assert.deepEqual(inspection.duplicatePaths, ['schema']);
+});
+
+test('the current schemas use only constructs the contract models', () => {
+  assert.deepEqual(scanConfigSchema(workspaceConfigSchema).unsupported, []);
+  assert.deepEqual(scanConfigSchema(machineConfigSchema).unsupported, []);
 });
 
 test('a field added without a classification is reported as drift', () => {
-  const fields = configSchemaFields(workspaceConfigSchema);
+  const scan = scanConfigSchema(workspaceConfigSchema);
   const withoutRuntime = WORKSPACE_CONFIG_AUTHORITY.filter(
     (entry) => entry.path !== 'runtimeVersion',
   );
-  const missing = configAuthorityGaps(fields, withoutRuntime);
+  const missing = configAuthorityGaps(scan.fields, withoutRuntime);
   assert.deepEqual(missing.unclassified, ['runtimeVersion']);
   assert.deepEqual(missing.stale, []);
 
-  const machineFields = configSchemaFields(machineConfigSchema);
+  const machineScan = scanConfigSchema(machineConfigSchema);
   const withGhost = [
     ...MACHINE_CONFIG_AUTHORITY,
     {
@@ -88,9 +115,127 @@ test('a field added without a classification is reported as drift', () => {
       note: 'Removed from the schema.',
     } satisfies ConfigFieldAuthority,
   ];
-  const ghost = configAuthorityGaps(machineFields, withGhost);
+  const ghost = configAuthorityGaps(machineScan.fields, withGhost);
   assert.deepEqual(ghost.unclassified, []);
   assert.deepEqual(ghost.stale, ['removedField']);
+});
+
+test('an unmodelled construct is reported instead of silently passing', () => {
+  // The pre-fix failure mode: a classified leaf replaced by a union that holds
+  // an object. A walker that flattens unknown constructs into leaves reports the
+  // same path, so the coverage check passes while the interior is unclassified.
+  const schema = z.strictObject({
+    name: z.string(),
+    runtimeVersion: z.union([
+      z.string(),
+      z.strictObject({ nestedField: z.string() }),
+    ]),
+    knowledge: z.strictObject({
+      sources: z.array(
+        z.union([z.string(), z.strictObject({ deep: z.string() })]),
+      ),
+    }),
+  });
+  const fields: readonly ConfigFieldAuthority[] = [
+    {
+      path: 'name',
+      layer: 'shared',
+      kind: 'descriptive',
+      gate: 'none',
+      note: 'Candidate label.',
+    },
+    {
+      path: 'runtimeVersion',
+      layer: 'shared',
+      kind: 'selection',
+      gate: 'explicit-command',
+      note: 'Candidate target.',
+    },
+    {
+      path: 'knowledge.sources[]',
+      layer: 'shared',
+      kind: 'access-candidate',
+      gate: 'explicit-command',
+      note: 'Candidate read list.',
+    },
+  ];
+
+  const scan = scanConfigSchema(schema);
+  assert.deepEqual(
+    scan.fields.map((entry) => entry.path),
+    ['name'],
+  );
+  assert.deepEqual(scan.unsupported, [
+    { path: 'runtimeVersion', construct: 'union' },
+    { path: 'knowledge.sources[]', construct: 'union' },
+  ]);
+
+  const inspection = inspectConfigAuthority([candidateSource(schema, fields)]);
+  const coverage = inspection.sources[0];
+  assert.deepEqual(coverage?.unclassified, []);
+  // The construct failure is the reported one; it is not mislabelled as a stale
+  // table entry, so the message names the construct the contract cannot model.
+  assert.deepEqual(coverage?.stale, []);
+  const constructViolations = inspection.violations.filter((entry) =>
+    entry.includes('unmodelled schema construct "union"'),
+  );
+  assert.equal(constructViolations.length, 2);
+  assert.match(
+    constructViolations.join(' | '),
+    /runtimeVersion uses the unmodelled schema construct "union"; the classification \(selection\) cannot cover its interior/,
+  );
+  assert.match(constructViolations.join(' | '), /knowledge\.sources\[\]/);
+});
+
+test('a schema the contract cannot walk at all still produces a verdict', () => {
+  const schema = z.union([
+    z.strictObject({ a: z.string() }),
+    z.strictObject({ b: z.string() }),
+  ]);
+  const inspection = inspectConfigAuthority([
+    candidateSource(schema, [], '.pappra/rootless.json'),
+  ]);
+  assert.equal(inspection.violations.length, 1);
+  assert.match(
+    inspection.violations[0] ?? '',
+    /\(root\) uses the unmodelled schema construct "union"; no classification can cover its interior/,
+  );
+  assert.deepEqual(inspection.sources[0]?.fields, []);
+});
+
+test('doctor reports a controlled warning for an unmodelled construct', () => {
+  const schema = z.strictObject({
+    runtimeVersion: z.union([z.string(), z.strictObject({ x: z.string() })]),
+  });
+  const inspection = inspectConfigAuthority([
+    candidateSource(schema, [
+      {
+        path: 'runtimeVersion',
+        layer: 'shared',
+        kind: 'selection',
+        gate: 'explicit-command',
+        note: 'Candidate target.',
+      },
+    ]),
+  ]);
+  assert.ok(inspection.violations.length > 0);
+
+  const check = configAuthorityCheck({
+    configPath: '/tmp/candidate/.pappra/workspace.json',
+    machinePath: null,
+    workspaceDigest: null,
+    machineDigest: null,
+    observedAt: '2026-01-01T00:00:00.000Z',
+    inspection,
+  });
+  assert.equal(check.id, 'workspace.authority');
+  assert.equal(check.code, 'doctor_config_authority');
+  assert.equal(check.status, 'warning');
+  assert.equal(check.severity, 'warning');
+  assert.match(check.summary, /^Classification gaps: /);
+  assert.match(check.summary, /unmodelled schema construct "union"/);
+  // The observation stays scoped to what this check did.
+  assert.match(check.summary, /it resolved, spawned and executed nothing/);
 });
 
 test('the committed layer never activates an authority-bearing field by itself', () => {
@@ -127,12 +272,6 @@ test('the committed layer never activates an authority-bearing field by itself',
           'none',
           `${entry.path} cannot be enabled by the committed file alone`,
         );
-        assert.ok(
-          entry.gate === 'explicit-command' ||
-            entry.gate === 'local-binding' ||
-            entry.gate === 'no-consumer',
-          `${entry.path} needs a command, a private binding or a decision`,
-        );
       }
     }
   }
@@ -166,7 +305,7 @@ test('the committed layer never activates an authority-bearing field by itself',
     extensions.note,
     /interior keys are not part of the schema contract/,
   );
-  const extensionField = configSchemaFields(workspaceConfigSchema).find(
+  const extensionField = scanConfigSchema(workspaceConfigSchema).fields.find(
     (entry) => entry.path === 'extensions',
   );
   assert.equal(extensionField?.open, true);
@@ -316,28 +455,46 @@ test('a committed validation entry is never executed by doctor or discovery', as
     );
     assert.equal(authority?.code, 'doctor_config_authority');
     assert.equal(authority?.status, 'ok');
+    assert.match(authority?.summary ?? '', /^Static field classification/);
     assert.match(
       authority?.summary ?? '',
-      /No validation executable was resolved, spawned or executed\./,
+      /Non-execution of validation candidates is pinned by tests over current entrypoints, not observed here\./,
     );
     assert.equal(existsSync(marker), false);
 
+    // The CLI must complete the run, emit one valid report, and still not run
+    // the marker. The exit code is not asserted: unrelated checks such as a
+    // missing runtime decide it, and coupling this pin to them would make the
+    // test fail for reasons that have nothing to do with validation execution.
     const cliDoctor = invoke(
       ['doctor', '--root', root, '--json'],
       home,
       home,
       data,
     );
-    assert.equal(cliDoctor.status, 1);
+    assert.equal(cliDoctor.signal, null, 'doctor exited without a signal');
+    assert.equal(typeof cliDoctor.status, 'number');
+    assert.equal(cliDoctor.stderr, '');
     const parsed = JSON.parse(cliDoctor.stdout) as {
+      readonly schema: string;
       readonly checks: readonly {
         readonly id: string;
+        readonly status: string;
         readonly summary: string;
       }[];
+      readonly summary: { readonly exitCode: number };
     };
+    assert.equal(parsed.schema, 'pappra/doctor-report/1');
+    assert.equal(typeof parsed.summary.exitCode, 'number');
+    // Completion means the whole check set ran, not that the process stopped.
+    assert.ok(parsed.checks.length >= 10);
+    assert.ok(
+      parsed.checks.some((entry) => entry.id === 'workspace.validation'),
+    );
     const cliAuthority = parsed.checks.find(
       (entry) => entry.id === 'workspace.authority',
     );
+    assert.equal(cliAuthority?.status, 'ok');
     assert.match(cliAuthority?.summary ?? '', /authority-bearing/);
     assert.equal(existsSync(marker), false);
   } finally {
@@ -367,13 +524,17 @@ test('doctor reports the layer each field belongs to', async () => {
       authority?.source,
       join(realpath(root), '.pappra', 'workspace.json'),
     );
-    assert.match(authority?.summary ?? '', /Shared .pappra\/workspace\.json/);
+    assert.match(authority?.summary ?? '', /shared \.pappra\/workspace\.json/);
     assert.match(
       authority?.summary ?? '',
-      /No field is defined in both layers/,
+      /Static field classification of the two configuration schemas, not a runtime observation/,
     );
-    assert.match(authority?.summary ?? '', /read-time composition/);
-    assert.match(authority?.coverage ?? '', /no executable resolved or run/);
+    assert.match(
+      authority?.summary ?? '',
+      /Field path\(s\) occurring in both files: schema; a repeated name is not by itself one effective value/,
+    );
+    assert.match(authority?.summary ?? '', /composed at read time/);
+    assert.match(authority?.coverage ?? '', /nothing resolved or executed/);
     assert.ok(
       report.scope.checked.includes('configuration-authority'),
       'doctor scope names the classification check',

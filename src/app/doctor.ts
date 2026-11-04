@@ -1,7 +1,6 @@
 import { isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { Diagnostic } from '../schemas/diagnostics.js';
-import type { DiagnosticCode } from '../schemas/errors.js';
 import { diagnosticCodes } from '../schemas/errors.js';
 import type { EvidenceRef } from '../schemas/evidence.js';
 import {
@@ -10,13 +9,8 @@ import {
   type DoctorCheck,
   type DoctorCheckStatus,
   type DoctorReport,
-  type DoctorSeverity,
 } from '../schemas/doctor.js';
-import {
-  CROSS_LAYER_VALUE_COMPOSITIONS,
-  inspectConfigAuthority,
-  summarizeConfigAuthority,
-} from '../schemas/config-authority.js';
+import { inspectConfigAuthority } from '../schemas/config-authority.js';
 import type { MachineConfig } from '../schemas/machine.js';
 import type { WorkspaceConfig } from '../schemas/workspace.js';
 import { isPathInside } from '../schemas/paths.js';
@@ -30,6 +24,8 @@ import {
   type WorkspaceDiscovery,
 } from '../workspace/discover.js';
 import { resolveWorkspaceRoot } from '../workspace/resolve.js';
+import { fileEvidence, makeCheck } from './doctor-check.js';
+import { configAuthorityCheck } from './config-authority-check.js';
 import {
   resolveUserDataDir,
   inspectRuntimeStatePassive,
@@ -56,71 +52,6 @@ export interface DoctorOptions {
   readonly homeDir?: string;
   readonly pathEnv?: string;
   readonly now?: Date;
-}
-
-interface CheckInput {
-  readonly id: string;
-  readonly code: DiagnosticCode;
-  readonly status: DoctorCheckStatus;
-  readonly severity: DoctorSeverity;
-  readonly title: string;
-  readonly summary: string;
-  readonly source: string;
-  readonly observedAt: string;
-  readonly coverage?: string | null;
-  readonly evidence?: readonly EvidenceRef[];
-  readonly nextActions?: readonly string[];
-}
-
-function truncateText(value: string, limit: number): string {
-  return value.length <= limit
-    ? value
-    : `${value.slice(0, Math.max(0, limit - 14))}…[truncated]`;
-}
-
-function makeCheck(input: CheckInput): DoctorCheck {
-  const evidence = new Map<string, EvidenceRef>();
-  for (const ref of input.evidence ?? []) {
-    const key = `${ref.kind}\0${ref.ref}\0${ref.digest ?? ''}\0${ref.scope}`;
-    if (!evidence.has(key)) evidence.set(key, ref);
-    if (evidence.size >= 32) break;
-  }
-  const actions = [...new Set(input.nextActions ?? [])]
-    .slice(0, 16)
-    .map((action) => truncateText(action, 1024));
-  const summary = truncateText(input.summary, 4096);
-  let coverage = truncateText(input.coverage ?? '', 256);
-  if ((input.evidence?.length ?? 0) > 32) {
-    coverage = truncateText(`${coverage}; evidence truncated`, 256);
-  }
-  if ((input.nextActions?.length ?? 0) > 16) {
-    coverage = truncateText(`${coverage}; actions truncated`, 256);
-  }
-  if (summary.length < input.summary.length) {
-    coverage = truncateText(`${coverage}; summary truncated`, 256);
-  }
-  return {
-    id: input.id,
-    code: input.code,
-    status: input.status,
-    severity: input.severity,
-    title: input.title,
-    summary,
-    source: input.source,
-    observedAt: input.observedAt,
-    coverage: coverage === '' ? null : coverage,
-    evidence: [...evidence.values()],
-    nextActions: actions,
-  };
-}
-
-function fileEvidence(
-  path: string,
-  observedAt: string,
-  digest: string | null,
-  scope: EvidenceRef['scope'] = 'persisted',
-): EvidenceRef {
-  return { kind: 'file', ref: path, digest, observedAt, scope };
 }
 
 function diagnosticsSummary(diagnostics: readonly Diagnostic[]): string {
@@ -1020,58 +951,6 @@ function hostChecks(
   });
 }
 
-/**
- * Reports the field-level authority classification of both configuration
- * layers. It classifies declarations only: no executable is resolved, spawned
- * or executed, and a shared value is never treated as an authorization.
- */
-function configAuthorityCheck(input: {
-  readonly configPath: string;
-  readonly machinePath: string | null;
-  readonly workspaceDigest: string | null;
-  readonly machineDigest: string | null;
-  readonly observedAt: string;
-}): DoctorCheck {
-  const inspection = inspectConfigAuthority();
-  const shared = summarizeConfigAuthority('shared');
-  const machine = summarizeConfigAuthority('private');
-  const compositions = CROSS_LAYER_VALUE_COMPOSITIONS.map((entry) => entry.id);
-  const gaps = inspection.violations;
-  const summary =
-    `${gaps.length > 0 ? `Classification gaps: ${gaps.slice(0, 4).join('; ')}. ` : ''}` +
-    `Shared ${shared.file} classifies ${shared.total} field(s): ${shared.descriptive} descriptive, ${shared.authorityBearing} authority-bearing (${shared.explicitCommand} command-gated, ${shared.localBinding} checkout-local-binding, ${shared.noConsumer} with no consumer today) and ${shared.openContainers} open container. ` +
-    `${machine.total} machine.json field(s) are classified as checkout-local. ` +
-    `No field is defined in both layers; ${compositions.length} read-time composition(s) keep their own source layer (${compositions.join(', ')}). ` +
-    'No validation executable was resolved, spawned or executed.';
-  return makeCheck({
-    id: 'workspace.authority',
-    code: diagnosticCodes.doctor_config_authority,
-    status: gaps.length === 0 ? 'ok' : 'warning',
-    severity: gaps.length === 0 ? 'info' : 'warning',
-    title: 'Configuration authority classification',
-    summary,
-    source: input.configPath,
-    observedAt: input.observedAt,
-    coverage: 'schema field classification only; no executable resolved or run',
-    evidence: [
-      fileEvidence(input.configPath, input.observedAt, input.workspaceDigest),
-      ...(input.machinePath === null
-        ? []
-        : [
-            fileEvidence(
-              input.machinePath,
-              input.observedAt,
-              input.machineDigest,
-            ),
-          ]),
-    ],
-    nextActions: [
-      'Read docs/configuration-authority.md before giving a shared-layer authority-bearing field an execution path.',
-      "Grant authority-bearing behaviour through this checkout's machine.json or an explicit command, not by editing the committed workspace.json alone.",
-    ],
-  });
-}
-
 function toolCheck(
   name: 'codegraph' | 'serena',
   preference: string | null,
@@ -1507,6 +1386,7 @@ export async function runDoctor(
         workspaceDigest: workspaceInspection.digest,
         machineDigest: machineInspection.digest,
         observedAt,
+        inspection: inspectConfigAuthority(),
       }),
     );
     checks.push(await inspectInstallState(root, observedAt));

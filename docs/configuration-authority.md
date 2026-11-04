@@ -9,10 +9,10 @@ check in `pappra doctor` and behind
 
 ## Two layers
 
-| Layer | File | Who can write it | Shared |
-| --- | --- | --- | --- |
-| shared | `.pappra/workspace.json` | anyone who can commit to the repository, including an agent editing files | yes, through version control |
-| private | `.pappra/local/machine.json` | only the person or process working in this checkout; `.pappra/local/` is ignored | no |
+| Layer   | File                         | Who can write it                                                                 | Shared                       |
+| ------- | ---------------------------- | -------------------------------------------------------------------------------- | ---------------------------- |
+| shared  | `.pappra/workspace.json`     | anyone who can commit to the repository, including an agent editing files        | yes, through version control |
+| private | `.pappra/local/machine.json` | only the person or process working in this checkout; `.pappra/local/` is ignored | no                           |
 
 Both files are strict schemas (`pappra/workspace/1`, `pappra/machine/1`). An
 unknown key is an error with migration advice, not a silent default.
@@ -42,24 +42,24 @@ follow.
 
 ## Field classification
 
-Each field is classified by what the value *is* (`kind`) and by what it cannot
+Each field is classified by what the value _is_ (`kind`) and by what it cannot
 do on its own (`gate`).
 
-| kind | meaning |
-| --- | --- |
-| `descriptive` | a label, identity marker, format literal or recorded preference; enables nothing |
-| `access-candidate` | names something Pappra may read or write, or the policy ceiling for it |
-| `execution-candidate` | names something that may be executed |
-| `selection` | chooses an engine, host or document visibility policy |
-| `local-binding` | binds this checkout to a local identity, path or verified artifact |
-| `open-container` | an open container whose interior is not part of the schema contract |
+| kind                  | meaning                                                                          |
+| --------------------- | -------------------------------------------------------------------------------- |
+| `descriptive`         | a label, identity marker, format literal or recorded preference; enables nothing |
+| `access-candidate`    | names something Pappra may read or write, or the policy ceiling for it           |
+| `execution-candidate` | names something that may be executed                                             |
+| `selection`           | chooses an engine, host or document visibility policy                            |
+| `local-binding`       | binds this checkout to a local identity, path or verified artifact               |
+| `open-container`      | an open container whose interior is not part of the schema contract              |
 
-| gate | meaning |
-| --- | --- |
-| `none` | descriptive only |
-| `explicit-command` | consumed only when a specific Pappra command runs |
-| `local-binding` | inert until a value from this checkout's private layer binds it |
-| `no-consumer` | nothing consumes it today; a future consumer needs an explicit decision |
+| gate               | meaning                                                                 |
+| ------------------ | ----------------------------------------------------------------------- |
+| `none`             | descriptive only                                                        |
+| `explicit-command` | consumed only when a specific Pappra command runs                       |
+| `local-binding`    | inert until a value from this checkout's private layer binds it         |
+| `no-consumer`      | nothing consumes it today; a future consumer needs an explicit decision |
 
 The vocabulary deliberately has no "already effective because it is committed"
 value. Every authority-bearing field is gated by a command, a private binding or
@@ -67,28 +67,28 @@ a decision, never by the shared file alone.
 
 ### Shared layer — `.pappra/workspace.json`
 
-| field | kind | gate |
-| --- | --- | --- |
-| `schema` | descriptive | none |
-| `workspaceId` | descriptive | none |
-| `name` | descriptive | none |
-| `runtimeVersion` | selection | explicit-command |
-| `repositories[].id` | descriptive | none |
-| `repositories[].path` | access-candidate | explicit-command |
-| `repositories[].access` | access-candidate | explicit-command |
-| `knowledge.sources[]` | access-candidate | explicit-command |
-| `knowledge.newDocuments` | access-candidate | explicit-command |
-| `knowledge.taskVisibility` | selection | explicit-command |
-| `code.graph` | selection | explicit-command |
-| `code.symbols` | selection | explicit-command |
-| `code.prepare` | selection | no-consumer |
-| `validation[].id` | descriptive | none |
-| `validation[].repositoryId` | descriptive | none |
-| `validation[].executable` | execution-candidate | explicit-command |
-| `validation[].args[]` | execution-candidate | explicit-command |
-| `excludes[]` | descriptive | none |
-| `extensions` | open-container | none |
-| `continuity.autoResume` | selection | no-consumer |
+| field                       | kind                | gate             |
+| --------------------------- | ------------------- | ---------------- |
+| `schema`                    | descriptive         | none             |
+| `workspaceId`               | descriptive         | none             |
+| `name`                      | descriptive         | none             |
+| `runtimeVersion`            | selection           | explicit-command |
+| `repositories[].id`         | descriptive         | none             |
+| `repositories[].path`       | access-candidate    | explicit-command |
+| `repositories[].access`     | access-candidate    | explicit-command |
+| `knowledge.sources[]`       | access-candidate    | explicit-command |
+| `knowledge.newDocuments`    | access-candidate    | explicit-command |
+| `knowledge.taskVisibility`  | selection           | explicit-command |
+| `code.graph`                | selection           | explicit-command |
+| `code.symbols`              | selection           | explicit-command |
+| `code.prepare`              | selection           | no-consumer      |
+| `validation[].id`           | descriptive         | none             |
+| `validation[].repositoryId` | descriptive         | none             |
+| `validation[].executable`   | execution-candidate | explicit-command |
+| `validation[].args[]`       | execution-candidate | explicit-command |
+| `excludes[]`                | descriptive         | none             |
+| `extensions`                | open-container      | none             |
+| `continuity.autoResume`     | selection           | no-consumer      |
 
 Notes that the per-field table cannot carry:
 
@@ -112,17 +112,17 @@ Notes that the per-field table cannot carry:
 
 ### Private layer — `.pappra/local/machine.json`
 
-| field | kind | gate |
-| --- | --- | --- |
-| `schema` | descriptive | none |
-| `workspaceRealpath` | local-binding | local-binding |
-| `checkoutId` | local-binding | local-binding |
-| `externalRepositories[].id` | descriptive | none |
+| field                         | kind          | gate          |
+| ----------------------------- | ------------- | ------------- |
+| `schema`                      | descriptive   | none          |
+| `workspaceRealpath`           | local-binding | local-binding |
+| `checkoutId`                  | local-binding | local-binding |
+| `externalRepositories[].id`   | descriptive   | none          |
 | `externalRepositories[].path` | local-binding | local-binding |
-| `selectedHosts[]` | selection | local-binding |
-| `runtime.version` | local-binding | local-binding |
-| `runtime.executable` | local-binding | local-binding |
-| `runtime.verifiedAt` | descriptive | none |
+| `selectedHosts[]`             | selection     | local-binding |
+| `runtime.version`             | local-binding | local-binding |
+| `runtime.executable`          | local-binding | local-binding |
+| `runtime.verifiedAt`          | descriptive   | none          |
 
 `selectedHosts[]` records which hosts this person selected. Wiring one still
 needs an explicit `host install` command, and native trust, reload and
@@ -133,21 +133,30 @@ callability remain unverified — a recorded selection is not a loaded plugin.
 `extensions` is an open key/value container. Classification stops at that
 boundary: its interior keys are not part of the schema contract, and Pappra
 currently reads no extension key as authority. A future consumer of an extension
-key must classify that key and its gate before acting on it; the coverage test
-below cannot enumerate what the schema does not declare, and this page makes no
-claim about arbitrary extension content.
+key must classify that key and its gate before acting on it. The walker stops at
+the container boundary by design: it reports the boundary and does not enumerate
+what the schema does not declare, so this page makes no claim about arbitrary
+extension content.
 
 ## Values composed from more than one layer
 
-No field is defined in both layers, so there is no per-field precedence chain and
-no "same setting from two files" case. Three values are still assembled from more
-than one source at read time, and each one keeps its source visible:
+What this page means by "no field is defined in both layers" is narrow and
+checkable: no field _path_ occurs in both schemas, so there is no per-field
+precedence chain and no "same setting from two files" case. Two files can still
+use the same name — today `schema` is the only overlap, an independent format
+literal in each file (`pappra/workspace/1` and `pappra/machine/1`) — and name
+overlap alone is not one effective value. A name overlap becomes a real conflict
+only when a read path merges the two values; `doctor` reports the overlapping
+paths for that reason instead of treating them as failures.
 
-| value | shared input | private input | rule |
-| --- | --- | --- | --- |
-| repository checkout root | `repositories[].path` as `external:<id>` | `externalRepositories[].path` | the logical id is shared, the absolute location is private; an unmapped id fails closed |
-| checkout id in continuity records | — | `checkoutId` | the private binding wins; when it is absent Pappra derives a digest of the repository root and never writes it back |
-| retained-runtime-state version `doctor` inspects | `runtimeVersion` | `runtime.version` | `doctor` inspects the shared target version and falls back to the private binding only to look for retained state; the install target stays `runtimeVersion` |
+Three values are still assembled from more than one source at read time, and each
+one keeps its source visible:
+
+| value                                            | shared input                             | private input                 | rule                                                                                                                                                         |
+| ------------------------------------------------ | ---------------------------------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| repository checkout root                         | `repositories[].path` as `external:<id>` | `externalRepositories[].path` | the logical id is shared, the absolute location is private; an unmapped id fails closed                                                                      |
+| checkout id in continuity records                | —                                        | `checkoutId`                  | the private binding wins; when it is absent Pappra derives a digest of the repository root and never writes it back                                          |
+| retained-runtime-state version `doctor` inspects | `runtimeVersion`                         | `runtime.version`             | `doctor` inspects the shared target version and falls back to the private binding only to look for retained state; the install target stays `runtimeVersion` |
 
 `pappra doctor` reports these facts in the `workspace.authority` check, whose
 `source` is the shared configuration file and whose evidence lists both files
@@ -155,25 +164,59 @@ with their digests. The `workspace.config` and `workspace.machine` checks keep
 their own file as `source`, so a reader can always tell which layer a value came
 from.
 
-## What the pin is, and what it is not
+## Asserted, pinned, observed
+
+Three different claims live next to each other here, and they are not
+interchangeable:
+
+| Claim                                                         | Where it comes from                                | What it means                                                                                                                                |
+| ------------------------------------------------------------- | -------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| field classification and the invariant                        | `src/schemas/config-authority.ts` and this page    | a static statement about the schemas and what each value may name                                                                            |
+| non-execution of validation candidates by current entrypoints | `tests/workspace/config-authority.test.ts`         | a test over today's entrypoints, not a runtime observation and not a general guarantee                                                       |
+| the two files' existence, digest and field-path overlap       | the `workspace.authority` check in `pappra doctor` | an observation of configuration bytes; that check resolves, spawns and executes nothing and is not an execution audit of any other code path |
+
+### The schema walker is a closed allowlist
+
+`scanConfigSchema()` enters `object`, `array`, `optional`, `nullable`, `default`,
+`readonly`, and the scalar definition types (`string`, and with it the `uuid`
+and `iso.datetime` formats, `number`, `bigint`, `boolean`, `date`, `literal`,
+`enum`, `null`, `undefined`, `void`, `never`). It reports `record` and
+`unknown`/`any` as one open boundary and does not enter them.
+
+Every other construct — `union`, `intersection`, `pipe`, `lazy`, `tuple`, `set`,
+`map`, `promise`, `function`, template literals, custom schemas, transforms — is
+reported as **unsupported**, with its path and definition type. The walker never
+flattens an unmodelled construct into a leaf, so a classified leaf replaced by a
+union that holds an object cannot keep the coverage check green: the path is
+reported as unsupported and the table entry cannot vouch for its interior.
+
+That allowlist is why this is not a general zod interpreter, and why "a construct
+we do not model" always has an explicit result instead of a guess.
+
+### What the tests pin
 
 `tests/workspace/config-authority.test.ts` pins the classification to the
 schemas:
 
-- It walks `workspaceConfigSchema` and `machineConfigSchema` and fails when a
-  field has no classification, or when a classification names a field the schema
-  no longer has. Adding a field to either schema therefore fails until it is
-  classified in `src/schemas/config-authority.ts`.
+- It scans `workspaceConfigSchema` and `machineConfigSchema` and fails when a
+  field has no classification, when a classification names a field the schema no
+  longer has, or when a path uses a construct the walker does not model. Adding a
+  field — or replacing a classified leaf with a union, intersection or pipe —
+  therefore fails until the contract covers it.
 - It asserts the kind/gate consistency rules, including that no shared
   authority-bearing field is enabled by the committed file alone.
+- It feeds the walker a candidate schema whose classified leaves are unions and
+  asserts the reported violations, so the failure path itself is covered rather
+  than assumed.
 - Its marker test writes a workspace whose `workspace.json` declares a validation
   entry pointing at a marker executable, then runs configuration inspection,
   workspace discovery, `pappra doctor` in-process and the `pappra doctor` CLI.
-  The marker file must never appear, and the report must state that no validation
-  executable was resolved, spawned or executed.
+  The CLI must finish the whole check set and emit one valid report — completion
+  is asserted, not an exit code that unrelated checks decide — and the marker
+  file must never appear.
 
-What it does **not** prove: that no future code path can ever execute a candidate.
-The test covers the entries that exist today. A new feature that runs a
+What none of this proves: that no future code path can ever execute a candidate.
+The tests cover the entries that exist today. A new feature that runs a
 validation entry must add its own decision point in the private layer and its own
 evidence; the classification table, the invariant and this page tell it what it
 owes, and the drift test tells it to update the table.
@@ -187,4 +230,6 @@ owes, and the drift test tells it to update the table.
 3. If the value is assembled with another layer, add it to
    `CROSS_LAYER_VALUE_COMPOSITIONS` and to the table above.
 4. Run `pnpm typecheck` and the workspace tests; the coverage test fails until
-   steps 1–3 agree.
+   steps 1–3 agree. If the new field needs a construct the walker does not model,
+   extend the walker and this page in the same change — an unsupported construct
+   is a reported failure, not a passing leaf.

@@ -350,35 +350,81 @@ export interface ConfigSchemaField {
   readonly open: boolean;
 }
 
+/** A schema construct this contract does not model, reported instead of guessed. */
+export interface ConfigUnsupportedField {
+  readonly path: string;
+  /** The zod definition type, for example `union` or `pipe`. */
+  readonly construct: string;
+}
+
+export interface ConfigSchemaScan {
+  /** Paths whose interior and role this contract models. */
+  readonly fields: readonly ConfigSchemaField[];
+  /**
+   * Paths reached through a construct this contract does not model. The walker
+   * stops there and says so; it never flattens an unmodelled construct into a
+   * leaf that would silently satisfy the coverage check.
+   */
+  readonly unsupported: readonly ConfigUnsupportedField[];
+}
+
 /**
- * Enumerates the classified field paths of one schema. Optional, nullable,
- * defaulted and readonly wrappers are unwrapped; array elements are marked with
- * `[]`; an open container (record or unknown) is reported as one boundary and
- * is not entered.
+ * Scalar definition types: no interior, and their whole meaning is the value.
+ * `string` covers the format variants (`uuid`, `iso.datetime`, ...), which are
+ * separate zod classes but the same definition type.
  */
-export function configSchemaFields(
-  schema: z.core.$ZodType,
-): readonly ConfigSchemaField[] {
+const scalarDefinitionTypes: ReadonlySet<string> = new Set([
+  'string',
+  'number',
+  'bigint',
+  'boolean',
+  'date',
+  'literal',
+  'enum',
+  'null',
+  'undefined',
+  'void',
+  'never',
+]);
+
+function definitionType(schema: z.core.$ZodType): string {
+  const definition = (
+    schema as unknown as { readonly def?: { readonly type?: unknown } }
+  ).def;
+  const type = definition?.type;
+  return typeof type === 'string' && type.length > 0 ? type : 'unmodelled';
+}
+
+function fieldPath(path: string): string {
+  return path === '' ? '(root)' : path;
+}
+
+/**
+ * Enumerates the field paths of one schema and every construct it cannot model.
+ *
+ * Supported: `object` (descended), `array` (descended, elements marked `[]`),
+ * `optional`/`nullable`/`default`/`readonly` (unwrapped, same path), `record` and
+ * `unknown`/`any` (reported as one open boundary and not entered), and the scalar
+ * definition types above. Every other construct — union, intersection, pipe,
+ * lazy, tuple, set, map, promise, function, template literal, custom,
+ * transforms — is reported as unsupported. That set is a closed allowlist on
+ * purpose: a construct added to zod later is reported rather than silently
+ * treated as a leaf.
+ */
+export function scanConfigSchema(schema: z.core.$ZodType): ConfigSchemaScan {
   const fields: ConfigSchemaField[] = [];
+  const unsupported: ConfigUnsupportedField[] = [];
   const visit = (current: z.core.$ZodType, path: string): void => {
     if (current instanceof z.ZodOptional || current instanceof z.ZodNullable) {
       visit(current.unwrap(), path);
       return;
     }
-    if (current instanceof z.ZodDefault) {
-      visit(current.unwrap(), path);
-      return;
-    }
-    if (current instanceof z.ZodReadonly) {
+    if (current instanceof z.ZodDefault || current instanceof z.ZodReadonly) {
       visit(current.unwrap(), path);
       return;
     }
     if (current instanceof z.ZodArray) {
       visit(current.element, `${path}[]`);
-      return;
-    }
-    if (current instanceof z.ZodRecord || current instanceof z.ZodUnknown) {
-      fields.push({ path, open: true });
       return;
     }
     if (current instanceof z.ZodObject) {
@@ -388,16 +434,30 @@ export function configSchemaFields(
       }
       return;
     }
-    fields.push({ path, open: false });
+    if (
+      current instanceof z.ZodRecord ||
+      current instanceof z.ZodUnknown ||
+      current instanceof z.ZodAny
+    ) {
+      fields.push({ path, open: true });
+      return;
+    }
+    if (scalarDefinitionTypes.has(definitionType(current))) {
+      fields.push({ path, open: false });
+      return;
+    }
+    unsupported.push({ path, construct: definitionType(current) });
   };
   visit(schema, '');
-  return fields;
+  return { fields, unsupported };
 }
 
 export interface ConfigAuthorityCoverage {
   readonly layer: ConfigLayer;
   readonly file: string;
   readonly fields: readonly ConfigSchemaField[];
+  /** Constructs at a declared path that the classification cannot cover. */
+  readonly unsupported: readonly ConfigUnsupportedField[];
   readonly classified: readonly ConfigFieldAuthority[];
   /** Schema paths that no classification covers. */
   readonly unclassified: readonly string[];
@@ -409,6 +469,11 @@ export interface ConfigAuthorityInspection {
   readonly sources: readonly ConfigAuthorityCoverage[];
   /** Machine-checkable breaches of the classification contract. */
   readonly violations: readonly string[];
+  /**
+   * Field paths that occur in both layers. Reported, not treated as a conflict:
+   * a repeated name is not by itself one effective value.
+   */
+  readonly duplicatePaths: readonly string[];
 }
 
 function authorityBearing(field: ConfigFieldAuthority): boolean {
@@ -445,25 +510,48 @@ export function configAuthorityGaps(
   };
 }
 
-/** Classifies both schemas against their tables and reports contract breaches. */
-export function inspectConfigAuthority(): ConfigAuthorityInspection {
-  const sources: ConfigAuthorityCoverage[] = [];
+/**
+ * Classifies schemas against their tables and reports contract breaches.
+ *
+ * The default is the current two-file contract. A caller may pass another
+ * source list — a candidate schema, or a test fixture — and gets the same
+ * machine-checkable verdict without touching the published contract.
+ */
+export function inspectConfigAuthority(
+  sources: readonly ConfigAuthoritySource[] = CONFIG_AUTHORITY_SOURCES,
+): ConfigAuthorityInspection {
+  const coverage: ConfigAuthorityCoverage[] = [];
   const violations: string[] = [];
 
-  for (const source of CONFIG_AUTHORITY_SOURCES) {
-    const fields = configSchemaFields(source.schema);
+  for (const source of sources) {
+    const scan = scanConfigSchema(source.schema);
+    const fields = scan.fields;
     const classified = source.fields;
-    const { unclassified, stale } = configAuthorityGaps(fields, classified);
-    sources.push({
+    const unsupportedPaths = new Set(
+      scan.unsupported.map((entry) => entry.path),
+    );
+    const gaps = configAuthorityGaps(fields, classified);
+    const stale = gaps.stale.filter((path) => !unsupportedPaths.has(path));
+    coverage.push({
       layer: source.layer,
       file: source.file,
       fields,
+      unsupported: scan.unsupported,
       classified,
-      unclassified,
+      unclassified: gaps.unclassified,
       stale,
     });
 
-    for (const path of unclassified) {
+    for (const entry of scan.unsupported) {
+      const declared = classified.find((field) => field.path === entry.path);
+      violations.push(
+        `${source.file}: ${fieldPath(entry.path)} uses the unmodelled schema construct "${entry.construct}"; ` +
+          (declared === undefined
+            ? 'no classification can cover its interior'
+            : `the classification (${declared.kind}) cannot cover its interior`),
+      );
+    }
+    for (const path of gaps.unclassified) {
       violations.push(
         `${source.file}: ${path} has no authority classification`,
       );
@@ -526,7 +614,19 @@ export function inspectConfigAuthority(): ConfigAuthorityInspection {
     }
   }
 
-  return { sources, violations };
+  const byPath = new Map<string, ConfigLayer[]>();
+  for (const source of coverage) {
+    for (const field of source.fields) {
+      const layers = byPath.get(field.path) ?? [];
+      layers.push(source.layer);
+      byPath.set(field.path, layers);
+    }
+  }
+  const duplicatePaths = [...byPath.entries()]
+    .filter(([, layers]) => layers.length > 1)
+    .map(([path]) => path);
+
+  return { sources: coverage, violations, duplicatePaths };
 }
 
 export interface ConfigAuthoritySummary {
