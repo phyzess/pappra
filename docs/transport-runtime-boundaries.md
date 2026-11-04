@@ -44,7 +44,7 @@ not call either one.
 | `src/collab/store.ts`                                     | task record persistence, `STATE_SCHEMA`                           | core    |
 | `src/collab/persisted-messages.ts`                        | registered-message reader, delivery records                       | core    |
 | `src/collab/lifecycle.ts`                                 | attempt state, native evidence recording                          | core    |
-| `src/collab/admission.ts`, `src/collab/preflight.ts`      | capability card checks, the only age bound in the system          | core    |
+| `src/collab/admission.ts`, `src/collab/preflight.ts`      | capability card checks (`capabilities_stale`, 30 minutes)         | core    |
 | `src/collab/resources.ts`, `src/collab/work-plan.ts`      | claims and plan state                                             | core    |
 | `src/app/collab-state.ts`, `collab-task-store.ts`         | guarded read/write of the record                                  | core    |
 | `src/app/collab-messages.ts`                              | message service over the persisted reader                         | core    |
@@ -157,9 +157,12 @@ Shape: `src/schemas/collaboration.ts:365-432`. Written by
 | `limits`, `reloadRequired`, `trustRequired` | explicit ceilings instead of inference                           |
 
 Shape: `src/schemas/host.ts:55-69`, states at `:34-42`. The collaboration
-capability card adds `observed_at`, which is the only field in the system that
-is aged: `src/collab/preflight.ts:246` adds `capabilities_stale` past
-`maxAgeMinutes` (default 30, `src/app/collab-preflight.ts:96`).
+capability card adds `observed_at`, aged by that card's own bound:
+`src/collab/preflight.ts:246` adds `capabilities_stale` past `maxAgeMinutes`
+(default 30, `src/app/collab-preflight.ts:96`). That is one of two age bounds,
+not the only one: a reused `attempts[].native.observed_at` is aged by
+`NATIVE_OBSERVATION_MAX_AGE_MINUTES` (30) in `src/collab/native-observation.ts`,
+for a different subject and purpose.
 
 ## 2. Seams
 
@@ -486,7 +489,7 @@ only characterizes. Every other row cites the test that covers it.
 | #   | Required case                       | Status                                   | Covered by                                                                                                                                                                                                                                                                                                                                                                             |
 | --- | ----------------------------------- | ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | unavailable capability              | existing                                 | `tests/collab/messages.test.ts` — "notification is unavailable outside a verified Herdr caller" (status `herdr_unavailable`, `consumed: false`, no delivery record)                                                                                                                                                                                                                    |
-| 2   | stale identity                      | existing (capability preflight only)     | `tests/collab/capabilities.test.ts` — "Pi replay keeps the native observation time and goes stale" (`capabilities_stale` past the 30-minute card bound, `src/collab/preflight.ts:246`). This covers capability preflight. Reused `attempts[].native` observations now have their own bound in `src/collab/native-observation.ts` — see Known gaps and `tests/collab/native-observation-age.test.ts`                                                                                       |
+| 2   | stale identity                      | existing (two separate bounds)        | `tests/collab/capabilities.test.ts` — "Pi replay keeps the native observation time and goes stale" (`capabilities_stale` past the 30-minute card bound, `src/collab/preflight.ts:246`). This covers capability preflight. Reused `attempts[].native` observations now have their own bound in `src/collab/native-observation.ts` — see Known gaps and `tests/collab/native-observation-age.test.ts`                                                                                       |
 | 3   | submitted-not-consumed              | existing                                 | `tests/collab/messages.test.ts` — "notify validates the binding and sends one pointer-only prompt" (`submitted`, `consumed: false`, `taskAccepted: false`, duplicate recorded)                                                                                                                                                                                                         |
 | 4   | unknown delivery / no replay        | existing                                 | `tests/collab/workflow-notifications.test.ts` — "an unknown delivery stays unknown and is never replayed automatically"                                                                                                                                                                                                                                                                |
 | 5   | changed workspace (#13)             | existing                                 | `tests/collab/shell-readiness.test.ts` — "readiness fails closed on pane, workspace, terminal, cwd and agent drift" (`workspace_id_mismatch`); task-root redirect in `tests/collab/messages.test.ts` — "unsafe ids, malformed records, task mismatch and redirected state fail closed"                                                                                                 |
@@ -511,6 +514,14 @@ only characterizes. Every other row cites the test that covers it.
   long. `unknown` is the floor: an attempt that recorded nothing
   (`observation: 'unknown'` and no ids) is `missing`/not asserted rather than
   "assume unchanged", and only `fresh` may be treated as current.
+
+  A clock that is not a finite number dates nothing, so it fails closed: the
+  verdict is `invalid` and names the clock, and a decision consumer refuses it
+  like any other non-fresh case. The REPORT body is the one persisted reader, so
+  it publishes a clock-independent projection — the recorded `observed_at`, the
+  bound and whether a native fact is asserted, never `age_ms` or a
+  classification — and a resend at another time stays a duplicate instead of a
+  `content_conflict`.
 
   The consumers, each with the four non-fresh cases treated as non-current:
 

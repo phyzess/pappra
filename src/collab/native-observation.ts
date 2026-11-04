@@ -13,6 +13,9 @@
  * treated as current. The bound is a native-observation bound of its own; it is neither the
  * 30-second session quiescence window (`MAX_QUIESCENCE_AGE_MS`) nor the capability card's
  * preflight rule, even though it shares that card's default number.
+ *
+ * A clock that cannot date anything must not read as fresh: a non-finite `now` fails closed
+ * as `invalid` instead of letting every comparison fall through to `fresh`.
  */
 
 /**
@@ -91,7 +94,13 @@ function boundMs(maxAgeMinutes: number | undefined): number {
     maxAgeMinutes > 0
       ? maxAgeMinutes
       : NATIVE_OBSERVATION_MAX_AGE_MINUTES;
-  return Math.round(minutes * 60_000);
+  // A finite bound can still overflow when scaled to milliseconds. A bound that is not a
+  // positive finite number would make `age > maxAgeMs` false forever, so it falls back to
+  // the default rather than widening the window without limit.
+  const ms = Math.round(minutes * 60_000);
+  return Number.isFinite(ms) && ms > 0
+    ? ms
+    : NATIVE_OBSERVATION_MAX_AGE_MINUTES * 60_000;
 }
 
 /**
@@ -147,6 +156,19 @@ export function evaluateNativeObservationAge(
       detail: `the recorded native observed_at ${raw} is unparseable, so it is never current.`,
     };
 
+  // A non-finite clock dates nothing: `NaN` and both infinities make every comparison below
+  // false, which would have classified an old observation as fresh. Fail closed and name the
+  // clock so the cause is not mistaken for a bad record.
+  if (!Number.isFinite(now))
+    return {
+      ...common,
+      classification: 'invalid',
+      fresh: false,
+      observed_at: raw,
+      age_ms: null,
+      detail: `the injected clock is not a finite epoch millisecond value (${String(now)}), so this observation cannot be dated and is never current.`,
+    };
+
   const age = now - at;
   if (age < -NATIVE_OBSERVATION_FUTURE_TOLERANCE_MS)
     return {
@@ -189,5 +211,37 @@ export function nativeObservationAgeSummary(
     observed_at: verdict.observed_at,
     age_ms: verdict.age_ms,
     max_age_ms: verdict.max_age_ms,
+  };
+}
+
+/**
+ * The persisted projection: only what the record itself says, never what a clock says.
+ *
+ * A REPORT message id is derived from its body (`src/app/collab-workflow/participant.ts`), so
+ * a body carrying `age_ms` or the age classification would change on every resend and
+ * `src/collab/messages.ts` would refuse an honest resend as `content_conflict`. This
+ * projection therefore publishes the recorded `observed_at`, the configured bound and whether
+ * a native fact is asserted — and it takes no clock at all, so it cannot become
+ * clock-dependent. Live readers that are never persisted keep
+ * `nativeObservationAgeSummary`.
+ */
+export interface NativeObservationAgeEvidence {
+  /** The recorded timestamp as stored, or null when the record holds none. */
+  readonly observed_at: string | null;
+  /** True when the record asserts a native fact instead of the bare `unknown` placeholder. */
+  readonly asserted: boolean;
+  readonly max_age_ms: number;
+}
+
+export function nativeObservationAgeEvidence(
+  native: unknown,
+  options: Pick<NativeObservationAgeOptions, 'maxAgeMinutes'> = {},
+): NativeObservationAgeEvidence {
+  const source = asRecord(native);
+  const raw = source.observed_at;
+  return {
+    observed_at: typeof raw === 'string' && raw.length > 0 ? raw : null,
+    asserted: assertsObservation(source),
+    max_age_ms: boundMs(options.maxAgeMinutes),
   };
 }

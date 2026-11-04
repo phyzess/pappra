@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -10,6 +10,7 @@ import {
   NATIVE_OBSERVATION_FUTURE_TOLERANCE_MS,
   NATIVE_OBSERVATION_MAX_AGE_MINUTES,
   evaluateNativeObservationAge,
+  nativeObservationAgeEvidence,
   nativeObservationAgeSummary,
 } from '../../src/collab/native-observation.js';
 import { initTask, readRecord, transact } from '../../src/collab/store.js';
@@ -185,6 +186,70 @@ test('the shared evaluation classifies fresh, expired, missing, invalid and futu
     age_ms: null,
     max_age_ms: NATIVE_OBSERVATION_MAX_AGE_MINUTES * MINUTE,
   });
+
+  // The persisted projection names only record-derived values: it takes no clock, so an
+  // honest resend at another time cannot change a REPORT body.
+  assert.deepEqual(
+    nativeObservationAgeEvidence({
+      runner: 'pi',
+      session_id: WRITER.session_id,
+      observation: 'confirmed',
+      observed_at: at(-MINUTE),
+    }),
+    {
+      observed_at: at(-MINUTE),
+      asserted: true,
+      max_age_ms: NATIVE_OBSERVATION_MAX_AGE_MINUTES * MINUTE,
+    },
+  );
+  assert.deepEqual(
+    nativeObservationAgeEvidence({ observation: 'unknown', observed_at: null }),
+    {
+      observed_at: null,
+      asserted: false,
+      max_age_ms: NATIVE_OBSERVATION_MAX_AGE_MINUTES * MINUTE,
+    },
+  );
+});
+
+/** A non-finite clock dates nothing, so it must fail closed instead of reading as fresh. */
+test('a non-finite clock never classifies fresh', () => {
+  const observedAt = new Date(Date.now() - MINUTE).toISOString();
+  const record = {
+    runner: 'pi',
+    session_id: WRITER.session_id,
+    run_id: 'run-native-age',
+    mission_id: null,
+    observation: 'confirmed',
+    observed_at: observedAt,
+    evidence_ref: 'herdr:agent:w9:p28:settled',
+  };
+  for (const clock of [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ]) {
+    const verdict = evaluateNativeObservationAge(record, { now: clock });
+    assert.equal(verdict.classification, 'invalid', String(clock));
+    assert.equal(verdict.fresh, false, String(clock));
+    assert.equal(verdict.age_ms, null, String(clock));
+    assert.equal(verdict.observed_at, observedAt, String(clock));
+    assert.match(
+      verdict.detail,
+      /finite epoch millisecond value/,
+      String(clock),
+    );
+  }
+  // A misconfigured bound cannot widen the window without limit: an overflowing
+  // `maxAgeMinutes` falls back to the default instead of making every age pass.
+  const overflow = evaluateNativeObservationAge(record, {
+    maxAgeMinutes: Number.MAX_VALUE,
+  });
+  assert.equal(
+    overflow.max_age_ms,
+    NATIVE_OBSERVATION_MAX_AGE_MINUTES * MINUTE,
+  );
+  assert.equal(overflow.classification, 'fresh');
 });
 
 const noNativeNotify = (async () => ({
@@ -201,7 +266,7 @@ interface WriterCohort {
   readonly output: string;
   readonly inputRevision: string;
   setObservedAt(value: string | null): void;
-  report(): Promise<Awaited<ReturnType<typeof applyParticipant>>>;
+  report(clock?: number): Promise<Awaited<ReturnType<typeof applyParticipant>>>;
   inspect(): Promise<Awaited<ReturnType<typeof inspectWorkflow>>>;
   cleanup(): void;
 }
@@ -324,8 +389,13 @@ async function writerCohort(label: string): Promise<WriterCohort> {
       });
       assert.equal(written.ok, true, JSON.stringify(written));
     },
-    report: () =>
-      applyParticipant(request('report'), { notify: noNativeNotify }),
+    report: (clock?: number) =>
+      applyParticipant(
+        request('report'),
+        clock === undefined
+          ? { notify: noNativeNotify }
+          : { notify: noNativeNotify, clock },
+      ),
     inspect: () => inspectWorkflow(taskRoot),
     cleanup: domain.cleanup,
   };
@@ -338,6 +408,7 @@ test('recovery continue refuses every non-fresh observation and takes no claim e
       name: 'fresh',
       observedAt: new Date(now - MINUTE).toISOString(),
       classification: 'fresh',
+      clock: null,
     },
     {
       name: 'expired',
@@ -345,12 +416,19 @@ test('recovery continue refuses every non-fresh observation and takes no claim e
         now - (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 1) * MINUTE,
       ).toISOString(),
       classification: 'expired',
+      clock: null,
     },
-    { name: 'missing', observedAt: null, classification: 'missing' },
+    {
+      name: 'missing',
+      observedAt: null,
+      classification: 'missing',
+      clock: null,
+    },
     {
       name: 'invalid',
       observedAt: 'not-a-timestamp',
       classification: 'invalid',
+      clock: null,
     },
     {
       name: 'future',
@@ -358,6 +436,13 @@ test('recovery continue refuses every non-fresh observation and takes no claim e
         now + NATIVE_OBSERVATION_FUTURE_TOLERANCE_MS + MINUTE,
       ).toISOString(),
       classification: 'future',
+      clock: null,
+    },
+    {
+      name: 'non-finite clock',
+      observedAt: new Date(now - MINUTE).toISOString(),
+      classification: 'invalid',
+      clock: Number.NaN,
     },
   ] as const) {
     const cohort = await writerCohort(`recovery-${item.name}`);
@@ -451,7 +536,11 @@ test('recovery continue refuses every non-fresh observation and takes no claim e
         },
         mode: 'apply',
       };
-      const result = await executeRecovery(request, { controller });
+      const clockMs: number | null = item.clock;
+      const result = await executeRecovery(
+        request,
+        clockMs === null ? { controller } : { controller, now: () => clockMs },
+      );
       if (item.classification === 'fresh') {
         assert.equal(result.status, 'applied', JSON.stringify(result));
         assert.equal(performed, 1);
@@ -533,108 +622,208 @@ class FakeTransport implements HerdrTransport {
   }
 }
 
-test('notify is untouched: a live match still delivers and dates the caller from the clock', async () => {
-  const root = makeTempDir('native-age-notify');
-  const clock = Date.parse('2026-11-03T04:00:00Z');
-  try {
-    const taskRoot = join(root, 'domain', 'tasks', 'sample');
-    initTask(taskRoot, {
-      taskId: 'sample',
-      coordinator: COORDINATOR,
-      domainRoot: join(root, 'domain'),
-      clock,
-    });
-    const message = buildMessage(
+const NOTIFY_CLOCK = Date.parse('2026-11-03T04:00:00Z');
+
+interface NotifyFixture {
+  readonly taskRoot: string;
+  readonly transport: FakeTransport;
+  readonly clock: number;
+  notify(): ReturnType<typeof notifyRegisteredMessage>;
+  cleanup(): void;
+}
+
+/** One registered STATUS_QUERY, a live matching transport list and a matching binding. */
+function notifyFixture(
+  label: string,
+  prepare: (taskRoot: string, clock: number) => void = () => undefined,
+): NotifyFixture {
+  const root = makeTempDir(`native-age-${label}`);
+  const clock = NOTIFY_CLOCK;
+  const taskRoot = join(root, 'domain', 'tasks', 'sample');
+  initTask(taskRoot, {
+    taskId: 'sample',
+    coordinator: COORDINATOR,
+    domainRoot: join(root, 'domain'),
+    clock,
+  });
+  const message = buildMessage(
+    {
+      type: 'STATUS_QUERY',
+      message_id: 'msg-native-age-1',
+      task_id: 'sample',
+      from: COORDINATOR,
+      to: WRITER,
+      reply_to: null,
+      subtask_id: null,
+      attempt: null,
+      owner_epoch: null,
+      body: { status: 'running' },
+    },
+    { clock },
+  );
+  writeFileSync(
+    join(taskRoot, 'messages', 'msg-native-age-1.json'),
+    `${JSON.stringify(message, null, 2)}\n`,
+  );
+  const bindingFile = join(taskRoot, 'binding.json');
+  writeFileSync(
+    bindingFile,
+    `${JSON.stringify(
       {
-        type: 'STATUS_QUERY',
-        message_id: 'msg-native-age-1',
+        schema: 'pappra/collab-binding/1',
         task_id: 'sample',
-        from: COORDINATOR,
-        to: WRITER,
-        reply_to: null,
-        subtask_id: null,
-        attempt: null,
-        owner_epoch: null,
-        body: { status: 'running' },
+        task_root: taskRoot,
+        channel: 'herdr',
+        participants: [
+          {
+            agent_id: COORDINATOR.agent_id,
+            harness: 'pi',
+            cwd: root,
+            herdr_agent: 'pappra-coordinator',
+            pane_id: 'w9:p1',
+            native_session_id: COORDINATOR.session_id,
+          },
+          {
+            agent_id: WRITER.agent_id,
+            harness: 'pi',
+            cwd: root,
+            herdr_agent: 'pappra-implement',
+            pane_id: 'w9:p2',
+            native_session_id: WRITER.session_id,
+          },
+        ],
       },
-      { clock },
-    );
-    writeFileSync(
-      join(taskRoot, 'messages', 'msg-native-age-1.json'),
-      `${JSON.stringify(message, null, 2)}\n`,
-    );
-    const bindingFile = join(taskRoot, 'binding.json');
-    writeFileSync(
-      bindingFile,
-      `${JSON.stringify(
-        {
-          schema: 'pappra/collab-binding/1',
-          task_id: 'sample',
-          task_root: taskRoot,
-          channel: 'herdr',
-          participants: [
-            {
-              agent_id: COORDINATOR.agent_id,
-              harness: 'pi',
-              cwd: root,
-              herdr_agent: 'pappra-coordinator',
-              pane_id: 'w9:p1',
-              native_session_id: COORDINATOR.session_id,
-            },
-            {
-              agent_id: WRITER.agent_id,
-              harness: 'pi',
-              cwd: root,
-              herdr_agent: 'pappra-implement',
-              pane_id: 'w9:p2',
-              native_session_id: WRITER.session_id,
-            },
-          ],
-        },
-        null,
-        2,
-      )}\n`,
-    );
-    const transport = new FakeTransport(
-      [
-        herdrObservation({
-          name: 'pappra-coordinator',
-          harness: 'pi',
-          paneId: 'w9:p1',
-          cwd: root,
-        }),
-        herdrObservation({ cwd: root, harness: 'pi' }),
-      ],
-      'w9:p1',
-      root,
-    );
-    const notified = await notifyRegisteredMessage({
-      taskRoot,
-      messageId: 'msg-native-age-1',
-      bindingFile,
-      apply: true,
-      retry: false,
-      transport,
-      clock,
-    });
+      null,
+      2,
+    )}\n`,
+  );
+  prepare(taskRoot, clock);
+  const transport = new FakeTransport(
+    [
+      herdrObservation({
+        name: 'pappra-coordinator',
+        harness: 'pi',
+        paneId: 'w9:p1',
+        cwd: root,
+      }),
+      herdrObservation({ cwd: root, harness: 'pi' }),
+    ],
+    'w9:p1',
+    root,
+  );
+  return {
+    taskRoot,
+    transport,
+    clock,
+    notify: () =>
+      notifyRegisteredMessage({
+        taskRoot,
+        messageId: 'msg-native-age-1',
+        bindingFile,
+        apply: true,
+        retry: false,
+        transport,
+        clock,
+      }),
+    cleanup: () => cleanup(root),
+  };
+}
+
+test('notify is untouched: a live match still delivers and dates the caller from the clock', async () => {
+  const fixture = notifyFixture('notify');
+  try {
+    const notified = await fixture.notify();
     assert.equal(notified.ok, true, JSON.stringify(notified));
     if (!notified.ok) return;
     assert.equal(notified.value.status, 'submitted');
-    assert.equal(transport.prompts.length, 1);
+    assert.equal(fixture.transport.prompts.length, 1);
     // No age rule was added to the live path: the delivered caller evidence is the clock.
-    const delivery = readDeliveryRecord(taskRoot, 'msg-native-age-1') as {
+    const delivery = readDeliveryRecord(
+      fixture.taskRoot,
+      'msg-native-age-1',
+    ) as {
       caller?: { observed_at?: string | null } | null;
     } | null;
-    assert.equal(delivery?.caller?.observed_at, new Date(clock).toISOString());
+    assert.equal(
+      delivery?.caller?.observed_at,
+      new Date(fixture.clock).toISOString(),
+    );
   } finally {
-    cleanup(root);
+    fixture.cleanup();
   }
 });
 
-test('history consumers report the age classification without refusing', async () => {
+test('an expired attempt observation does not disturb the live notify match', async () => {
+  const fixture = notifyFixture('notify-stale-attempt', (taskRoot, clock) => {
+    const written = transact(taskRoot, {
+      actor: 'fixture',
+      purpose: 'add-expired-native-attempt',
+      apply: (record) => {
+        record.attempts.push({
+          subtask_id: 'old-work',
+          attempt: 1,
+          state: 'reported',
+          owner_epoch: 1,
+          assignee: WRITER,
+          assignment_message_id: 'msg-old-assignment',
+          assignment_ref: null,
+          assignment_digest: null,
+          input_revision: null,
+          created_at: new Date(clock - 60 * MINUTE).toISOString(),
+          updated_at: new Date(clock - 55 * MINUTE).toISOString(),
+          native: {
+            runner: 'pi',
+            session_id: WRITER.session_id,
+            run_id: 'run-old',
+            mission_id: null,
+            observation: 'confirmed',
+            observed_at: new Date(
+              clock - (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 15) * MINUTE,
+            ).toISOString(),
+            evidence_ref: 'herdr:agent:w9:p2:settled',
+          },
+          approval: null,
+          transitions: [],
+        });
+        return { record };
+      },
+    });
+    assert.equal(written.ok, true, JSON.stringify(written));
+  });
+  try {
+    const attempt = readRecord(fixture.taskRoot)!.attempts.at(-1)!;
+    assert.equal(
+      evaluateNativeObservationAge(attempt.native, { now: fixture.clock })
+        .classification,
+      'expired',
+      'the fixture record must hold an expired native observation',
+    );
+    const notified = await fixture.notify();
+    assert.equal(notified.ok, true, JSON.stringify(notified));
+    if (!notified.ok) return;
+    assert.equal(notified.value.status, 'submitted');
+    assert.equal(fixture.transport.prompts.length, 1);
+    // The live path re-observes the caller; the expired record it also holds never gates it.
+    const delivery = readDeliveryRecord(
+      fixture.taskRoot,
+      'msg-native-age-1',
+    ) as {
+      caller?: { observed_at?: string | null } | null;
+    } | null;
+    assert.equal(
+      delivery?.caller?.observed_at,
+      new Date(fixture.clock).toISOString(),
+    );
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('history consumers report the age evidence without refusing', async () => {
   const cohort = await writerCohort('history');
   try {
-    // An expired observation is reported as recorded, plus its classification.
+    // An expired observation is reported as recorded, with the persisted evidence that does not
+    // move with the clock; `workflow inspect` still carries the live classification.
     cohort.setObservedAt(
       new Date(
         Date.now() - (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 5) * MINUTE,
@@ -650,11 +839,25 @@ test('history consumers report the age classification without refusing', async (
       ),
     ).body as {
       native_ref: { observation: string; observed_at: string | null } | null;
-      native_age: { classification: string; observed_at: string | null };
+      native_age: {
+        observed_at: string | null;
+        asserted: boolean;
+        max_age_ms: number;
+        age_ms?: unknown;
+        classification?: unknown;
+      };
     };
     assert.equal(body.native_ref?.observation, 'confirmed');
-    assert.equal(body.native_age.classification, 'expired');
     assert.equal(body.native_age.observed_at, body.native_ref?.observed_at);
+    assert.equal(body.native_age.asserted, true);
+    assert.equal(
+      body.native_age.max_age_ms,
+      NATIVE_OBSERVATION_MAX_AGE_MINUTES * MINUTE,
+    );
+    // The persisted projection carries no clock-dependent value: the record is expired, yet the
+    // REPORT body says only what the record says.
+    assert.equal(body.native_age.age_ms, undefined);
+    assert.equal(body.native_age.classification, undefined);
 
     const inspected = await cohort.inspect();
     assert.equal(inspected.ok, true, JSON.stringify(inspected));
@@ -668,6 +871,60 @@ test('history consumers report the age classification without refusing', async (
     ).attempts;
     assert.equal(attempts[0]?.native_observation, 'confirmed');
     assert.equal(attempts[0]?.native_age.classification, 'expired');
+  } finally {
+    cohort.cleanup();
+  }
+});
+
+test('a cross-clock resend of the same REPORT is a duplicate, not a content conflict', async (t) => {
+  const cohort = await writerCohort('report-clock');
+  try {
+    // The record is expired at both clocks; only the clocks differ. The persisted body must
+    // not move with them, or the deterministic report id would collide as a content conflict.
+    cohort.setObservedAt(
+      new Date(
+        Date.now() - (NATIVE_OBSERVATION_MAX_AGE_MINUTES + 5) * MINUTE,
+      ).toISOString(),
+    );
+    const firstClock = Date.now();
+    const secondClock = firstClock + 180 * MINUTE;
+    const first = await cohort.report(firstClock);
+    assert.equal(first.ok, true, JSON.stringify(first));
+    const second = await cohort.report(secondClock);
+    assert.equal(second.ok, true, JSON.stringify(second));
+    const firstMessage = first.messages[0]!;
+    const secondMessage = second.messages[0]!;
+    assert.equal(secondMessage.duplicate, true);
+    assert.equal(secondMessage.message_id, firstMessage.message_id);
+    assert.equal(secondMessage.digest, firstMessage.digest);
+    t.diagnostic(
+      `first REPORT ${firstMessage.message_id} at ${String(firstClock)}: digest ${String(firstMessage.digest)}`,
+    );
+    t.diagnostic(
+      `resend at ${String(secondClock)}: duplicate=${String(secondMessage.duplicate)} id ${String(secondMessage.message_id)} digest ${String(secondMessage.digest)}`,
+    );
+    assert.equal(
+      second.blockers.some((blocker) => blocker.code === 'content_conflict'),
+      false,
+      JSON.stringify(second.blockers),
+    );
+    const messagesDir = join(cohort.taskRoot, 'messages');
+    assert.deepEqual(
+      readdirSync(messagesDir).filter((file) => file.startsWith('report-')),
+      [`${firstMessage.message_id}.json`],
+      'the resend registered no second report',
+    );
+    const body = JSON.parse(
+      readFileSync(
+        join(messagesDir, `${firstMessage.message_id}.json`),
+        'utf8',
+      ),
+    ).body as { native_age: Record<string, unknown> };
+    assert.deepEqual(Object.keys(body.native_age).sort(), [
+      'asserted',
+      'max_age_ms',
+      'observed_at',
+    ]);
   } finally {
     cohort.cleanup();
   }
