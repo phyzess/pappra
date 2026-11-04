@@ -74,6 +74,41 @@ extensions, skills, MCP servers, settings, or context files, and it does not rep
 `--session-id`, and its small observation extension. Existing Pi extensions and
 project-trust behavior remain in effect.
 
+### Readiness input paths
+
+The watcher watches three inputs: `assignmentFile`, `templateFile` and the
+journal-derived `${journalPath}.pi-events.jsonl` sidecar. `cardFile` is the output and is
+never watched. Each watched input's directory must already be a real, non-symlink
+directory whose `fs.realpathSync` equals the configured path; otherwise
+`watchManagedPiReadiness` throws `readiness_directory_redirected` during setup, before any
+watcher is registered, so there is no stream, no first drain and no published card.
+
+- CLI PTY start: that refusal is reported as one stderr line — `Readiness watcher could
+  not start; task preflight remains required.` — and the session keeps running; the card
+  is never published.
+- SDK runtime: the same condition has no local catch, so the start is refused
+  (`managed_pi_session_refused`) and the already started owned runtime is disposed.
+- A redirected `cardFile` directory does not prevent registration. The watcher starts and
+  publication fails closed as `readiness_publication_failed`, not as
+  `readiness_directory_redirected`.
+- A redirected `journalPath` is refused earlier in both modes: the journal parent must be
+  canonical, so `${journalPath}.pi-events.jsonl` cannot reach the readiness fence
+  (`artifact_parent_not_canonical`).
+
+Readiness paths come only from this request file or an automatic-handoff
+`sourceReadiness`; no Pappra command derives them, so the condition is reached by an
+operator or generator that places the watched inputs under a redirected prefix. On the macOS
+host used for this investigation, `os.tmpdir()`, `/tmp` and `/var` are symlinked, so a path
+produced by `fs.mkdtempSync(path.join(os.tmpdir(), ...))` was redirected. That observation is
+host-specific: other macOS versions, other platforms and mount layouts were not tested, and no
+general claim about macOS path canonicalisation follows from it.
+
+The setup refusal, the `cardFile`-only publication failure and the journal-parent refusal
+were reproduced against the built tree at commit `992551b`. A full CLI or SDK launch was
+not executed for this record, because it needs a visible terminal and a model launch; the
+per-mode outcomes above are traced from `src/cli/commands/session.ts` and
+`src/app/managed-pi-sdk-runtime.ts`, not observed end to end.
+
 ### Owned process and readiness evidence
 
 A stdlib Python PTY bridge gives Pi a real controlling terminal. Its terminal output is
