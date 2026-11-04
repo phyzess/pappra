@@ -2,6 +2,7 @@ export * from './diagnostics.js';
 export * from './continuity.js';
 export * from './code.js';
 export * from './collaboration.js';
+export * from './config-authority.js';
 export * from './doctor.js';
 export * from './document.js';
 export * from './errors.js';

@@ -95,6 +95,7 @@ export const diagnosticCodes = {
   doctor_repository_issues: 'doctor_repository_issues',
   doctor_knowledge_issues: 'doctor_knowledge_issues',
   doctor_validation_unverified: 'doctor_validation_unverified',
+  doctor_config_authority: 'doctor_config_authority',
   doctor_install_state_invalid: 'doctor_install_state_invalid',
   doctor_install_lock: 'doctor_install_lock',
   doctor_install_partial: 'doctor_install_partial',

@@ -68,6 +68,12 @@ journaled reconfiguration backups. Live or unknown owners, modified files, inval
 and unproven paths are preserved and reported. `doctor` reports dead or unknown writers and
 points to the same surface.
 
+`doctor` also reports the configuration authority classification as the
+`workspace.authority` check: the shared and private layers, which fields are
+authority-bearing and what gates each one, and which values are composed from
+both layers. That check classifies fields only; it resolves and executes nothing.
+The contract is [configuration authority](configuration-authority.md).
+
 For copied or moved beta workspaces, stop every affected writer before explicitly starting
 fresh local state; this preserves the old bytes instead of migrating machine bindings:
 
