@@ -302,11 +302,37 @@ test('onboard plans without writing and prints the handoff matrix', () => {
     assert(
       (report.share as readonly string[]).includes('.pappra/workspace.json'),
     );
-    assert(
-      (report.doNotCopy as readonly string[]).includes(
-        '.pappra/local/machine.json',
-      ),
+    const excluded = [
+      '.pappra/local/**',
+      '.pappra/local/machine.json',
+      '.pappra/local/collab-bindings.json',
+      '.pappra/local-archive/**',
+      '.pappra/host-bundles/**',
+      'private knowledge and task artifacts, including collaboration records',
+    ];
+    for (const entry of excluded) {
+      assert((report.doNotCopy as readonly string[]).includes(entry));
+    }
+    const commands = report.commands as readonly string[];
+    assert.deepEqual(commands.slice(1), [
+      '# Run the following commands from the destination workspace root.',
+      'pappra onboard --dry-run --json',
+      'pappra onboard --yes',
+      'pappra doctor --json',
+    ]);
+
+    const humanHandoff = invoke(
+      ['onboard', '--print-handoff'],
+      box.workspace,
+      box.env,
     );
+    assert.equal(humanHandoff.status, 0, humanHandoff.stderr);
+    for (const entry of [...excluded, ...commands]) {
+      assert(humanHandoff.stdout.includes(entry));
+    }
+    assert.equal(existsSync(box.calls), false);
+    assert.equal(existsSync(box.dataDir), false);
+    assert.equal(existsSync(join(box.workspace, '.pappra')), false);
 
     const planned = invoke(
       [
