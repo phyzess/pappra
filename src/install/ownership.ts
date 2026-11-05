@@ -11,7 +11,7 @@ import {
 import { dirname, join } from 'node:path';
 import type { z } from 'zod';
 import type { Diagnostic } from '../schemas/diagnostics.js';
-import { createDiagnostic } from '../schemas/diagnostics.js';
+import { createDiagnostic, pointer } from '../schemas/diagnostics.js';
 import { diagnosticCodes } from '../schemas/errors.js';
 import type { Outcome } from '../schemas/outcome.js';
 import { errorMessage, failed, succeeded } from '../schemas/outcome.js';
@@ -19,7 +19,10 @@ import {
   fileIdentitySchema,
   installJournalSchema,
   installLockSchema,
+  INSTALL_JOURNAL_SCHEMA,
+  LOCK_SCHEMA,
   workspaceInstallManifestSchema,
+  WORKSPACE_MANIFEST_SCHEMA,
   type InstallJournal,
   type InstallLock,
   type ManagedFileEntry,
@@ -165,6 +168,7 @@ export interface JsonReadResult<T> {
 export async function readJsonDocument<T>(
   path: string,
   schema: z.ZodType<T>,
+  schemaName?: string,
 ): Promise<JsonReadResult<T>> {
   const read = await readTextFileBounded(path);
   if (!read.ok) {
@@ -207,6 +211,38 @@ export async function readJsonDocument<T>(
   }
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
+    const observedSchema =
+      typeof raw === 'object' && raw !== null && 'schema' in raw
+        ? raw.schema
+        : undefined;
+    const family = schemaName?.slice(0, schemaName.lastIndexOf('/') + 1);
+    if (
+      family &&
+      typeof observedSchema === 'string' &&
+      observedSchema !== schemaName &&
+      observedSchema.startsWith(family) &&
+      /^(0|[1-9][0-9]*)$/.test(observedSchema.slice(family.length))
+    ) {
+      const displayedSchema =
+        observedSchema.length > 128
+          ? `${observedSchema.slice(0, 128)}…`
+          : observedSchema;
+      return {
+        exists: true,
+        value: null,
+        digest: read.value.digest,
+        diagnostics: [
+          createDiagnostic({
+            code: diagnosticCodes.configUnsupportedSchema,
+            severity: 'error',
+            message: `Unsupported schema "${displayedSchema}"; this version reads only "${schemaName}".`,
+            source: path,
+            pointer: pointer('schema'),
+            hint: 'Preserve the installation state and use a compatible Pappra version.',
+          }),
+        ],
+      };
+    }
     return {
       exists: true,
       value: null,
@@ -229,6 +265,20 @@ export async function readJsonDocument<T>(
     digest: read.value.digest,
     diagnostics: [],
   };
+}
+
+export function installSchemaVersionDiagnostic(
+  diagnostics: readonly Diagnostic[],
+): Diagnostic | undefined {
+  return diagnostics.find(
+    (entry) => entry.code === diagnosticCodes.configUnsupportedSchema,
+  );
+}
+
+export function readInstallLock(
+  path: string,
+): Promise<JsonReadResult<InstallLock>> {
+  return readJsonDocument(path, installLockSchema, LOCK_SCHEMA);
 }
 
 export async function writeBytesAtomic(
@@ -361,7 +411,8 @@ export async function acquireInstallLock(
       existing: null,
     };
   } catch (error) {
-    const existingRead = await readJsonDocument(path, installLockSchema);
+    const existingRead = await readInstallLock(path);
+    const version = installSchemaVersionDiagnostic(existingRead.diagnostics);
     const code =
       typeof error === 'object' &&
       error !== null &&
@@ -376,7 +427,7 @@ export async function acquireInstallLock(
       path,
       message:
         code === 'locked'
-          ? `Installation lock is already held: ${path}`
+          ? `Installation lock is already held: ${path}${version ? `. ${version.message}` : ''}`
           : `Cannot acquire installation lock ${path}: ${errorMessage(error)}`,
       existing: existingRead.value,
     };
@@ -387,12 +438,13 @@ export async function releaseInstallLock(
   path: string,
   token: string,
 ): Promise<Outcome<null>> {
-  const read = await readJsonDocument(path, installLockSchema);
+  const read = await readInstallLock(path);
   if (!read.exists) return succeeded(null);
   if (read.value === null) {
+    const version = installSchemaVersionDiagnostic(read.diagnostics);
     return failed(
       diagnosticCodes.initApplyResidual,
-      `Cannot verify install lock ownership: ${path}`,
+      `Cannot verify install lock ownership: ${path}${version ? `. ${version.message}` : ''}`,
       { nextAction: 'Inspect the lock manually; it was not removed.' },
     );
   }
@@ -421,13 +473,14 @@ export async function readWorkspaceManifest(
   return readJsonDocument(
     workspaceInstallPaths(root).manifestPath,
     workspaceInstallManifestSchema,
+    WORKSPACE_MANIFEST_SCHEMA,
   );
 }
 
 export async function readInstallJournal(
   path: string,
 ): Promise<JsonReadResult<InstallJournal>> {
-  return readJsonDocument(path, installJournalSchema);
+  return readJsonDocument(path, installJournalSchema, INSTALL_JOURNAL_SCHEMA);
 }
 
 export interface JournalDirectoryScan {

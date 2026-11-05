@@ -18,6 +18,7 @@ import {
   ensureStatePathBoundary,
   ensureWorkspaceStateBoundary,
   inspectOwnedFile,
+  installSchemaVersionDiagnostic,
   journalPath,
   readInstallJournal,
   readWorkspaceManifest,
@@ -220,6 +221,32 @@ async function acquireForRemoval(
             lock.path,
           ),
         ],
+      },
+    };
+  }
+  // A newer writer may have published a revised manifest before releasing the lock.
+  const current = await readWorkspaceManifest(root);
+  const version = installSchemaVersionDiagnostic(current.diagnostics);
+  if (version) {
+    const released = await releaseInstallLock(lock.path, lock.lock.token);
+    return {
+      ok: false,
+      result: {
+        ok: false,
+        status: 'unmanaged',
+        removedPaths: [],
+        residualPaths: released.ok ? [] : [lock.path],
+        diagnostics: released.ok
+          ? [version]
+          : [
+              version,
+              diagnostic(
+                diagnosticCodes.initApplyResidual,
+                released.message,
+                released.nextAction ?? 'Inspect the workspace lock.',
+                lock.path,
+              ),
+            ],
       },
     };
   }
@@ -517,6 +544,18 @@ export async function rollbackWorkspaceInstall(
   options: RollbackWorkspaceOptions,
 ): Promise<WorkspaceRemovalResult> {
   const manifestRead = await readWorkspaceManifest(options.root);
+  const manifestVersion = installSchemaVersionDiagnostic(
+    manifestRead.diagnostics,
+  );
+  if (manifestVersion) {
+    return {
+      ok: false,
+      status: 'unmanaged',
+      removedPaths: [],
+      residualPaths: [],
+      diagnostics: [manifestVersion],
+    };
+  }
   let manifest = manifestRead.value;
   let entries =
     manifest?.entries.filter(
@@ -524,11 +563,13 @@ export async function rollbackWorkspaceInstall(
     ) ?? [];
   let journalRecovered: InstallJournal | null = null;
   let pendingResidual: string[] = [];
+  let journalVersion: Diagnostic | undefined;
   if (entries.length === 0) {
     const journalRead = await readInstallJournal(
       journalPath(options.root, options.installId),
     );
     const journal = journalRead.value;
+    journalVersion = installSchemaVersionDiagnostic(journalRead.diagnostics);
     if (
       journal !== null &&
       journal.operation === 'update-machine-runtime' &&
@@ -610,14 +651,16 @@ export async function rollbackWorkspaceInstall(
       diagnostics:
         manifestRead.diagnostics.length > 0
           ? manifestRead.diagnostics
-          : [
-              diagnostic(
-                diagnosticCodes.initApplyUnsupported,
-                'Workspace has no managed ownership entry for this install.',
-                'There is nothing with proven ownership to roll back.',
-                workspaceInstallPaths(options.root).manifestPath,
-              ),
-            ],
+          : journalVersion !== undefined
+            ? [journalVersion]
+            : [
+                diagnostic(
+                  diagnosticCodes.initApplyUnsupported,
+                  'Workspace has no managed ownership entry for this install.',
+                  'There is nothing with proven ownership to roll back.',
+                  workspaceInstallPaths(options.root).manifestPath,
+                ),
+              ],
     };
   }
   if (manifest !== null) {
@@ -740,12 +783,13 @@ export async function uninstallWorkspaceManagedFiles(
 ): Promise<WorkspaceRemovalResult> {
   const manifestRead = await readWorkspaceManifest(options.root);
   if (manifestRead.value === null) {
+    const version = installSchemaVersionDiagnostic(manifestRead.diagnostics);
     return {
-      ok: true,
-      status: 'missing',
+      ok: version === undefined,
+      status: version ? 'unmanaged' : 'missing',
       removedPaths: [],
       residualPaths: [],
-      diagnostics: [],
+      diagnostics: version ? [version] : [],
     };
   }
   const manifest = manifestRead.value;

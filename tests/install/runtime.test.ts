@@ -205,15 +205,30 @@ test('old beta runtime formats require reinitialization without claiming corrupt
         schema: 'pappra/runtime-manifest/1',
         digestScheme: undefined,
       },
+      { ...installed.manifest, schema: 'pappra/runtime-manifest/4' },
       { ...installed.manifest, digestScheme: 'locale-compare' },
     ]) {
       const bytes = `${JSON.stringify(unsupported)}\n`;
       writeFileSync(file, bytes);
       const passive = await inspectRuntimeStatePassive(version, dataDir);
       assert.equal(passive.status, 'incompatible');
-      assert.equal(passive.diagnostics[0]?.code, 'runtime_state_incompatible');
+      const future = unsupported.schema === 'pappra/runtime-manifest/4';
+      assert.equal(
+        passive.diagnostics[0]?.code,
+        future ? 'config_unsupported_schema' : 'runtime_state_incompatible',
+      );
       const active = await inspectRuntimeState(version, dataDir);
       assert.equal(active.status, 'incompatible');
+      if (future) {
+        for (const inspection of [passive, active]) {
+          const diagnostic = inspection.diagnostics.find(
+            (entry) => entry.code === 'config_unsupported_schema',
+          );
+          assert(diagnostic);
+          assert(diagnostic.message.includes(unsupported.schema));
+          assert(diagnostic.message.includes(installed.manifest.schema));
+        }
+      }
       const retried = await installRuntime({
         version,
         source: { kind: 'tarball', path: tarball },
@@ -222,7 +237,10 @@ test('old beta runtime formats require reinitialization without claiming corrupt
         timeoutMs: 60_000,
       });
       assert.equal(retried.status, 'incompatible');
-      assert.match(retried.diagnostics[0]?.hint ?? '', /reconfigure/);
+      assert.match(
+        retried.diagnostics[0]?.hint ?? '',
+        future ? /compatible Pappra version/ : /reconfigure/,
+      );
       const removed = await removeRuntime({
         version,
         dataDir,
@@ -635,6 +653,11 @@ test('passive runtime inspection treats incompatible journals as unreadable', as
 
     const passive = await inspectRuntimeStatePassive(version, dataDir);
     assert.equal(passive.status, 'unreadable');
+    assert(
+      passive.diagnostics.some(
+        (entry) => entry.code === 'config_unsupported_schema',
+      ),
+    );
     assert(
       passive.diagnostics.some((entry) =>
         entry.message.includes('unreadable or incompatible'),

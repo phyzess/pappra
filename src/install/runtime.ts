@@ -25,8 +25,6 @@ import type {
   RuntimeSource,
 } from '../schemas/install.js';
 import {
-  installJournalSchema,
-  installLockSchema,
   runtimeManifestSchema,
   runtimePackageManifestSchema,
   runtimeSourceSchema,
@@ -55,6 +53,9 @@ import {
 import {
   acquireInstallLock,
   ensureStatePathBoundary,
+  installSchemaVersionDiagnostic,
+  readInstallJournal,
+  readInstallLock,
   readJsonDocument,
   releaseInstallLock,
   scanJournalDirectory,
@@ -160,6 +161,7 @@ function failureResult(
     readonly residualPaths?: readonly string[];
     readonly hint?: string;
     readonly source?: string;
+    readonly versionDiagnostic?: Diagnostic | undefined;
   },
 ): RuntimeInstallResult {
   return {
@@ -176,6 +178,7 @@ function failureResult(
         options.hint ?? 'Inspect the runtime state; Pappra did not auto-retry.',
         options.source ?? 'runtime install',
       ),
+      ...(options.versionDiagnostic ? [options.versionDiagnostic] : []),
     ],
     residualPaths: options.residualPaths ?? [],
   };
@@ -519,19 +522,18 @@ async function verifyInstalledRuntime(
   };
 }
 
-async function readRuntimeManifest(
-  runtimeRoot: string,
-): Promise<RuntimeManifest | null> {
-  const read = await readJsonDocument(
+function readRuntimeManifest(runtimeRoot: string) {
+  return readJsonDocument(
     join(runtimeRoot, 'install-manifest.json'),
     runtimeManifestSchema,
+    RUNTIME_MANIFEST_SCHEMA,
   );
-  return read.value;
 }
 
 /** Recognize an unsupported format without adopting or executing its content. */
 async function incompatibleRuntimeDiagnostic(
   runtimeRoot: string,
+  versionDiagnostic: Diagnostic | undefined,
 ): Promise<Diagnostic | null> {
   const file = join(runtimeRoot, 'install-manifest.json');
   if ((await observePath(file)).kind !== 'file') return null;
@@ -548,16 +550,18 @@ async function incompatibleRuntimeDiagnostic(
     raw === null ||
     !('schema' in raw) ||
     typeof raw.schema !== 'string' ||
-    !raw.schema.startsWith('pappra/runtime-manifest/') ||
-    (raw.schema === RUNTIME_MANIFEST_SCHEMA &&
-      'digestScheme' in raw &&
-      raw.digestScheme === RUNTIME_DIGEST_SCHEME)
+    (raw.schema !== 'pappra/runtime-manifest/1' &&
+      raw.schema !== 'pappra/runtime-manifest/2' &&
+      (raw.schema !== RUNTIME_MANIFEST_SCHEMA ||
+        ('digestScheme' in raw && raw.digestScheme === RUNTIME_DIGEST_SCHEME)))
   )
-    return null;
+    return versionDiagnostic ?? null;
   return createDiagnostic({
     code: diagnosticCodes.runtimeStateIncompatible,
     severity: 'error',
-    message: `Unsupported runtime state format at ${file}; this is not a content-corruption diagnosis.`,
+    message:
+      versionDiagnostic?.message ??
+      `Unsupported runtime state format at ${file}; this is not a content-corruption diagnosis.`,
     source: file,
     hint: 'This beta does not migrate old state. Use the current package and run pappra init --reconfigure --apply to initialize its runtime; preserve any old data you still need. Nothing was removed.',
   });
@@ -570,7 +574,11 @@ export async function verifyRuntimeForRepair(
   packageName: string,
   installId: string,
 ): Promise<boolean> {
-  const manifest = await readRuntimeManifest(runtimeRoot);
+  const { value: manifest, diagnostics } =
+    await readRuntimeManifest(runtimeRoot);
+  const unsupported = installSchemaVersionDiagnostic(diagnostics);
+  if (unsupported)
+    throw new Error(`${unsupported.message} ${unsupported.hint}`);
   if (
     manifest === null ||
     manifest.installId !== installId ||
@@ -611,6 +619,7 @@ interface RuntimeJournalScan {
   readonly journal: InstallJournal | null;
   readonly unreadable: readonly string[];
   readonly directoryUnreadable: boolean;
+  readonly versionDiagnostic?: Diagnostic | undefined;
 }
 
 async function scanRuntimeJournals(
@@ -629,11 +638,13 @@ async function scanRuntimeJournals(
     };
   }
   const unreadable = [...directory.nonRegular];
+  let versionDiagnostic: Diagnostic | undefined;
   let journal: InstallJournal | null = null;
   for (const path of directory.files) {
-    const read = await readJsonDocument(path, installJournalSchema);
+    const read = await readInstallJournal(path);
     if (read.value === null) {
       unreadable.push(path);
+      versionDiagnostic ??= installSchemaVersionDiagnostic(read.diagnostics);
       continue;
     }
     if (
@@ -647,7 +658,7 @@ async function scanRuntimeJournals(
       journal = read.value;
     }
   }
-  return { journal, unreadable, directoryUnreadable: false };
+  return { journal, unreadable, directoryUnreadable: false, versionDiagnostic };
 }
 
 async function completeExistingRuntime(
@@ -671,9 +682,14 @@ async function completeExistingRuntime(
       },
     );
   }
-  const manifest = await readRuntimeManifest(paths.runtimeRoot);
+  const { value: manifest, diagnostics } = await readRuntimeManifest(
+    paths.runtimeRoot,
+  );
   if (manifest === null) {
-    const incompatible = await incompatibleRuntimeDiagnostic(paths.runtimeRoot);
+    const incompatible = await incompatibleRuntimeDiagnostic(
+      paths.runtimeRoot,
+      installSchemaVersionDiagnostic(diagnostics),
+    );
     if (incompatible !== null) {
       return {
         ok: false,
@@ -856,6 +872,7 @@ export async function installRuntime(
         residualPaths: journalScan.unreadable,
         hint: 'Inspect the listed journals; Pappra does not ignore incompatible install state.',
         source: paths.journalsDir,
+        versionDiagnostic: journalScan.versionDiagnostic,
       },
     );
   }
@@ -1250,7 +1267,9 @@ export async function installRuntime(
     }
     await rename(stage, paths.runtimeRoot);
     published = true;
-    const finalManifest = await readRuntimeManifest(paths.runtimeRoot);
+    const { value: finalManifest } = await readRuntimeManifest(
+      paths.runtimeRoot,
+    );
     if (finalManifest === null) {
       throw new Error('Runtime manifest is unreadable after publish.');
     }
@@ -1342,10 +1361,7 @@ export interface RuntimeStateReport {
 }
 
 async function runtimePackageName(runtimeRoot: string): Promise<string> {
-  const read = await readJsonDocument(
-    join(runtimeRoot, 'install-manifest.json'),
-    runtimeManifestSchema,
-  );
+  const read = await readRuntimeManifest(runtimeRoot);
   return read.value?.packageName ?? getPackageInfo().name;
 }
 
@@ -1390,6 +1406,9 @@ export async function inspectRuntimeState(
           source: paths.journalsDir,
           hint: 'Inspect the listed journals; no automatic retry or cleanup is performed.',
         }),
+        ...(journalScan.versionDiagnostic
+          ? [journalScan.versionDiagnostic]
+          : []),
       ],
     };
   }
@@ -1413,13 +1432,14 @@ export async function inspectRuntimeState(
     };
   }
   const ownLock =
-    heldLockToken === undefined
-      ? null
-      : await readJsonDocument(paths.lockPath, installLockSchema);
+    heldLockToken === undefined ? null : await readInstallLock(paths.lockPath);
   if (
     lockObservation.kind !== 'missing' &&
     (heldLockToken === undefined || ownLock?.value?.token !== heldLockToken)
   ) {
+    const versionDiagnostic = installSchemaVersionDiagnostic(
+      ownLock?.diagnostics ?? [],
+    );
     return {
       version,
       status: 'locked',
@@ -1434,6 +1454,7 @@ export async function inspectRuntimeState(
           source: paths.lockPath,
           hint: 'Inspect the lock owner before acting; locks do not expire automatically.',
         }),
+        ...(versionDiagnostic ? [versionDiagnostic] : []),
       ],
     };
   }
@@ -1768,6 +1789,9 @@ export async function inspectRuntimeStatePassive(
           source: paths.journalsDir,
           hint: 'Inspect the listed journals; doctor treats them as unknown state and does not ignore them.',
         }),
+        ...(journalScan.versionDiagnostic
+          ? [journalScan.versionDiagnostic]
+          : []),
       ],
     };
   }
@@ -1885,10 +1909,14 @@ export async function inspectRuntimeStatePassive(
   const manifestRead = await readJsonDocument(
     manifestPath,
     runtimeManifestSchema,
+    RUNTIME_MANIFEST_SCHEMA,
   );
   if (!manifestRead.exists || manifestRead.value === null) {
     const incompatible = manifestRead.exists
-      ? await incompatibleRuntimeDiagnostic(paths.runtimeRoot)
+      ? await incompatibleRuntimeDiagnostic(
+          paths.runtimeRoot,
+          installSchemaVersionDiagnostic(manifestRead.diagnostics),
+        )
       : null;
     return {
       version,

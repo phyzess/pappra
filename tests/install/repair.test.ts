@@ -450,6 +450,22 @@ test('repair restores journaled replacements after interruption and retains mana
       (await releaseInstallLock(context.lockPath, context.lockToken)).ok,
       true,
     );
+    const manifestFile = workspaceInstallPaths(root).manifestPath;
+    const originalManifest = readFileSync(manifestFile);
+    const futureManifest = JSON.stringify({
+      ...JSON.parse(originalManifest.toString()),
+      schema: 'pappra/install-manifest/2',
+    });
+    writeFileSync(manifestFile, futureManifest);
+    const interruptedBytes = readFileSync(target);
+    const journalBytes = readFileSync(context.journalFile);
+    const refused = await repairInstall({ root, apply: true });
+    assert.equal(refused.ok, false);
+    assert.match(refused.errors.join(' '), /Unsupported schema/);
+    assert.equal(readFileSync(manifestFile, 'utf8'), futureManifest);
+    assert.deepEqual(readFileSync(target), interruptedBytes);
+    assert.deepEqual(readFileSync(context.journalFile), journalBytes);
+    writeFileSync(manifestFile, originalManifest);
     const recovered = await repairInstall({ root, apply: true });
     assert.equal(recovered.ok, true, JSON.stringify(recovered));
     assert.deepEqual(readFileSync(target), before);

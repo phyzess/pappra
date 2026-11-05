@@ -86,6 +86,20 @@ test('rollback removes only matching owned files and preserves knowledge', async
     const manifest = (await readWorkspaceManifest(root)).value;
     assert(manifest !== null);
     const installId = manifest.entries[0]!.installId;
+    const { manifestPath } = workspaceInstallPaths(root);
+    const originalManifest = readFileSync(manifestPath);
+    const future = JSON.stringify({
+      ...manifest,
+      schema: 'pappra/install-manifest/2',
+    });
+    writeFileSync(manifestPath, future);
+    const refused = await rollbackWorkspaceInstall({ root, installId });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.diagnostics[0]?.code, 'config_unsupported_schema');
+    assert.deepEqual(refused.removedPaths, []);
+    assert.equal(readFileSync(manifestPath, 'utf8'), future);
+    assert.equal(existsSync(join(root, '.pappra', 'workspace.json')), true);
+    writeFileSync(manifestPath, originalManifest);
     const result = await rollbackWorkspaceInstall({ root, installId });
     assert.equal(result.ok, true);
     assert.equal(result.status, 'rolled-back');

@@ -23,6 +23,7 @@ import {
   inspectOwnedFile,
   journalPath,
   readInstallJournal,
+  installSchemaVersionDiagnostic,
   readWorkspaceManifest,
   releaseInstallLock,
   rootIdentityOf,
@@ -660,6 +661,7 @@ export interface ManagedMachineUpdateResult {
 interface WorkspaceJournalScan {
   readonly incomplete: string | null;
   readonly unreadable: readonly string[];
+  readonly versionDiagnostic?: Diagnostic | undefined;
 }
 
 async function findIncompleteWorkspaceJournal(
@@ -674,11 +676,13 @@ async function findIncompleteWorkspaceJournal(
     return { incomplete: null, unreadable: [directory] };
   }
   const unreadable = [...listing.nonRegular];
+  let versionDiagnostic: Diagnostic | undefined;
   let incomplete: string | null = null;
   for (const path of listing.files) {
     const read = await readInstallJournal(path);
     if (read.value === null) {
       unreadable.push(path);
+      versionDiagnostic ??= installSchemaVersionDiagnostic(read.diagnostics);
       continue;
     }
     if (
@@ -691,7 +695,7 @@ async function findIncompleteWorkspaceJournal(
       incomplete = path;
     }
   }
-  return { incomplete, unreadable };
+  return { incomplete, unreadable, versionDiagnostic };
 }
 
 /** Read-only gate shared by initial planning and every apply, including no-op plans. */
@@ -714,9 +718,10 @@ export async function inspectWorkspaceInstallReadiness(
   }
   const scan = await findIncompleteWorkspaceJournal(root);
   if (scan.incomplete !== null || scan.unreadable.length > 0) {
+    const version = scan.versionDiagnostic;
     return failed(
       diagnosticCodes.initPlanStale,
-      `Workspace installation requires recovery: ${scan.incomplete ?? scan.unreadable[0]}`,
+      `Workspace installation requires recovery: ${scan.incomplete ?? scan.unreadable[0]}${version ? `. ${version.message}` : ''}`,
       {
         nextAction:
           'Run pappra repair for this workspace, then regenerate the init plan.',
@@ -875,6 +880,7 @@ async function updateMachineRuntimeAt(
   }
   const journalScan = await findIncompleteWorkspaceJournal(root);
   if (journalScan.unreadable.length > 0) {
+    const version = journalScan.versionDiagnostic;
     return {
       ok: false,
       status: 'partial',
@@ -885,6 +891,7 @@ async function updateMachineRuntimeAt(
           'Inspect the listed journals; Pappra does not bypass or repair an unresolved state.',
           journalScan.unreadable[0] ?? workspaceInstallPaths(root).journalsDir,
         ),
+        ...(version ? [version] : []),
       ],
       residualPaths: journalScan.unreadable,
     };
@@ -906,6 +913,7 @@ async function updateMachineRuntimeAt(
   }
   const manifestRead = await readWorkspaceManifest(root);
   if (manifestRead.value === null) {
+    const version = installSchemaVersionDiagnostic(manifestRead.diagnostics);
     return {
       ok: false,
       status: 'unmanaged',
@@ -916,6 +924,7 @@ async function updateMachineRuntimeAt(
           'Use a managed init/apply or configure flow; Pappra does not adopt unowned files.',
           workspaceInstallPaths(root).manifestPath,
         ),
+        ...(version ? [version] : []),
       ],
       residualPaths: [],
     };
