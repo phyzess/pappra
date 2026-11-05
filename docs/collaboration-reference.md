@@ -678,7 +678,7 @@ an applied current-owner `CANCEL` and an open `cancel_unconfirmed` entry for tha
 attempt. Both results identify the verified `ASSIGN` and interruption envelopes
 by message ID and content digest. Missing, stale, conflicting or unverified
 evidence yields `unknown` with a reason. `--limit` only caps the ordinary inspect
-lists.
+lists. A concurrent namespace change can also yield `unknown`.
 
 The projection reads persisted history only. Native status and cause are always
 `unknown`, and the result carries no permission to approve, retry or release.

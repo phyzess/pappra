@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { isDeepStrictEqual } from 'node:util';
 import { hasPendingCancellation } from '../../collab/admission.js';
 import {
@@ -21,7 +22,7 @@ import { WORKFLOW_MAX_STRING } from '../../schemas/collab-workflow.js';
 import {
   anchorTaskNamespace,
   readRecordSafe,
-  verifyTaskNamespace,
+  type TaskNamespaceAnchor,
 } from '../collab-recovery-projection.js';
 import { readBoundedJson, type OpenedWorkflowTask } from './context.js';
 
@@ -123,6 +124,26 @@ function evidenceOf(entry: AppliedMessage): MessageEvidence {
   return { message_id: entry.message_id, content_digest: entry.content_digest };
 }
 
+/** Include ancestor change times to detect a directory that is moved away and restored. */
+function namespaceFingerprint(anchor: TaskNamespaceAnchor): bigint[] | null {
+  const fingerprint: bigint[] = [];
+  try {
+    for (const entry of anchor.entries) {
+      const stat = fs.lstatSync(entry.path, { bigint: true });
+      if (
+        !stat.isDirectory() ||
+        Number(stat.dev) !== entry.dev ||
+        Number(stat.ino) !== entry.ino
+      )
+        return null;
+      fingerprint.push(stat.dev, stat.ino, stat.ctimeNs);
+    }
+  } catch {
+    return null;
+  }
+  return fingerprint;
+}
+
 /** Join at most the current ASSIGN and one gate envelope against the same task revision. */
 export function projectInterruption(
   task: OpenedWorkflowTask,
@@ -202,7 +223,6 @@ export function projectInterruption(
 
   // Use the same revision as the ordinary inspect output, even if a writer races the read.
   const namespace = anchorTaskNamespace(task.taskRoot);
-  const initial = readRecordSafe(task.taskRoot);
   if (
     namespace === null ||
     ![
@@ -215,10 +235,13 @@ export function projectInterruption(
           entry.dev === identity.dev &&
           entry.ino === identity.ino,
       ),
-    ) ||
-    !initial.ok ||
-    !isDeepStrictEqual(initial.record, record)
+    )
   )
+    return unknown('snapshot_unavailable');
+  const fingerprint = namespaceFingerprint(namespace);
+  if (fingerprint === null) return unknown('snapshot_unavailable');
+  const initial = readRecordSafe(task.taskRoot);
+  if (!initial.ok || !isDeepStrictEqual(initial.record, record))
     return unknown('snapshot_unavailable');
 
   const assignmentIndex = applied.findIndex(
@@ -261,8 +284,7 @@ export function projectInterruption(
     const cancelGate =
       cancelAt !== undefined ||
       hasPendingCancellation(record, subtaskId, attempt.attempt);
-    const blocked =
-      attempt.state === 'needs_input' || attempt.awaiting !== undefined;
+    const blocked = attempt.state === 'needs_input';
     if (cancelGate && blocked) return unresolved('conflicting_gates');
     if (attempt.state === 'needs_input' && attempt.awaiting === 'approval') {
       const index = applied.findLastIndex((entry) => entry.type === 'BLOCK');
@@ -348,7 +370,7 @@ export function projectInterruption(
   if (
     !final.ok ||
     final.digest !== initial.digest ||
-    !verifyTaskNamespace(namespace)
+    !isDeepStrictEqual(namespaceFingerprint(namespace), fingerprint)
   )
     return unknown('snapshot_unavailable');
   return { ...common, ...gate, assignment_evidence: evidenceOf(assignment) };

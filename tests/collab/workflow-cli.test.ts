@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import {
+import fs, {
   existsSync,
   mkdirSync,
   readFileSync,
@@ -8,7 +8,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 import type { Interruption } from '../../src/app/collab-workflow/interruption.js';
 import { runCli } from '../../src/cli/run.js';
@@ -354,6 +354,100 @@ test('an approval BLOCK does not borrow a same-clock REPORT transition', async (
       const result = await inspect('same-clock');
       assert.equal(result.reason, 'approval_evidence_unverified');
       assert.equal(result.evidence, null);
+    },
+  );
+});
+
+test('cancellation after a clarification answer uses the current running state', async () => {
+  await withInterruptionFixture(
+    'workflow-interruption-answered',
+    async ({ taskRoot, send, inspect }) => {
+      const clarification = send({
+        type: 'BLOCK',
+        message_id: 'clarification-block',
+        from: interruptionWriter,
+        to: owner,
+        body: { kind: 'clarification' },
+      });
+      send({
+        type: 'ANSWER',
+        message_id: 'clarification-answer',
+        reply_to: clarification.message_id,
+      });
+      const attempt = readRecord(taskRoot)!.attempts[0]!;
+      assert.equal(attempt.state, 'running');
+      assert.equal(attempt.awaiting, 'clarification');
+      const cancel = send({
+        type: 'CANCEL',
+        message_id: 'cancel-after-answer',
+      });
+      const result = await inspect();
+      assert.equal(result.kind, 'cancel_requested');
+      assert.equal(result.evidence.message_id, cancel.message_id);
+    },
+  );
+});
+
+test('interruption rejects a messages namespace redirected only during the envelope read', async (t) => {
+  await withInterruptionFixture(
+    'workflow-interruption-namespace',
+    async ({ taskRoot, send, inspect }) => {
+      const cancel = send({ type: 'CANCEL', message_id: 'redirected-cancel' });
+      const file = messageFile(taskRoot, cancel.message_id);
+      const messages = dirname(file);
+      const parked = join(taskRoot, 'parked-messages');
+      const outside = join(taskRoot, '../../..', 'outside');
+      renameSync(file, join(outside, `${cancel.message_id}.json`));
+      assert.equal((await inspect()).reason, 'cancel_evidence_unverified');
+
+      const lstat = fs.lstatSync;
+      const open = fs.openSync;
+      const close = fs.closeSync;
+      let redirected = false;
+      let restored = false;
+      let descriptor: number | undefined;
+      const restore = () => {
+        if (!redirected || restored) return;
+        unlinkSync(messages);
+        renameSync(parked, messages);
+        restored = true;
+      };
+      const lstatMock = t.mock.method(
+        fs,
+        'lstatSync',
+        (path: fs.PathLike, options?: fs.StatSyncOptions) => {
+          if (path === file && !redirected) {
+            renameSync(messages, parked);
+            symlinkSync(outside, messages);
+            redirected = true;
+          }
+          return lstat(path, options);
+        },
+      );
+      const openMock = t.mock.method(
+        fs,
+        'openSync',
+        (path: fs.PathLike, flags: string | number, mode?: fs.Mode) => {
+          const fd = open(path, flags, mode);
+          if (path === file) descriptor = fd;
+          return fd;
+        },
+      );
+      const closeMock = t.mock.method(fs, 'closeSync', (fd: number) => {
+        close(fd);
+        if (fd === descriptor) restore();
+      });
+      try {
+        const result = await inspect();
+        assert.equal(restored, true);
+        assert.equal(result.reason, 'snapshot_unavailable');
+        assert.equal(result.evidence, null);
+      } finally {
+        restore();
+        lstatMock.mock.restore();
+        openMock.mock.restore();
+        closeMock.mock.restore();
+      }
     },
   );
 });
