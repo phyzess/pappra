@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { CheckpointService } from '../../src/continuity/index.js';
+import { sha256Digest } from '../../src/infra/fs.js';
 import {
   baseMachineConfig,
   baseWorkspaceConfig,
@@ -254,11 +255,233 @@ test('checkpoint and resume reject invalid argument combinations', async () => {
       ['checkpoint', '--task', 'x', '--context-completeness', 'bad', '--json'],
       ['resume', '--json'],
       ['resume', 'a', 'b', '--json'],
+      ['resume', '--takeover'],
+      ['checkpoint', '--task', 'x', '--takeover'],
       ['checkpoint', '--task', 'x', '--unknown', '--json'],
     ]) {
       const result = invoke(args, root, home);
       assert.equal(result.status, 2);
     }
+    const combined = invoke(
+      ['resume', 'x', '--takeover', '--json'],
+      root,
+      home,
+    );
+    assert.equal(combined.status, 2);
+    assert.match(String(parse(combined.stdout).message), /cannot be combined/);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('takeover shows pinned clean and dirty evidence with observed statuses', async () => {
+  const root = makeTempDir('continuity-cli-takeover');
+  const home = mkdtempSync(join(tmpdir(), 'continuity-cli-home-'));
+  try {
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        repositories: [{ id: 'app', path: 'app', access: 'write' }],
+      }),
+    );
+    writeMachineConfig(root, baseMachineConfig(root));
+    const repository = join(root, 'app');
+    createRepository(repository);
+    const evidence = 'evidence/check.log';
+    writeText(join(root, evidence), 'private log contents\n');
+    const service = new CheckpointService(root);
+    const taskId = 'task-takeover';
+    const taskDir = join(root, '.pappra/local/tasks', taskId);
+    const input = {
+      taskId,
+      objective: 'Read the handoff\nVerification: forged\u001b[31m\u009b31m',
+      acceptance: ['Find the exact candidate'],
+      constraints: ['Review only'],
+      attempted: ['Ran pnpm test'],
+      nextActions: ['Read the check log'],
+      limitations: ['No task-start base recorded'],
+      artifacts: [evidence],
+    };
+    const clean = await service.save(input);
+    assert(
+      clean.ok && clean.checkpoint && clean.latestPath,
+      clean.diagnostics[0]?.message,
+    );
+    const cleanPointer = readFileSync(clean.latestPath, 'utf8');
+    const pointer = parse(cleanPointer);
+    const args = ['resume', taskId, '--takeover'];
+    const current = invoke(args, root, home);
+    assert.equal(current.status, 0, current.stderr);
+    assert(
+      current.stdout.includes(
+        `Checkpoint ref: ${JSON.stringify(pointer.checkpointRef)}\n`,
+      ),
+    );
+    assert(
+      current.stdout.includes(
+        `Checkpoint digest: ${String(pointer.checkpointDigest)}\n`,
+      ),
+    );
+    assert.match(current.stdout, /^Checkpoint revision: 1$/m);
+    assert.match(current.stdout, /^Verification: current$/m);
+    assert.match(current.stdout, /^Execution allowed: no$/m);
+    assert.match(current.stdout, /^Blocked: "live_writer_unverified"/m);
+    assert(
+      current.stdout.includes(
+        `  Observed candidate: HEAD="${clean.checkpoint.repositories[0]?.head}" dirty=false`,
+      ),
+    );
+    assert.match(current.stdout, /^Acceptance: "Find the exact candidate"$/m);
+    assert.match(current.stdout, /^Constraint: "Review only"$/m);
+    assert.match(current.stdout, /^Attempted \(stored\): "Ran pnpm test"$/m);
+    assert.match(current.stdout, /^Next \(stored\): "Read the check log"$/m);
+    assert.match(
+      current.stdout,
+      /^Limitation: "No task-start base recorded"$/m,
+    );
+    assert.match(current.stdout, /Task-start base: unavailable in this view/);
+    assert.match(
+      current.stdout,
+      /Predecessor message and failure cause: unavailable in this view/,
+    );
+    assert.match(
+      current.stdout,
+      /Validation results: unavailable in this view/,
+    );
+    assert.match(
+      current.stdout,
+      /^Artifact: "evidence\/check.log" stored digest=sha256:[a-f0-9]+ status=unchanged$/m,
+    );
+    assert(
+      current.stdout.includes(
+        String.raw`Objective (stored): "Read the handoff\nVerification: forged\u001b[31m\u009b31m"`,
+      ),
+    );
+    assert.doesNotMatch(current.stdout, /^Verification: forged/m);
+    assert(!current.stdout.includes('\u001b'));
+    assert(!current.stdout.includes('\u009b'));
+    assert(!current.stdout.includes('private log contents'));
+    assert.equal(readFileSync(clean.latestPath, 'utf8'), cleanPointer);
+
+    writeText(join(repository, 'tracked.txt'), 'private tracked change\n');
+    writeText(join(repository, 'untracked.txt'), 'private untracked change\n');
+    const dirty = await service.save(input);
+    assert(dirty.ok && dirty.checkpoint, dirty.diagnostics[0]?.message);
+    const digest = dirty.checkpoint.repositories[0]?.patchDigest;
+    assert(digest);
+    const patchRef = `patches/${digest.slice('sha256:'.length)}.patch`;
+    const patchPath = join(taskDir, patchRef);
+    const patch = readFileSync(patchPath, 'utf8');
+    assert.match(patch, /untracked.txt/);
+    const captured = invoke(args, root, home);
+    assert.equal(captured.status, 0, captured.stderr);
+    assert.match(captured.stdout, /^Checkpoint revision: 2$/m);
+    assert.match(captured.stdout, /Observed candidate: .* dirty=true/);
+    const patchLine = `  Captured patch: ${digest} task-relative ref=${JSON.stringify(patchRef)} status=`;
+    assert(captured.stdout.includes(`${patchLine}unchanged\n`));
+    assert.doesNotMatch(
+      captured.stdout,
+      /untracked\.txt|diff --git|private tracked change/,
+    );
+
+    writeText(join(repository, 'untracked.txt'), 'untracked changed again\n');
+    const stale = invoke(args, root, home);
+    assert.equal(stale.status, 1, stale.stderr);
+    assert.match(stale.stdout, /^Verification: stale$/m);
+    assert.match(stale.stdout, /^Code drift: changed$/m);
+    writeText(join(repository, 'untracked.txt'), 'private untracked change\n');
+
+    rmSync(patchPath);
+    rmSync(join(root, evidence));
+    const missing = invoke(args, root, home);
+    assert.match(missing.stdout, /^Verification: unknown$/m);
+    assert.equal(missing.status, 1, missing.stderr);
+    assert(missing.stdout.includes(`${patchLine}missing\n`));
+    assert.match(
+      missing.stdout,
+      /^Artifact: "evidence\/check.log" .* status=missing$/m,
+    );
+
+    writeText(join(taskDir, 'patch-target'), patch);
+    symlinkSync(join(taskDir, 'patch-target'), patchPath);
+    const unsafe = invoke(args, root, home);
+    assert(unsafe.stdout.includes(`${patchLine}unsafe\n`));
+    assert.equal(unsafe.status, 1, unsafe.stderr);
+
+    const absent = invoke(['resume', 'never-saved', '--takeover'], root, home);
+    assert.equal(absent.status, 1, absent.stderr);
+    assert.equal(absent.stdout, '');
+    assert.match(absent.stderr, /Task context not found/);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('takeover pairs duplicate evidence keys with their own guarded checks', async () => {
+  const root = makeTempDir('continuity-cli-takeover-duplicates');
+  const home = mkdtempSync(join(tmpdir(), 'continuity-cli-home-'));
+  try {
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        repositories: [{ id: 'app', path: 'app', access: 'write' }],
+      }),
+    );
+    writeMachineConfig(root, baseMachineConfig(root));
+    const repository = join(root, 'app');
+    createRepository(repository);
+    writeText(join(repository, 'scratch.txt'), 'dirty worktree\n');
+    const artifactPath = 'evidence/check.log';
+    writeText(join(root, artifactPath), 'captured evidence\n');
+    const taskId = 'duplicate-rows';
+    const saved = await new CheckpointService(root).save({
+      taskId,
+      objective: 'Check stored rows independently',
+      acceptance: ['Show the correct verification for each digest'],
+      artifacts: [artifactPath],
+    });
+    assert(
+      saved.ok && saved.checkpoint && saved.checkpointPath && saved.latestPath,
+      saved.diagnostics[0]?.message,
+    );
+    const [repo] = saved.checkpoint.repositories;
+    const [artifact] = saved.checkpoint.artifacts;
+    assert(repo?.patchDigest && artifact);
+    const differentDigest = sha256Digest(Buffer.from('different bytes'));
+    // The checkpoint schema allows repeated IDs and paths, each with its own digest.
+    const bytes = Buffer.from(
+      JSON.stringify({
+        ...saved.checkpoint,
+        repositories: [{ ...repo, patchDigest: differentDigest }, repo],
+        artifacts: [{ ...artifact, digest: differentDigest }, artifact],
+      }),
+    );
+    writeFileSync(saved.checkpointPath, bytes);
+    const pointer = parse(readFileSync(saved.latestPath, 'utf8'));
+    pointer.checkpointDigest = sha256Digest(bytes);
+    writeFileSync(saved.latestPath, JSON.stringify(pointer));
+
+    const result = invoke(['resume', taskId, '--takeover'], root, home);
+    assert.equal(result.status, 1, result.stderr);
+    const lines = result.stdout.split('\n');
+    const patchLine = (digest: string, status: string) =>
+      `  Captured patch: ${digest} task-relative ref="patches/${digest.slice('sha256:'.length)}.patch" status=${status}`;
+    assert.deepEqual(
+      lines.filter((line) => line.startsWith('  Captured patch:')),
+      [
+        patchLine(differentDigest, 'missing'),
+        patchLine(repo.patchDigest, 'unchanged'),
+      ],
+    );
+    assert.deepEqual(
+      lines.filter((line) => line.startsWith('Artifact:')),
+      [
+        `Artifact: "${artifactPath}" stored digest=${differentDigest} status=changed`,
+        `Artifact: "${artifactPath}" stored digest=${artifact.digest} status=unchanged`,
+      ],
+    );
   } finally {
     cleanup(root);
     rmSync(home, { recursive: true, force: true });

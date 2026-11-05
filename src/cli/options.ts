@@ -58,6 +58,7 @@ export function parseOptions(args: readonly string[]) {
       'native-harness': { type: 'string' },
       'native-session': { type: 'string' },
       session: { type: 'string' },
+      takeover: { type: 'boolean' },
       repo: { type: 'string' },
       kind: { type: 'string' },
       query: { type: 'string' },
