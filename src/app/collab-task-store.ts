@@ -158,56 +158,84 @@ function inspectDomainLock(domainRoot: string): void {
   const lock = lstatOptional(directory);
   if (lock === null) return;
 
-  let entryDisappeared = false;
+  let names: string[];
   try {
     requireRealDirectory(directory, domainRoot, 'domain_lock_unsafe', lock);
-    for (const name of fs.readdirSync(directory)) {
-      const file = path.join(directory, name);
-      const entry = fs.lstatSync(file, { throwIfNoEntry: false });
-      if (entry === undefined) {
-        entryDisappeared = true;
-        continue;
-      }
-      requireRealRegularFile(
-        file,
-        domainRoot,
-        'domain_lock_unsafe',
-        1024 * 1024,
-        entry,
-      );
-    }
+    names = fs.readdirSync(directory);
   } catch (error) {
     if (errorCode(error) !== 'ENOENT') throw error;
     confirmDomainLockRelease(domainRoot, root, directory);
     return;
   }
+
+  const missingEntries: string[] = [];
+  for (const name of names) {
+    const file = path.join(directory, name);
+    try {
+      requireRealRegularFile(
+        file,
+        domainRoot,
+        'domain_lock_unsafe',
+        1024 * 1024,
+        fs.lstatSync(file),
+      );
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error;
+      missingEntries.push(file);
+    }
+  }
   // The holder is unlinked before the lock directory is removed.
-  if (entryDisappeared)
-    confirmDomainLockRelease(domainRoot, root, directory, lock);
+  if (missingEntries.length > 0) {
+    confirmDomainLockRelease(domainRoot, root, directory, {
+      lock,
+      missingEntries,
+    });
+  }
 }
 
 function confirmDomainLockRelease(
   domainRoot: string,
   root: fs.Stats,
   directory: string,
-  remainingLock?: fs.Stats,
+  remaining?: { lock: fs.Stats; missingEntries: readonly string[] },
 ): void {
   const currentLock = fs.lstatSync(directory, { throwIfNoEntry: false });
-  const currentRoot = fs.lstatSync(domainRoot);
-  if (
-    !root.isDirectory() ||
-    !currentRoot.isDirectory() ||
-    currentRoot.dev !== root.dev ||
-    currentRoot.ino !== root.ino ||
-    fs.realpathSync(domainRoot) !== domainRoot ||
-    (currentLock !== undefined &&
-      (remainingLock === undefined ||
-        !currentLock.isDirectory() ||
-        currentLock.dev !== remainingLock.dev ||
-        currentLock.ino !== remainingLock.ino))
-  ) {
-    throw new Error('Could not confirm the resource-domain lock release.');
+  if (currentLock !== undefined) {
+    if (
+      remaining === undefined ||
+      !sameDirectory(remaining.lock, currentLock)
+    ) {
+      throw new Error('The resource-domain lock was replaced or remains held.');
+    }
+    for (const file of remaining.missingEntries) {
+      if (fs.lstatSync(file, { throwIfNoEntry: false }) !== undefined) {
+        throw new Error('A resource-domain lock entry reappeared.');
+      }
+    }
+    // The parent must still be safe after observing the missing entries.
+    const checkedLock = fs.lstatSync(directory, { throwIfNoEntry: false });
+    if (
+      checkedLock !== undefined &&
+      !sameDirectory(remaining.lock, checkedLock)
+    ) {
+      throw new Error('The resource-domain lock was replaced.');
+    }
   }
+  if (
+    !sameDirectory(root, fs.lstatSync(domainRoot)) ||
+    fs.realpathSync(domainRoot) !== domainRoot
+  ) {
+    throw new Error('The resource domain changed during lock inspection.');
+  }
+}
+
+function sameDirectory(before: fs.Stats, current: fs.Stats): boolean {
+  return (
+    before.isDirectory() &&
+    current.isDirectory() &&
+    before.dev === current.dev &&
+    before.ino === current.ino
+  );
 }
 
 /**

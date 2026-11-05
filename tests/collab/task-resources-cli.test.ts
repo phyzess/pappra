@@ -409,38 +409,74 @@ test('resource claim tolerates a domain lock released during preflight', async (
 });
 
 test('resource claim preflight tolerates the holder being unlinked before rmdir', async (t) => {
-  const fixture = makeTaskDomain('c4-domain-lock-holder-unlinked', ['a']);
-  const task = fixture.tasks.a!;
-  const directory = join(fixture.domainRoot, '.domain.lock');
-  const holderFile = join(directory, 'holder.json');
-  acquireDomainLock(fixture.domainRoot);
-  const request = collaborationResourceRequestSchema.parse(
-    claimRequest(CLAIMANT, [{ path: join(fixture.root, 'target') }]),
-  );
-  let unlinked = false;
-  let observations = 0;
-  t.mock.method(
-    fs,
+  for (const scenario of [
     'lstatSync',
-    (file: fs.PathLike, options?: fs.StatSyncOptions) => {
-      if (file === holderFile && !unlinked) {
+    'realpathSync',
+    'entry redirected',
+  ] as const) {
+    await t.test(scenario, async (subtest) => {
+      const fixture = makeTaskDomain('c4-domain-lock-holder-unlinked', ['a']);
+      const task = fixture.tasks.a!;
+      const directory = join(fixture.domainRoot, '.domain.lock');
+      const holderFile = join(directory, 'holder.json');
+      acquireDomainLock(fixture.domainRoot);
+      const request = collaborationResourceRequestSchema.parse(
+        claimRequest(CLAIMANT, [{ path: join(fixture.root, 'target') }]),
+      );
+      const realpath = fs.realpathSync;
+      const readdir = fs.readdirSync;
+      const tasks = join(fixture.domainRoot, 'tasks');
+      let unlinked = false;
+      let removed = false;
+      subtest.mock.method(
+        fs,
+        'lstatSync',
+        (file: fs.PathLike, options?: fs.StatSyncOptions) => {
+          if (file === holderFile && !unlinked && scenario === 'lstatSync') {
+            unlinkSync(holderFile);
+            unlinked = true;
+          }
+          return lstatSync(file, options);
+        },
+      );
+      subtest.mock.method(fs, 'readdirSync', (file: fs.PathLike) => {
+        if (file === tasks && unlinked && !removed) {
+          // Complete the release only when apply starts its second preflight.
+          rmdirSync(directory);
+          removed = true;
+        }
+        return readdir(file);
+      });
+      subtest.mock.method(fs, 'realpathSync', (file: fs.PathLike) => {
+        if (file !== holderFile || unlinked) return realpath(file);
         unlinkSync(holderFile);
         unlinked = true;
-      } else if (file === directory && unlinked && ++observations === 2) {
-        // Leave the original lock directory in place for the fresh observation.
-        rmdirSync(directory);
+        try {
+          return realpath(file);
+        } finally {
+          if (scenario === 'entry redirected') {
+            symlinkSync(join(fixture.outside, 'holder.json'), holderFile);
+          }
+        }
+      });
+      try {
+        const result = await applyResourceRequest(task, request);
+        assert.equal(unlinked, true);
+        if (scenario === 'entry redirected') {
+          assert.equal(result.ok, false);
+          assert.equal(result.code, 'task_state_unreadable');
+          assert.equal(removed, false);
+          assert.equal(readRecord(task)?.claims?.length, 0);
+        } else {
+          assert.equal(result.ok, true, JSON.stringify(result));
+          assert.equal(removed, true);
+          assert.equal(readRecord(task)?.claims?.length, 1);
+        }
+      } finally {
+        subtest.mock.restoreAll();
+        fixture.cleanup();
       }
-      return lstatSync(file, options);
-    },
-  );
-  try {
-    const result = await applyResourceRequest(task, request);
-    assert.equal(unlinked, true);
-    assert.equal(result.ok, true, JSON.stringify(result));
-    assert.equal(readRecord(task)?.claims?.length, 1);
-  } finally {
-    t.mock.restoreAll();
-    fixture.cleanup();
+    });
   }
 });
 
