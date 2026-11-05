@@ -665,6 +665,26 @@ owned SDK runtime; it does not launch a replacement session. Capability cards,
 assignee identities, assignment artifacts, resource scopes, owner epoch and event
 IDs remain explicit pins.
 
+## Inspecting an attempt interruption
+
+```sh
+pappra collab workflow inspect --task-root <abs> --interruption <subtask-id> --json
+```
+
+`detail.interruption` describes the latest unambiguous attempt for the selected
+subtask at the reported task record revision. `approval_wait` requires an
+applied approval `BLOCK` tied to the current gate. `cancel_requested` requires
+an applied current-owner `CANCEL` and an open `cancel_unconfirmed` entry for that
+attempt. Both results identify the verified `ASSIGN` and interruption envelopes
+by message ID and content digest. Missing, stale, conflicting or unverified
+evidence yields `unknown` with a reason. `--limit` only caps the ordinary inspect
+lists. A concurrent namespace change can also yield `unknown`.
+
+The projection reads persisted history only. Native status and cause are always
+`unknown`, and the result carries no permission to approve, retry or release.
+The flag requires `--json` and cannot be combined with `--apply`. Inspect keeps
+its existing status and exit-code rules.
+
 ## Collaboration recovery
 
 Durable, opt-in recovery for interrupted collaboration tasks. Recovery is layered
