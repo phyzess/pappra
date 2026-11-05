@@ -7,6 +7,10 @@ import {
   type BindingCommandOptions,
   type BindingServiceFailure,
 } from '../../app/collab-bindings.js';
+import {
+  formatDiagnostic,
+  type Diagnostic,
+} from '../../schemas/diagnostics.js';
 import type { CliOutput } from '../output.js';
 
 export const collaborationBindingUsage =
@@ -167,9 +171,15 @@ export async function runCollaborationBindingCommand(
     return outputFailure(output, options, result, exitCode);
   }
   if (options.json) output.stdout(`${JSON.stringify(result.value)}\n`);
-  else if (options.action === 'list') emitList(result.value, output);
-  else if (options.action === 'resolve') emitResolve(result.value, output);
-  else emitMutation(result.value, options.action, output);
+  else {
+    if (options.action === 'list') emitList(result.value, output);
+    else if (options.action === 'resolve') emitResolve(result.value, output);
+    else emitMutation(result.value, options.action, output);
+    const diagnostics = result.value.diagnostics as
+      readonly Diagnostic[] | undefined;
+    for (const diagnostic of diagnostics ?? [])
+      output.stderr(`${formatDiagnostic(diagnostic)}\n`);
+  }
   if (options.action === 'resolve') {
     const status = result.value.status;
     return status === 'binding' ||

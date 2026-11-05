@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
   symlinkSync,
   truncateSync,
   unlinkSync,
@@ -15,14 +17,17 @@ import { syncBuiltinESMExports } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { transact } from '../../src/collab/store.js';
+import { initTask, transact } from '../../src/collab/store.js';
+import type { Diagnostic } from '../../src/schemas/diagnostics.js';
 import { makeHandoffFixture } from './handoff-fixtures.js';
 import { snapshotTree } from './task-resources-fixtures.js';
 import {
+  baseMachineConfig,
   baseWorkspaceConfig,
   cleanup,
   makeTempDir,
   workspaceId as fixtureWorkspaceId,
+  writeMachineConfig,
   writeWorkspaceConfig,
 } from '../workspace/fixtures.js';
 
@@ -331,6 +336,121 @@ test('binding detects reinitialized and missing targets without fallback', () =>
     );
     assert.equal(unbindMissing.status, 0, unbindMissing.stderr);
     assert.equal(json(unbindMissing).status, 'unbound');
+  } finally {
+    target.domain.cleanup();
+    cleanup(workspace);
+  }
+});
+
+test('binding reports relocation without changing a copied or moved pointer', () => {
+  const sandbox = realpathSync(makeTempDir('binding-relocation'));
+  const original = join(sandbox, 'original');
+  const copied = join(sandbox, 'copied');
+  const moved = join(sandbox, 'moved');
+  try {
+    writeWorkspaceConfig(original, baseWorkspaceConfig());
+    writeMachineConfig(original, baseMachineConfig(original));
+    const domain = join(original, 'domain');
+    const task = join(domain, 'tasks', 'sample');
+    initTask(task, { taskId: 'sample', domainRoot: domain });
+    const record = join(task, 'task.json');
+    const alias = 'relocation';
+    assert.equal(bind(original, alias, record).status, 0);
+    const baseline = json(resolveAlias(original, alias));
+    assert.equal(baseline.status, 'binding');
+    assert.equal(baseline.diagnostics, undefined);
+
+    cpSync(original, copied, { recursive: true });
+    for (const [root, status, usable] of [
+      [copied, 'binding', true],
+      [moved, 'binding-malformed', false],
+    ] as const) {
+      if (root === moved) renameSync(original, moved);
+      const before = snapshotTree(sandbox);
+      const list = run(bindingArgs('list', root), root);
+      const resolved = resolveAlias(root, alias);
+      assert.equal(list.status, 0, list.stderr);
+      assert.equal(resolved.status, usable ? 0 : 1, resolved.stderr);
+      assert.equal(list.stderr, '');
+      assert.equal(resolved.stderr, '');
+
+      const listed = json(list);
+      const result = json(resolved);
+      const [entry] = listed.bindings as Record<string, unknown>[];
+      assert.equal(entry?.status, status);
+      assert.equal(entry?.record, record);
+      assert.deepEqual(entry?.errors, usable ? [] : ['target_invalid']);
+      assert.equal(result.status, status);
+      assert.equal(result.ok, usable);
+      assert.equal(result.usable, usable);
+      assert.deepEqual(result.pointer, baseline.pointer);
+      assert.deepEqual(result.target, usable ? baseline.target : null);
+      assert.deepEqual(result.errors, usable ? [] : ['target_invalid']);
+
+      for (const body of [listed, result]) {
+        const diagnostics = body.diagnostics as Diagnostic[];
+        assert.equal(diagnostics.length, 1);
+        const [warning] = diagnostics;
+        assert.equal(warning?.code, 'machine_workspace_mismatch');
+        assert.equal(warning?.severity, 'warning');
+        assert.ok(warning?.message.includes(original));
+        assert.match(
+          warning?.hint ?? '',
+          /inspect a valid authoritative task\.json first/i,
+        );
+        assert.match(
+          warning?.hint ?? '',
+          /explicitly unbind the alias and bind the intended record/,
+        );
+      }
+      assert.ok(
+        (result.diagnostics as Diagnostic[])[0]?.message.includes(record),
+      );
+
+      const humanList = run(bindingArgs('list', root).slice(0, -1), root);
+      const humanResolve = run(
+        bindingArgs('resolve', root, ['--task-id', alias]).slice(0, -1),
+        root,
+      );
+      assert.equal(humanList.status, 0, humanList.stderr);
+      assert.equal(humanResolve.status, usable ? 0 : 1, humanResolve.stderr);
+      assert.ok(humanList.stdout.includes(record));
+      assert.ok(humanResolve.stderr.includes(record));
+      for (const report of [humanList, humanResolve]) {
+        assert.match(report.stderr, /WARNING machine_workspace_mismatch/);
+        assert.match(
+          report.stderr,
+          /inspect a valid authoritative task\.json first/i,
+        );
+      }
+      assert.deepEqual(snapshotTree(sandbox), before);
+    }
+  } finally {
+    cleanup(sandbox);
+  }
+});
+
+test('binding does not infer relocation from an external target or missing or invalid machine config', () => {
+  const workspace = makeWorkspace('binding-external');
+  const target = makeHandoffFixture('binding-external-target');
+  try {
+    const alias = 'external';
+    const record = targetRecord(target);
+    assert.equal(bind(workspace, alias, record).status, 0);
+    const machine = writeMachineConfig(workspace, baseMachineConfig(workspace));
+    for (const state of ['valid', 'invalid', 'missing']) {
+      if (state === 'invalid') writeFileSync(machine, '{}\n');
+      if (state === 'missing') unlinkSync(machine);
+      const list = run(bindingArgs('list', workspace), workspace);
+      const resolved = resolveAlias(workspace, alias);
+      assert.equal(list.status, 0, list.stderr);
+      assert.equal(resolved.status, 0, resolved.stderr);
+      assert.equal(json(list).diagnostics, undefined);
+      const result = json(resolved);
+      assert.equal(result.diagnostics, undefined);
+      assert.equal(result.usable, true);
+      assert.equal((result.target as Record<string, unknown>).record, record);
+    }
   } finally {
     target.domain.cleanup();
     cleanup(workspace);
