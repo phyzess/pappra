@@ -702,8 +702,12 @@ export function parseWorkflowReclaimRequest(
   return parseWith(workflowReclaimRequestSchema, input, 'reclaim request');
 }
 
+export function isSafeWorkflowSubtaskId(value: unknown): value is string {
+  return safeId.safeParse(value).success;
+}
+
 function safePathSegment(value: string): string {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value))
+  if (!isSafeWorkflowSubtaskId(value))
     throw new Error('Invalid subtask id for a workflow path');
   return value;
 }

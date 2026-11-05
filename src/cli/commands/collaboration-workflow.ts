@@ -23,6 +23,7 @@ import {
   applyAwait,
   loadAwaitRequest,
 } from '../../app/collab-workflow/await.js';
+import { isSafeWorkflowSubtaskId } from '../../schemas/collab-workflow.js';
 import type { CliOutput } from '../output.js';
 
 /**
@@ -45,7 +46,8 @@ export const collaborationWorkflowUsage =
   '  accept   --request <abs accept.json|accept-batch.json> [--apply] [--json]\n' +
   '  reclaim  --request <abs reclaim.json> [--apply] [--json]\n' +
   '  adopt    --request <abs adopt.json> [--apply] [--json]\n' +
-  '  inspect  --task-root <abs task root> [--limit <1-500>] [--json]\n\n' +
+  '  inspect  --task-root <abs task root> [--limit <1-500>] [--json]\n' +
+  '           --interruption <subtask-id> requires --json and excludes --apply.\n\n' +
   'Without --apply every action is a zero-write, zero-notification plan. Prepare derives one\n' +
   'cohort from the declared goal, seals deterministic assignment documents and registers the\n' +
   'derived ASSIGN messages and claims for writers only; reviewer ASSIGN and claims stay\n' +
@@ -83,6 +85,7 @@ export interface CollaborationWorkflowOptions {
   readonly requestFile: string | null;
   readonly taskRoot: string | null;
   readonly limit: number | null;
+  readonly interruptionSubtaskId: string | null;
   readonly apply: boolean;
   readonly json: boolean;
   readonly help: boolean;
@@ -101,6 +104,7 @@ export function parseCollaborationWorkflowArgs(
   let requestFile: string | null = null;
   let taskRoot: string | null = null;
   let limit: number | null = null;
+  let interruptionSubtaskId: string | null = null;
   let apply = false;
   let json = false;
   let help = false;
@@ -160,6 +164,18 @@ export function parseCollaborationWorkflowArgs(
       }
       continue;
     }
+    if (arg === '--interruption') {
+      if (interruptionSubtaskId !== null)
+        errors.push('--interruption may be given only once.');
+      const value = argv[index + 1];
+      if (!isSafeWorkflowSubtaskId(value))
+        errors.push('--interruption requires a valid subtask id.');
+      else {
+        interruptionSubtaskId = value;
+        index += 1;
+      }
+      continue;
+    }
     if (arg.startsWith('-')) {
       errors.push(`unknown option: ${arg}`);
       continue;
@@ -177,7 +193,16 @@ export function parseCollaborationWorkflowArgs(
     action = arg as WorkflowCliAction;
   }
   return {
-    options: { action, requestFile, taskRoot, limit, apply, json, help },
+    options: {
+      action,
+      requestFile,
+      taskRoot,
+      limit,
+      interruptionSubtaskId,
+      apply,
+      json,
+      help,
+    },
     errors,
   };
 }
@@ -280,6 +305,14 @@ export async function runCollaborationWorkflowCli(
   if (options.action === null)
     return invalid(output, options.json, ['a workflow action is required']);
 
+  if (
+    options.interruptionSubtaskId !== null &&
+    (options.action !== 'inspect' || !options.json || options.apply)
+  )
+    return invalid(output, options.json, [
+      '--interruption is accepted only by inspect with --json and without --apply.',
+    ]);
+
   if (options.action === 'inspect') {
     if (options.taskRoot === null)
       return invalid(output, options.json, ['inspect requires --task-root']);
@@ -287,10 +320,12 @@ export async function runCollaborationWorkflowCli(
       return invalid(output, options.json, [
         'inspect takes no --request; pass --task-root.',
       ]);
-    const result = await inspectWorkflow(
-      options.taskRoot,
-      options.limit === null ? {} : { limit: options.limit },
-    );
+    const result = await inspectWorkflow(options.taskRoot, {
+      ...(options.limit === null ? {} : { limit: options.limit }),
+      ...(options.interruptionSubtaskId === null
+        ? {}
+        : { interruptionSubtaskId: options.interruptionSubtaskId }),
+    });
     return emitResult(output, options.json, result);
   }
 

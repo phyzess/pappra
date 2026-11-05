@@ -7,6 +7,7 @@ import {
 } from '../../schemas/collab-workflow.js';
 import fs from 'node:fs';
 import { emptyResult, type WorkflowResult } from './types.js';
+import { projectInterruption, type Interruption } from './interruption.js';
 import { findAttempt } from '../../collab/lifecycle.js';
 import { nativeObservationAgeSummary } from '../../collab/native-observation.js';
 import { resolveUserDataDir } from '../../install/data-dir.js';
@@ -27,10 +28,15 @@ import {
 export interface InspectOptions {
   /** Caps each projected list, keeping its last entries in record order. Omitted means unbounded. */
   readonly limit?: number;
+  readonly interruptionSubtaskId?: string;
   /** Where context-usage observations live; defaults to the user data directory. */
   readonly usageDataDir?: string;
   readonly now?: Date;
 }
+
+type InspectDetail = Record<string, unknown> & {
+  readonly interruption?: Interruption;
+};
 
 /**
  * Advisory about the coordinator's own context, from a local observation only: no network,
@@ -101,10 +107,10 @@ function ackRegistered(
 export async function inspectWorkflow(
   taskRoot: string,
   options: InspectOptions = {},
-): Promise<WorkflowResult<Record<string, unknown>>> {
+): Promise<WorkflowResult<InspectDetail>> {
   const opened = await openWorkflowTask(taskRoot);
   if (!opened.ok) {
-    const base = emptyResult<Record<string, unknown>>('inspect', false);
+    const base = emptyResult<InspectDetail>('inspect', false);
     return {
       ...base,
       status: 'invalid',
@@ -191,7 +197,7 @@ export async function inspectWorkflow(
         `${attempt.subtask_id}#${attempt.attempt}: ack_not_registered`,
       );
   }
-  const base = emptyResult<Record<string, unknown>>('inspect', false);
+  const base = emptyResult<InspectDetail>('inspect', false);
   // Inspect is a read-only projection: with no sealed manifest there is no cohort to
   // report, so the honest result is blocked (with the reason in warnings), not "applied".
   const sealed = manifestRead.ok;
@@ -224,6 +230,14 @@ export async function inspectWorkflow(
       coordinator: record.coordinator,
       limit: limit ?? null,
       context_advisory: advice,
+      ...(options.interruptionSubtaskId === undefined
+        ? {}
+        : {
+            interruption: projectInterruption(
+              task,
+              options.interruptionSubtaskId,
+            ),
+          }),
       totals: {
         attempts: attempts.total,
         messages: messages.total,
