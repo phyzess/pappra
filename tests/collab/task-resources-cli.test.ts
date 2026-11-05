@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import {
+import fs, {
   lstatSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  rmdirSync,
   symlinkSync,
   truncateSync,
   unlinkSync,
@@ -12,10 +14,17 @@ import {
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { claimResources, releaseClaim } from '../../src/collab/resources.js';
+import { applyResourceRequest } from '../../src/app/collab-resources.js';
+import {
+  acquireDomainLock,
+  claimResources,
+  releaseClaim,
+  releaseDomainLock,
+} from '../../src/collab/resources.js';
 import { buildMessage } from '../../src/collab/envelope.js';
 import { submitMessage } from '../../src/collab/messages.js';
 import { ledgerPath, readRecord, transact } from '../../src/collab/store.js';
+import { collaborationResourceRequestSchema } from '../../src/schemas/collaboration.js';
 import { cleanup } from '../workspace/fixtures.js';
 import {
   CLAIMANT,
@@ -360,6 +369,127 @@ test('resource scans refuse neighboring task/record redirects', () => {
     assert.equal(json(plan).code, 'domain_state_unsafe');
   } finally {
     fixture.cleanup();
+  }
+});
+
+test('resource claim tolerates a domain lock released during preflight', async (t) => {
+  for (const operation of ['readdirSync', 'realpathSync'] as const) {
+    await t.test(operation, async (subtest) => {
+      const fixture = makeTaskDomain('c4-domain-lock-release', ['a']);
+      const task = fixture.tasks.a!;
+      const directory = join(fixture.domainRoot, '.domain.lock');
+      const holder = acquireDomainLock(fixture.domainRoot);
+      const request = collaborationResourceRequestSchema.parse(
+        claimRequest(CLAIMANT, [{ path: join(fixture.root, 'target') }]),
+      );
+      const original = fs[operation];
+      const target =
+        operation === 'readdirSync'
+          ? directory
+          : join(directory, 'holder.json');
+      let released = false;
+      subtest.mock.method(fs, operation, (file: fs.PathLike) => {
+        if (file === target && !released) {
+          releaseDomainLock(fixture.domainRoot, holder);
+          released = true;
+        }
+        return original(file);
+      });
+      try {
+        const result = await applyResourceRequest(task, request);
+        assert.equal(released, true);
+        assert.equal(result.ok, true, JSON.stringify(result));
+        assert.equal(readRecord(task)?.claims?.length, 1);
+      } finally {
+        subtest.mock.restoreAll();
+        fixture.cleanup();
+      }
+    });
+  }
+});
+
+test('resource claim preflight tolerates the holder being unlinked before rmdir', async (t) => {
+  const fixture = makeTaskDomain('c4-domain-lock-holder-unlinked', ['a']);
+  const task = fixture.tasks.a!;
+  const directory = join(fixture.domainRoot, '.domain.lock');
+  const holderFile = join(directory, 'holder.json');
+  acquireDomainLock(fixture.domainRoot);
+  const request = collaborationResourceRequestSchema.parse(
+    claimRequest(CLAIMANT, [{ path: join(fixture.root, 'target') }]),
+  );
+  let unlinked = false;
+  let observations = 0;
+  t.mock.method(
+    fs,
+    'lstatSync',
+    (file: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (file === holderFile && !unlinked) {
+        unlinkSync(holderFile);
+        unlinked = true;
+      } else if (file === directory && unlinked && ++observations === 2) {
+        // Leave the original lock directory in place for the fresh observation.
+        rmdirSync(directory);
+      }
+      return lstatSync(file, options);
+    },
+  );
+  try {
+    const result = await applyResourceRequest(task, request);
+    assert.equal(unlinked, true);
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(readRecord(task)?.claims?.length, 1);
+  } finally {
+    t.mock.restoreAll();
+    fixture.cleanup();
+  }
+});
+
+test('resource claim fails closed if domain preflight cannot verify a lock release', async (t) => {
+  for (const scenario of ['root replaced', 'lock redirected', 'EIO'] as const) {
+    await t.test(scenario, async (subtest) => {
+      const fixture = makeTaskDomain('c4-domain-lock-unsafe-release', ['a']);
+      const task = fixture.tasks.a!;
+      const directory = join(fixture.domainRoot, '.domain.lock');
+      const holder = acquireDomainLock(fixture.domainRoot);
+      const request = collaborationResourceRequestSchema.parse(
+        claimRequest(CLAIMANT, [{ path: join(fixture.root, 'target') }]),
+      );
+      const original = fs.readdirSync;
+      const parked = join(fixture.root, 'parked');
+      let interrupted = false;
+      subtest.mock.method(fs, 'readdirSync', (file: fs.PathLike) => {
+        if (file !== directory || interrupted) return original(file);
+        interrupted = true;
+        releaseDomainLock(fixture.domainRoot, holder);
+        if (scenario === 'EIO') {
+          throw Object.assign(new Error('Injected read failure'), {
+            code: 'EIO',
+          });
+        }
+        if (scenario === 'root replaced') {
+          renameSync(fixture.domainRoot, parked);
+          mkdirSync(fixture.domainRoot);
+        }
+        try {
+          return original(file);
+        } finally {
+          if (scenario === 'lock redirected')
+            symlinkSync(fixture.outside, directory);
+        }
+      });
+      try {
+        const result = await applyResourceRequest(task, request);
+        assert.equal(interrupted, true);
+        assert.equal(result.ok, false);
+        assert.equal(result.code, 'task_state_unreadable');
+        const currentTask =
+          scenario === 'root replaced' ? join(parked, 'tasks', 'a') : task;
+        assert.equal(readRecord(currentTask)?.claims?.length, 0);
+      } finally {
+        subtest.mock.restoreAll();
+        fixture.cleanup();
+      }
+    });
   }
 });
 

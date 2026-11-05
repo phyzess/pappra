@@ -50,14 +50,17 @@ function failure(error: UnsafeNestedState): TaskStoreFailure {
 
 const MISSING = new Set(['ENOENT', 'ENOTDIR']);
 
+function errorCode(error: unknown): string | null {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String(error.code)
+    : null;
+}
+
 function lstatOptional(file: string): fs.Stats | null {
   try {
     return fs.lstatSync(file);
   } catch (error) {
-    const code =
-      typeof error === 'object' && error !== null && 'code' in error
-        ? String(error.code)
-        : null;
+    const code = errorCode(error);
     if (code !== null && MISSING.has(code)) return null;
     throw new UnsafeNestedState(
       'task_state_unreadable',
@@ -67,8 +70,12 @@ function lstatOptional(file: string): fs.Stats | null {
   }
 }
 
-function requireRealDirectory(file: string, base: string, code: string): void {
-  const stats = lstatOptional(file);
+function requireRealDirectory(
+  file: string,
+  base: string,
+  code: string,
+  stats = lstatOptional(file),
+): void {
   if (stats === null) return;
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
     throw new UnsafeNestedState(
@@ -92,8 +99,8 @@ function requireRealRegularFile(
   base: string,
   code: string,
   maxBytes?: number,
+  stats = lstatOptional(file),
 ): void {
-  const stats = lstatOptional(file);
   if (stats === null) return;
   if (stats.isSymbolicLink() || !stats.isFile()) {
     throw new UnsafeNestedState(
@@ -147,16 +154,59 @@ function inspectTaskPrivateState(taskRoot: string): void {
 
 function inspectDomainLock(domainRoot: string): void {
   const directory = path.join(domainRoot, '.domain.lock');
-  const stats = lstatOptional(directory);
-  if (stats === null) return;
-  requireRealDirectory(directory, domainRoot, 'domain_lock_unsafe');
-  for (const name of fs.readdirSync(directory)) {
-    requireRealRegularFile(
-      path.join(directory, name),
-      domainRoot,
-      'domain_lock_unsafe',
-      1024 * 1024,
-    );
+  const root = fs.lstatSync(domainRoot);
+  const lock = lstatOptional(directory);
+  if (lock === null) return;
+
+  let entryDisappeared = false;
+  try {
+    requireRealDirectory(directory, domainRoot, 'domain_lock_unsafe', lock);
+    for (const name of fs.readdirSync(directory)) {
+      const file = path.join(directory, name);
+      const entry = fs.lstatSync(file, { throwIfNoEntry: false });
+      if (entry === undefined) {
+        entryDisappeared = true;
+        continue;
+      }
+      requireRealRegularFile(
+        file,
+        domainRoot,
+        'domain_lock_unsafe',
+        1024 * 1024,
+        entry,
+      );
+    }
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+    confirmDomainLockRelease(domainRoot, root, directory);
+    return;
+  }
+  // The holder is unlinked before the lock directory is removed.
+  if (entryDisappeared)
+    confirmDomainLockRelease(domainRoot, root, directory, lock);
+}
+
+function confirmDomainLockRelease(
+  domainRoot: string,
+  root: fs.Stats,
+  directory: string,
+  remainingLock?: fs.Stats,
+): void {
+  const currentLock = fs.lstatSync(directory, { throwIfNoEntry: false });
+  const currentRoot = fs.lstatSync(domainRoot);
+  if (
+    !root.isDirectory() ||
+    !currentRoot.isDirectory() ||
+    currentRoot.dev !== root.dev ||
+    currentRoot.ino !== root.ino ||
+    fs.realpathSync(domainRoot) !== domainRoot ||
+    (currentLock !== undefined &&
+      (remainingLock === undefined ||
+        !currentLock.isDirectory() ||
+        currentLock.dev !== remainingLock.dev ||
+        currentLock.ino !== remainingLock.ino))
+  ) {
+    throw new Error('Could not confirm the resource-domain lock release.');
   }
 }
 
