@@ -18,6 +18,11 @@ one full integration gate at the release boundary and avoid shared build races.
 
 ## Start here
 
+For an existing project, start with [reuse-first adoption](references/adoption.md)
+before applying setup. For a bounded task briefing or fresh-session handoff, use
+[task context](references/task-context.md): direct work and delegated work read
+the same stored evidence, without adding another context service.
+
 1. Read `references/lifecycle.md` before relying on a host lifecycle event.
 2. Read `references/hosts.md` when the host surface is Pi, Codex, or Claude.
 3. Use `pappra checkpoint` / `pappra resume` for handoffs. A stored checkpoint

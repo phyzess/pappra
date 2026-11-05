@@ -670,14 +670,22 @@ test('ordinary Pi bundles keep their file set and source bytes without the flag'
     'extensions/pappra/runtime.mjs',
     'hooks/pappra-hook.mjs',
     'package.json',
+    'skills/pappra/references/adoption.md',
     'skills/pappra/references/collaboration.md',
     'skills/pappra/references/environment.md',
     'skills/pappra/references/hosts.md',
     'skills/pappra/references/lifecycle.md',
     'skills/pappra/references/operations.md',
+    'skills/pappra/references/task-context.md',
     'skills/pappra/references/workflow.md',
     'skills/pappra/SKILL.md',
   ]);
+  for (const reference of ['adoption.md', 'task-context.md']) {
+    assert.deepEqual(
+      readFileSync(join(outDir, 'skills/pappra/references', reference)),
+      readFileSync(join(ROOT, 'skills/pappra/references', reference)),
+    );
+  }
   assert.equal(existsSync(join(outDir, 'extensions/pappra-bootstrap')), false);
   assert.deepEqual(
     readFileSync(join(outDir, 'extensions/pappra/runtime.mjs')),
