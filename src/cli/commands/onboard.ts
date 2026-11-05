@@ -245,8 +245,10 @@ function printHandoff(
       'private knowledge and task artifacts, including collaboration records',
     ],
     commands: [
+      '# If workspace.json pins a runtimeVersion, install that Pappra version.',
       `npm install -g @phyzess/pappra@${getPackageInfo().version}`,
       '# Run the following commands from the destination workspace root.',
+      '# To use a reviewed choices file, add --config <file> to both onboard commands.',
       'pappra onboard --dry-run --json',
       'pappra onboard --yes',
       'pappra doctor --json',

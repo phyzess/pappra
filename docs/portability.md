@@ -28,12 +28,23 @@ and documents using the [adoption recipe](../skills/pappra/references/adoption.m
 | `.pappra/host-bundles/**`                                             | exported host packages; regenerate with `pappra onboard` or `pappra host bundle`                    |
 | private knowledge and task artifacts, including collaboration records | the copy checklist covers shared inputs; private transfer requires a separate reviewed decision     |
 
-## Second machine
+## Same project at the destination
+
+Run from the destination workspace root. With no `--config`, onboarding uses
+discovery for its choices and preserves an existing valid `workspace.json`.
+To use a reviewed choices file, add `--config .pappra-choices.json` (or the actual
+file path) to both onboarding commands.
+
+If the shared policy refers to an `external:<id>` checkout, supply a verified
+[destination-local mapping](configuration-authority.md) before onboarding can
+use it. A missing mapping requires operator input.
+
+Install the exact version named by `runtimeVersion` in `workspace.json` when
+present. The beta tag below is for an unpinned workspace.
 
 ```sh
 npm install -g @phyzess/pappra@beta
 cd /path/to/workspace
-cp /path/from/first/machine/.pappra-choices.json .        # or recreate it
 pappra onboard --dry-run --json      # review scope + host versions
 pappra onboard --yes --json
 pappra doctor --json
