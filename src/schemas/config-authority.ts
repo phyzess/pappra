@@ -527,11 +527,17 @@ export function inspectConfigAuthority(
     const scan = scanConfigSchema(source.schema);
     const fields = scan.fields;
     const classified = source.fields;
-    const unsupportedPaths = new Set(
-      scan.unsupported.map((entry) => entry.path),
-    );
+    // The walker cannot establish absence or enumerability inside a construct
+    // it did not enter. Match path boundaries, not similar textual prefixes.
+    const isUninspectable = (path: string): boolean =>
+      scan.unsupported.some(
+        (entry) =>
+          entry.path === '' ||
+          (path.startsWith(entry.path) &&
+            /^(?:\[\])*(?:\.|$)/.test(path.slice(entry.path.length))),
+      );
     const gaps = configAuthorityGaps(fields, classified);
-    const stale = gaps.stale.filter((path) => !unsupportedPaths.has(path));
+    const stale = gaps.stale.filter((path) => !isUninspectable(path));
     coverage.push({
       layer: source.layer,
       file: source.file,
@@ -596,7 +602,7 @@ export function inspectConfigAuthority(
               ]),
         );
       }
-      if (field.kind === 'open-container') {
+      if (field.kind === 'open-container' && !isUninspectable(field.path)) {
         const declared = fields.find((entry) => entry.path === field.path);
         if (declared === undefined || !declared.open) {
           violations.push(

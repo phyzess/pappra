@@ -203,6 +203,176 @@ test('a schema the contract cannot walk at all still produces a verdict', () => 
   assert.deepEqual(inspection.sources[0]?.fields, []);
 });
 
+test('unsupported subtrees suppress only uninspectable coverage diagnostics', () => {
+  const unsupported = z.union([
+    z.string(),
+    z.strictObject({ hidden: z.string() }),
+  ]);
+  const candidates = [
+    { path: '', schema: z.union([workspaceConfigSchema, z.string()]) },
+    {
+      path: 'knowledge',
+      schema: workspaceConfigSchema.extend({ knowledge: unsupported }),
+    },
+    {
+      path: 'repositories',
+      schema: workspaceConfigSchema.extend({ repositories: unsupported }),
+    },
+    {
+      path: 'repositories[]',
+      schema: workspaceConfigSchema.extend({
+        repositories: z.array(unsupported),
+      }),
+    },
+    {
+      path: 'extensions',
+      schema: workspaceConfigSchema.extend({ extensions: unsupported }),
+    },
+    {
+      path: 'validation[].args',
+      schema: workspaceConfigSchema.extend({
+        validation: z.array(
+          z.strictObject({
+            id: z.string(),
+            repositoryId: z.string(),
+            executable: z.string(),
+            args: unsupported,
+          }),
+        ),
+      }),
+    },
+  ];
+  for (const candidate of candidates) {
+    const inspection = inspectConfigAuthority([
+      candidateSource(candidate.schema, WORKSPACE_CONFIG_AUTHORITY),
+    ]);
+    assert.deepEqual(inspection.sources[0]?.unsupported, [
+      { path: candidate.path, construct: 'union' },
+    ]);
+    assert.deepEqual(inspection.sources[0]?.stale, [], candidate.path);
+    assert.deepEqual(inspection.sources[0]?.unclassified, [], candidate.path);
+    assert.equal(inspection.violations.length, 1, candidate.path);
+    assert.match(
+      inspection.violations[0] ?? '',
+      /unmodelled schema construct "union"/,
+    );
+  }
+});
+
+test('unsupported arrays suppress descendant open-boundary noise without hiding stale siblings', () => {
+  const schema = workspaceConfigSchema.extend({
+    repositories: z.array(
+      z.union([z.string(), z.strictObject({ id: z.string() })]),
+    ),
+    knowledge: z.union([z.string(), workspaceConfigSchema.shape.knowledge]),
+    newInspectableField: z.string(),
+  });
+  const extraFields = [
+    {
+      ...field(WORKSPACE_CONFIG_AUTHORITY, 'extensions'),
+      path: 'repositories[].extensions',
+    },
+    ...[
+      'repositoriesExtra[].id',
+      'repositories[]Extra.id',
+      'knowledgeExtra.sources[]',
+      'removedField',
+    ].map((path) => ({ ...field(WORKSPACE_CONFIG_AUTHORITY, 'name'), path })),
+  ];
+  const inspection = inspectConfigAuthority([
+    candidateSource(schema, [...WORKSPACE_CONFIG_AUTHORITY, ...extraFields]),
+  ]);
+  assert.deepEqual(inspection.sources[0]?.stale, [
+    'repositoriesExtra[].id',
+    'repositories[]Extra.id',
+    'knowledgeExtra.sources[]',
+    'removedField',
+  ]);
+  assert.deepEqual(inspection.sources[0]?.unclassified, [
+    'newInspectableField',
+  ]);
+  assert.equal(inspection.sources[0]?.unsupported.length, 2);
+  assert.equal(inspection.violations.length, 7);
+  assert.ok(
+    inspection.violations.some((entry) =>
+      entry.includes('newInspectableField has no authority classification'),
+    ),
+  );
+  assert.ok(
+    inspection.violations.every(
+      (entry) => !entry.includes('but is enumerable'),
+    ),
+  );
+});
+
+test('unsupported roots retain independent classification policy violations', () => {
+  const schema = z.union([workspaceConfigSchema, z.string()]);
+  const fields: readonly ConfigFieldAuthority[] = [
+    ...WORKSPACE_CONFIG_AUTHORITY.map((entry) => {
+      if (entry.path === 'name')
+        return {
+          ...entry,
+          layer: 'private' as const,
+          gate: 'explicit-command' as const,
+        };
+      if (entry.path === 'runtimeVersion')
+        return { ...entry, gate: 'none' as const };
+      return entry;
+    }),
+    field(WORKSPACE_CONFIG_AUTHORITY, 'extensions'),
+  ];
+  const inspection = inspectConfigAuthority([candidateSource(schema, fields)]);
+  assert.deepEqual(inspection.sources[0]?.stale, []);
+  assert.equal(inspection.violations.length, 7);
+  const diagnostics = inspection.violations.join(' | ');
+  assert.match(
+    diagnostics,
+    /\(root\) uses the unmodelled schema construct "union"/,
+  );
+  assert.match(diagnostics, /name declares layer private, expected shared/);
+  assert.match(diagnostics, /name is descriptive but gate is explicit-command/);
+  assert.match(
+    diagnostics,
+    /runtimeVersion is selection without an enabling condition/,
+  );
+  assert.match(
+    diagnostics,
+    /runtimeVersion is authority-bearing with gate none/,
+  );
+  assert.match(
+    diagnostics,
+    /runtimeVersion is activated by the committed layer/,
+  );
+  assert.match(diagnostics, /extensions is classified twice/);
+});
+
+test('unsupported array boundaries do not cover similar textual prefixes', () => {
+  const schema = workspaceConfigSchema.extend({
+    repositories: z.union([z.string(), z.array(z.string())]),
+    extensions: z.strictObject({ inspectable: z.string() }),
+  });
+  const stalePaths = ['repositoriesExtra.id', 'repositories[]Extra.id'];
+  const inspection = inspectConfigAuthority([
+    candidateSource(schema, [
+      ...WORKSPACE_CONFIG_AUTHORITY,
+      ...stalePaths.map((path) => ({
+        ...field(WORKSPACE_CONFIG_AUTHORITY, 'name'),
+        path,
+      })),
+    ]),
+  ]);
+  assert.deepEqual(inspection.sources[0]?.stale, ['extensions', ...stalePaths]);
+  assert.deepEqual(inspection.sources[0]?.unclassified, [
+    'extensions.inspectable',
+  ]);
+  assert.equal(inspection.violations.length, 6);
+  assert.ok(
+    inspection.violations.includes(
+      '.pappra/candidate-workspace.json: extensions is classified as an open container but is enumerable',
+    ),
+  );
+});
+
 test('doctor reports a controlled warning for an unmodelled construct', () => {
   const schema = z.strictObject({
     runtimeVersion: z.union([z.string(), z.strictObject({ x: z.string() })]),
