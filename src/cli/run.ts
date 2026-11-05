@@ -49,7 +49,7 @@ const globalUsage =
   'pappra repair [--root <path>] [--runtime-version <v>] [--install-id <uuid>] [--apply] [--json]\n' +
   'pappra docs <list|check|review|archive|scan|relocate|forget> [options]\n' +
   'pappra checkpoint --task <id> [options] [--json]\n' +
-  'pappra resume <taskId> [--session <id>] [--json]\n' +
+  'pappra resume <taskId> [--session <id>] [--json | --takeover]\n' +
   'pappra code <status|prepare|query> --repo <id> [options] [--json]\n' +
   'pappra host <detect|describe|probe|plan|install|verify|uninstall|bundle|mcp> --host <name> [options] [--json]\n' +
   'pappra runtime <install|status|verify|remove|gc|archive> [options] [--json]\n' +
@@ -197,6 +197,15 @@ export async function runCli(
     taskArgument,
   } = parsed;
   const json = values.json === true;
+  if (values.takeover && (command !== 'resume' || json)) {
+    failure(
+      output,
+      json,
+      'invalid_arguments',
+      '--takeover is only available with resume and cannot be combined with --json.',
+    );
+    return 2;
+  }
   const interactive = isInteractiveTerminal({
     json,
     noInteractive: values['no-interactive'] === true,
@@ -1045,13 +1054,15 @@ export async function runCli(
       values['include-private'] === true ||
       values['include-archived'] === true ||
       hasContinuityOptions(values, false) ||
-      (resumeTaskId === null && !interactive)
+      (resumeTaskId === null && (!interactive || values.takeover === true))
     ) {
       failure(
         output,
         json,
         'invalid_arguments',
-        'resume requires one task id and accepts only --session.',
+        values.takeover
+          ? 'resume --takeover requires one task id and accepts --session.'
+          : 'resume requires one task id and accepts only --session.',
       );
       return 2;
     }
@@ -1062,6 +1073,7 @@ export async function runCli(
         taskId: resumeTaskId,
         currentSession: values.session ?? process.env.PI_SESSION_ID ?? null,
         interactive,
+        takeover: values.takeover === true,
       },
       output,
     );

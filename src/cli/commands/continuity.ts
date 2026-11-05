@@ -14,6 +14,7 @@ import {
 } from '../interactive.js';
 import { checkpointTaskOptions } from '../pickers.js';
 import { resolveWorkspaceRoot } from '../../workspace/resolve.js';
+import { escapeTakeoverLine, formatResumeTakeover } from './resume-takeover.js';
 
 export const checkpointUsage =
   'pappra checkpoint --task <id> [options]\n' +
@@ -27,6 +28,7 @@ export const checkpointUsage =
 
 export const resumeUsage =
   'pappra resume [taskId] [--session <native-session-id>] [--json]\n' +
+  'pappra resume <taskId> [--session <native-session-id>] --takeover\n' +
   '\n' +
   'On a terminal a missing task id is picked from the saved tasks; a single candidate\n' +
   'is used without asking.';
@@ -53,6 +55,7 @@ export interface CheckpointCommandOptions {
 export interface ResumeCommandOptions {
   readonly cwd: string;
   readonly json: boolean;
+  readonly takeover?: boolean;
   /** Null only for an interactive caller, who is then asked to pick a task. */
   readonly taskId: string | null;
   readonly currentSession: string | null;
@@ -196,6 +199,15 @@ export async function runResumeCommand(
           diagnostics: result.diagnostics,
         })}\n`,
       );
+    }
+  } else if (options.takeover === true) {
+    if (result.packet !== null) {
+      output.stdout(formatResumeTakeover(result.packet));
+    }
+    for (const diagnostic of result.diagnostics) {
+      if (diagnostic.code !== diagnosticCodes.resume_execution_blocked) {
+        output.stderr(`${escapeTakeoverLine(formatDiagnostic(diagnostic))}\n`);
+      }
     }
   } else if (result.packet !== null) {
     const packet = result.packet;

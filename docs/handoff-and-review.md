@@ -37,6 +37,24 @@ A resume packet adds what a stored checkpoint cannot know by itself: whether the
 still match. `codeDrift`, `artifactChecks` and `verificationStatus` are re-observed at
 read time, which is why a package is bounded to a revision instead of to a moment.
 
+Run `pappra resume <taskId> --takeover` for a read-only view of the bounded
+packet. It shows the checkpoint ref, revision and digest, the stored candidate and
+observed HEAD and dirty state, evidence pointers with their verification statuses,
+and the stored next actions. For a captured dirty patch, the reference is relative
+to the private task directory. The view prints its digest and the status of the
+guarded read. Patch and artifact contents stay in their original files.
+
+Use the original assignment or ask the coordinator for the recorded task-start
+base. Use the predecessor's native session or run evidence for the actual message
+and cause of failure. The takeover view marks these fields unavailable and shows
+stored native references when present. Check the cited artifacts or the pinned
+checkpoint for validation results. An attempted entry records what the author
+reported doing.
+
+`--takeover` requires a task id and cannot be combined with `--json`. It uses
+the normal resume exit status and leaves execution and ownership decisions to
+the existing workflow.
+
 `pappra docs check` supplies the document half of the same statement: for every
 registered document it reports `fileDigest`, `recordDigest` and `freshness`, so a
 reviewer can see whether the file on disk is still the file that was reviewed.
@@ -47,7 +65,8 @@ reviewer can see whether the file on disk is still the file that was reviewed.
    acceptance criteria, the constraints, the next action and every file the successor
    must read as `--artifact`.
 2. Hand over the **task id** and the checkpoint revision, not a transcript. The
-   successor runs `pappra resume <taskId> --json` in a fresh session.
+   successor runs `pappra resume <taskId> --takeover` in a fresh session.
+   Use `pappra resume <taskId> --json` for the machine-readable packet.
 3. Treat the packet's own verdict as part of the package. `executionAllowed: false` and
    a named `blockingReasons` entry are the packet saying what it does not prove:
    - `live_writer_unverified` — a stored checkpoint cannot show which session is still
@@ -176,12 +195,11 @@ answer that needs no new persisted protocol and no schema version:
   range and records the gap; substituting the previous checkpoint's `head` yields a
   zero-width comparison and is not allowed. The narrow additive proposal is to record the
   starting commit once, when the task is created, instead of deriving it later.
-- **Dirty and untracked manifest.** The manifest exists and is complete — the retained
-  `patches/<digest-hex>.patch` artifact holds the porcelain status, the tracked diff and
-  one path-plus-digest entry per untracked file. What is missing is presentation: no
-  command prints those entries, so `resume` exposes only the digest. The narrow proposal
-  is a read-only presentation of the artifact that already exists; nothing new is
-  persisted, and the digest stays the identity.
+- **Dirty and untracked manifest.** The retained `patches/<digest-hex>.patch` artifact
+  holds the porcelain status, the tracked diff and one path-plus-digest entry per
+  untracked file. `resume --takeover` displays the task-relative reference, the
+  stored digest and the guarded read status. Inspect the retained artifact directly
+  if the review needs its entries and the observed digest matches.
 - **Test evidence.** `validations[]` is in `pappra/checkpoint/1` but `pappra checkpoint`
   has no flag that writes it, so it is always empty today. The narrow proposal is one
   `--validation <id>` option mapped onto that existing field — no schema change, no new
