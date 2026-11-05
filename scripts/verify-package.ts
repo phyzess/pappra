@@ -133,6 +133,14 @@ try {
   );
   assert(files.includes('skills/pappra/SKILL.md'));
   assert(files.includes('skills/pappra/references/operations.md'));
+  for (const reference of [
+    'assets/integrations/skills/pappra/references/knowledge-loop.md',
+    'skills/pappra/references/knowledge-loop.md',
+  ])
+    assert(
+      files.includes(reference),
+      `Missing knowledge loop reference: ${reference}`,
+    );
   assert(
     files.every((file) =>
       /^(?:dist\/|assets\/|skills\/|package\.json$|README(?:\.zh-CN)?\.md$|LICENSE$|THIRD_PARTY_NOTICES\.md$)/.test(

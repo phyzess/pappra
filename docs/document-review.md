@@ -1,8 +1,12 @@
 # Explicit document review
 
+For the host workflow from a task finding through independent semantic review
+to a new maintained record and later reuse, see the
+[reviewed knowledge loop](../skills/pappra/references/knowledge-loop.md).
+
 `docs check` reports changed registered bytes as `needs-review`, but it never
 accepts them. Accepting reviewed bytes is a separate, explicit operation:
-`docs review` re-registers the *same* `documentId` with the digest of the bytes a
+`docs review` re-registers the _same_ `documentId` with the digest of the bytes a
 human or agent actually inspected. It never rewrites, moves or deletes document
 content, and it is not a substitute for `docs scan` or `dev:setup`, which still
 never accept changed bytes for an existing registration.
