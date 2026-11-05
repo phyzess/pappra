@@ -23,6 +23,13 @@ before applying setup. For a bounded task briefing or fresh-session handoff, use
 [task context](references/task-context.md): direct work and delegated work read
 the same stored evidence, without adding another context service.
 
+For a meaningful decision, reusable finding, or costly investigation, use the
+[reviewed knowledge loop](references/knowledge-loop.md): retain a source-backed
+draft only when useful, obtain independent semantic review of exact bytes, and
+record later reuse. Task evidence, a draft candidate, and maintained knowledge
+have distinct roles; code acceptance alone never reviews knowledge. Do not
+create a knowledge document for every task.
+
 1. Read `references/lifecycle.md` before relying on a host lifecycle event.
 2. Read `references/hosts.md` when the host surface is Pi, Codex, or Claude.
 3. Use `pappra checkpoint` / `pappra resume` for handoffs. A stored checkpoint
