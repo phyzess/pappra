@@ -438,7 +438,12 @@ test('binding does not infer relocation from an external target or missing or in
     const record = targetRecord(target);
     assert.equal(bind(workspace, alias, record).status, 0);
     const machine = writeMachineConfig(workspace, baseMachineConfig(workspace));
-    for (const state of ['valid', 'invalid', 'missing']) {
+    for (const state of ['valid', 'invalid-path', 'invalid', 'missing']) {
+      if (state === 'invalid-path')
+        writeMachineConfig(
+          workspace,
+          baseMachineConfig(workspace, { workspaceRealpath: `${workspace}\0` }),
+        );
       if (state === 'invalid') writeFileSync(machine, '{}\n');
       if (state === 'missing') unlinkSync(machine);
       const list = run(bindingArgs('list', workspace), workspace);

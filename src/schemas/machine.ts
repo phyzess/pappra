@@ -2,6 +2,7 @@ import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import { createDiagnostic, pointer, type Diagnostic } from './diagnostics.js';
 import { diagnosticCodes } from './errors.js';
+import { hasNul } from './paths.js';
 
 export const MACHINE_SCHEMA = 'pappra/machine/1';
 
@@ -60,6 +61,17 @@ export function validateMachineConfigSemantics(
         source: configPath,
         pointer: pointer('workspaceRealpath'),
         hint: 'Write the real path of this checkout; machine.json is not shared across machines.',
+      }),
+    );
+  } else if (hasNul(config.workspaceRealpath)) {
+    diagnostics.push(
+      createDiagnostic({
+        code: diagnosticCodes.configPathInvalid,
+        severity: 'error',
+        message: 'workspaceRealpath cannot contain a NUL character.',
+        source: configPath,
+        pointer: pointer('workspaceRealpath'),
+        hint: 'Write the real path of this checkout.',
       }),
     );
   }

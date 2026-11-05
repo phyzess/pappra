@@ -251,6 +251,15 @@ test('validates machine.json and reports workspace identity mismatch', async () 
 
     writeMachineConfig(
       root,
+      baseMachineConfig(root, { workspaceRealpath: `${realpath(root)}\0` }),
+    );
+    inspection = await inspectMachineConfig(root);
+    assert.equal(inspection.value, null);
+    assert.deepEqual(codes(inspection), ['config_path_invalid']);
+    assert.equal(inspection.diagnostics[0]?.pointer, '/workspaceRealpath');
+
+    writeMachineConfig(
+      root,
       baseMachineConfig(root, {
         runtime: {
           version: '0.1.0-dev.0',
