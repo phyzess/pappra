@@ -275,6 +275,8 @@ export function projectInterruption(
         !candidate ||
         index <= assignmentIndex ||
         transition?.to !== 'needs_input' ||
+        // This exact marker is emitted by the BLOCK reducer, not the envelope author.
+        transition.reason !== 'blocked: approval' ||
         candidate.applied_at !== transition.at ||
         attempt.transitions.filter((entry) => entry.at === transition.at)
           .length !== 1 ||

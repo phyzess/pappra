@@ -316,6 +316,48 @@ test('interruption reports the current approval BLOCK and never falls back to an
   );
 });
 
+test('an approval BLOCK does not borrow a same-clock REPORT transition', async () => {
+  await withInterruptionFixture(
+    'workflow-interruption-same-clock',
+    async ({ taskRoot, send, inspect }) => {
+      const assignee = { ...interruptionWriter, agent_id: 'result-admission' };
+      const original = readRecord(taskRoot)!.attempts[0]!;
+      send({
+        type: 'ASSIGN',
+        message_id: 'same-clock-assignment',
+        subtask_id: 'same-clock',
+        to: assignee,
+        body: {
+          assignment_digest: original.assignment_digest,
+          input_revision: original.input_revision,
+        },
+      });
+      const clock = Date.now() + 1000;
+      for (const fields of [
+        { type: 'REPORT', body: { status: 'needs_input' } },
+        { type: 'BLOCK', body: { kind: 'approval' } },
+      ]) {
+        const message = buildMessage(
+          {
+            task_id: 'cohort',
+            subtask_id: 'same-clock',
+            attempt: 1,
+            from: assignee,
+            to: owner,
+            ...fields,
+          },
+          { clock },
+        );
+        const applied = submitMessage(taskRoot, message, { clock });
+        assert.equal(applied.ok, true, JSON.stringify(applied));
+      }
+      const result = await inspect('same-clock');
+      assert.equal(result.reason, 'approval_evidence_unverified');
+      assert.equal(result.evidence, null);
+    },
+  );
+});
+
 test('interruption joins the latest CANCEL to open uncertainty and verifies the registered file', async () => {
   await withInterruptionFixture(
     'workflow-interruption-cancel',
