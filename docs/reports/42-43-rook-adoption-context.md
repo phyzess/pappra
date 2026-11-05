@@ -139,12 +139,19 @@ decision. This does not test a product supersede command or prove a cloud task.
 
 - Explicit Prettier checks include the ignored `docs/` report path; final results
   and candidate identity are in the coordinator's retained evidence.
-- `pnpm build` and `pnpm package:check` passed in the isolated Pappra worktree;
-  package smoke covered 615 files, including bundled skill references and
-  installed workspace/selected-project walkthroughs.
-- No executable source or dependency changed. The full unit suite was not
-  repeated for this documentation slice; real CLI exercises and package smoke
-  were used instead. No rook build/test was needed for a read-only task.
+- Initial `pnpm build` and `pnpm package:check` passed in the isolated Pappra
+  worktree with 615 files. This did **not** verify that the new references were
+  distributed: only `skills/pappra` had been updated, while the distribution
+  source in `src/assets/integrations/skills/pappra` retained the old skill.
+  The earlier bundled-reference statement was incomplete and is corrected here.
+- PR #53 CI caught that omission in every matrix's existing skill-mirror test.
+  The coordinator reproduced the failure, then synchronized the three reviewed
+  documentation files into the distribution source. The same test passed 2/2
+  afterward, without weakening its assertions. Final integration outcomes are
+  recorded in the CI follow-up below.
+- No executable source or dependency changed. The full unit suite was initially
+  omitted for the documentation slice; that validation choice missed a required
+  distribution invariant. No rook build/test was needed for a read-only task.
 - The fresh consumer supports read-only usefulness, not full #42 acceptance,
   live ownership or all #43 transports. Independent recipe review is a separate
   result; a report alone never accepts implementation.
@@ -156,3 +163,20 @@ Next: select a genuinely available external implementation task or explicitly
 approve a new independent rook slice; then exercise first useful delivery and
 its acceptance. Separately complete any remaining #43 acceptance coverage before
 closing that issue. #7 and the existing A/B/C branches/reports remain untouched.
+
+## PR #53 CI follow-up
+
+The push and pull-request runs both failed the skill-mirror invariant. The
+pull-request Ubuntu/Node 26 job additionally failed a 500 ms elapsed-time lower
+bound in the silent-initialize timeout test; the equivalent push job did not.
+That difference alone does not establish a cause or justify changing the test.
+The correction preserves the reviewed documentation bytes and synchronizes
+their distribution source. A subsequent full local run also exposed the
+ordinary Pi bundle test's exact file list, which still described the previous
+skill file set. Its expected list now includes both references and checks their
+exported bytes against the reviewed documents; existing runtime, hook and
+non-bootstrap assertions are retained. A fresh native reviewer verified this
+test delta without changing or weakening those assertions. After recompiling,
+the skill-mirror and Pi bootstrap/bundle test files passed 20/20. Full-run and
+package outcomes are recorded separately; that targeted result alone is not a
+claim that the complete CI matrix passed.
