@@ -577,8 +577,11 @@ CLI has no trusted caller identity and cannot distinguish an actor that
 deliberately copies another known agent/session identity. Request JSON is bounded
 at 1 MiB and read through the special-file-safe loader. Without `--apply`, a plan
 validates the strict request, task namespace and, for a claim, current holder
-participation: it creates no reservation, lock, transaction or claim. With
-`--apply`, the namespace is revalidated and exactly the existing
+participation. Claim plan JSON reports
+`plan_validates_request_namespace_and_claim_participation` in `limits`.
+Release plans retain `plan_validates_request_and_namespace_only`. Both report
+`no_reservation`. Planning creates no reservation, lock, transaction or claim.
+With `--apply`, the namespace is revalidated and exactly the existing
 `claimResources` or `releaseClaim` primitive runs. This is cooperative record
 mutation, not OS fencing or proof that another process stopped.
 

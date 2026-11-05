@@ -113,6 +113,10 @@ test('resource list/plan/apply/release separate plans from real conflicts', () =
     assert.equal(planned.action, 'claim');
     assert.equal(planned.applied, false);
     assert.equal(planned.status, 'planned');
+    assert.deepEqual(planned.limits, [
+      'plan_validates_request_namespace_and_claim_participation',
+      'no_reservation',
+    ]);
     assert.deepEqual(snapshotTree(fixture.root), beforePlan);
 
     const conflictApply = run(
@@ -168,6 +172,10 @@ test('resource list/plan/apply/release separate plans from real conflicts', () =
     );
     assert.equal(releasePlan.status, 0, releasePlan.stderr);
     assert.equal(json(releasePlan).applied, false);
+    assert.deepEqual(json(releasePlan).limits, [
+      'plan_validates_request_and_namespace_only',
+      'no_reservation',
+    ]);
     const beforeWrongApply = snapshotTree(fixture.root);
     const wrongApply = run(
       requestArgs('release', taskA, wrongHolderRelease, true),
