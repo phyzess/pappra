@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { CheckpointService } from '../../src/continuity/index.js';
+import { sha256Digest } from '../../src/infra/fs.js';
 import {
   baseMachineConfig,
   baseWorkspaceConfig,
@@ -412,6 +413,75 @@ test('takeover shows pinned clean and dirty evidence with observed statuses', as
     assert.equal(absent.status, 1, absent.stderr);
     assert.equal(absent.stdout, '');
     assert.match(absent.stderr, /Task context not found/);
+  } finally {
+    cleanup(root);
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('takeover pairs duplicate evidence keys with their own guarded checks', async () => {
+  const root = makeTempDir('continuity-cli-takeover-duplicates');
+  const home = mkdtempSync(join(tmpdir(), 'continuity-cli-home-'));
+  try {
+    writeWorkspaceConfig(
+      root,
+      baseWorkspaceConfig({
+        repositories: [{ id: 'app', path: 'app', access: 'write' }],
+      }),
+    );
+    writeMachineConfig(root, baseMachineConfig(root));
+    const repository = join(root, 'app');
+    createRepository(repository);
+    writeText(join(repository, 'scratch.txt'), 'dirty worktree\n');
+    const artifactPath = 'evidence/check.log';
+    writeText(join(root, artifactPath), 'captured evidence\n');
+    const taskId = 'duplicate-rows';
+    const saved = await new CheckpointService(root).save({
+      taskId,
+      objective: 'Check stored rows independently',
+      acceptance: ['Show the correct verification for each digest'],
+      artifacts: [artifactPath],
+    });
+    assert(
+      saved.ok && saved.checkpoint && saved.checkpointPath && saved.latestPath,
+      saved.diagnostics[0]?.message,
+    );
+    const [repo] = saved.checkpoint.repositories;
+    const [artifact] = saved.checkpoint.artifacts;
+    assert(repo?.patchDigest && artifact);
+    const differentDigest = sha256Digest(Buffer.from('different bytes'));
+    // The checkpoint schema allows repeated IDs and paths, each with its own digest.
+    const bytes = Buffer.from(
+      JSON.stringify({
+        ...saved.checkpoint,
+        repositories: [{ ...repo, patchDigest: differentDigest }, repo],
+        artifacts: [{ ...artifact, digest: differentDigest }, artifact],
+      }),
+    );
+    writeFileSync(saved.checkpointPath, bytes);
+    const pointer = parse(readFileSync(saved.latestPath, 'utf8'));
+    pointer.checkpointDigest = sha256Digest(bytes);
+    writeFileSync(saved.latestPath, JSON.stringify(pointer));
+
+    const result = invoke(['resume', taskId, '--takeover'], root, home);
+    assert.equal(result.status, 1, result.stderr);
+    const lines = result.stdout.split('\n');
+    const patchLine = (digest: string, status: string) =>
+      `  Captured patch: ${digest} task-relative ref="patches/${digest.slice('sha256:'.length)}.patch" status=${status}`;
+    assert.deepEqual(
+      lines.filter((line) => line.startsWith('  Captured patch:')),
+      [
+        patchLine(differentDigest, 'missing'),
+        patchLine(repo.patchDigest, 'unchanged'),
+      ],
+    );
+    assert.deepEqual(
+      lines.filter((line) => line.startsWith('Artifact:')),
+      [
+        `Artifact: "${artifactPath}" stored digest=${differentDigest} status=changed`,
+        `Artifact: "${artifactPath}" stored digest=${artifact.digest} status=unchanged`,
+      ],
+    );
   } finally {
     cleanup(root);
     rmSync(home, { recursive: true, force: true });

@@ -64,8 +64,11 @@ reviewer can see whether the file on disk is still the file that was reviewed.
 1. Save the checkpoint at the revision you want handed over. Name the objective, the
    acceptance criteria, the constraints, the next action and every file the successor
    must read as `--artifact`.
-2. Hand over the **task id** and the checkpoint revision, not a transcript. The
-   successor runs `pappra resume <taskId> --takeover` in a fresh session.
+2. Hand over the **task id** and the checkpoint ref, revision and digest. The
+   successor runs `pappra resume <taskId> --takeover` in a fresh session and
+   compares all three checkpoint fields with the handoff before using the view.
+   Resume follows the task's latest pointer. If the fields differ, consult the
+   originally cited checkpoint or obtain a new handoff.
    Use `pappra resume <taskId> --json` for the machine-readable packet.
 3. Treat the packet's own verdict as part of the package. `executionAllowed: false` and
    a named `blockingReasons` entry are the packet saying what it does not prove:

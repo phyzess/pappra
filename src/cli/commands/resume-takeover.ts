@@ -38,11 +38,10 @@ export function formatResumeTakeover(packet: ResumePacket): string {
   ];
 
   const paths = continuityTaskPaths('.', packet.taskId);
-  const driftByRepo = new Map(
-    packet.codeDrift.repositories.map((entry) => [entry.repoId, entry]),
-  );
-  for (const repository of context.repositories) {
-    const drift = driftByRepo.get(repository.repoId);
+  // Resume keeps one check per checkpoint row, in order. Bounded context keeps
+  // the same prefix of rows, including repeated repository IDs or artifact paths.
+  for (const [index, repository] of context.repositories.entries()) {
+    const drift = packet.codeDrift.repositories[index];
     lines.push(
       `Repository: ${quote(repository.repoId)} stored root=${quote(repository.root)} drift=${drift?.status ?? 'unavailable'}`,
       `  Checkpoint candidate: HEAD=${quote(repository.head)} dirty=${repository.dirty ?? 'unavailable'} capture=${repository.captureStatus}`,
@@ -62,12 +61,9 @@ export function formatResumeTakeover(packet: ResumePacket): string {
   }
   if (context.repositories.length === 0) lines.push('Repository: unavailable');
 
-  const checksByPath = new Map(
-    packet.artifactChecks.map((entry) => [entry.path, entry]),
-  );
-  for (const artifact of context.artifacts) {
+  for (const [index, artifact] of context.artifacts.entries()) {
     lines.push(
-      `Artifact: ${quote(artifact.path)} stored digest=${artifact.digest} status=${checksByPath.get(artifact.path)?.status ?? 'unavailable'}`,
+      `Artifact: ${quote(artifact.path)} stored digest=${artifact.digest} status=${packet.artifactChecks[index]?.status ?? 'unavailable'}`,
     );
   }
   if (context.artifacts.length === 0) lines.push('Artifact: unavailable');
