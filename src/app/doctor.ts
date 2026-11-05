@@ -33,6 +33,7 @@ import {
 import {
   ensureStatePathBoundary,
   inspectOwnedFile,
+  installSchemaVersionDiagnostic,
   readInstallJournal,
   readWorkspaceManifest,
   rootIdentityOf,
@@ -228,9 +229,13 @@ async function inspectInstallState(
     evidence.push(fileEvidence(path, observedAt, read.digest));
     if (read.value === null) {
       escalate('error');
-      problems.push(`unreadable/incompatible install journal: ${path}`);
+      const version = installSchemaVersionDiagnostic(read.diagnostics);
+      problems.push(
+        `unreadable/incompatible install journal: ${path}${version ? `. ${version.message}` : ''}`,
+      );
       actions.push(
-        `Inspect journal ${path}; doctor does not migrate or retry it.`,
+        version?.hint ??
+          `Inspect journal ${path}; doctor does not migrate or retry it.`,
       );
       continue;
     }
@@ -321,12 +326,18 @@ function runtimeCheck(
     });
   }
   if (passive?.status === 'incompatible') {
+    const unsupported =
+      passive.diagnostics[0]?.code === diagnosticCodes.configUnsupportedSchema;
     return makeCheck({
       id: 'runtime.state',
-      code: diagnosticCodes.runtimeStateIncompatible,
+      code: unsupported
+        ? diagnosticCodes.configUnsupportedSchema
+        : diagnosticCodes.runtimeStateIncompatible,
       status: 'error',
       severity: 'error',
-      title: 'Runtime state requires reinitialization',
+      title: unsupported
+        ? 'Runtime state requires a compatible Pappra version'
+        : 'Runtime state requires reinitialization',
       summary: diagnosticsSummary(passive.diagnostics),
       source: passive.runtimeRoot,
       observedAt,

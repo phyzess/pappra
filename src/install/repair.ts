@@ -12,6 +12,7 @@ import {
 } from '../infra/fs.js';
 import {
   workspaceInstallManifestSchema,
+  WORKSPACE_MANIFEST_SCHEMA,
   type InstallJournal,
   type ManagedFileEntry,
 } from '../schemas/install.js';
@@ -22,7 +23,9 @@ import {
 import {
   acquireInstallLock,
   ensureStatePathBoundary,
+  installSchemaVersionDiagnostic,
   readInstallJournal,
+  readInstallLock,
   readJsonDocument,
   readWorkspaceManifest,
   removeOwnedFile,
@@ -100,6 +103,7 @@ async function clearDeadLock(
   if (observation.kind === 'missing') return;
   if (observation.kind !== 'file')
     throw new Error(`Unsafe install lock: ${file}`);
+  await assertSupportedInstallLock(file);
   const owner = await inspectPrivateLock(file);
   if (owner.state === 'unknown' && quarantineUnowned) {
     quarantined?.push(await quarantineUnownedLock(file, boundaryRoot));
@@ -108,7 +112,15 @@ async function clearDeadLock(
   await reclaimDeadPrivateLock(file, async () => {
     const current = await ensureStatePathBoundary(boundaryRoot, file);
     if (!current.ok) throw new Error(current.message);
+    await assertSupportedInstallLock(file);
   });
+}
+
+async function assertSupportedInstallLock(file: string): Promise<void> {
+  if ((await observePath(file)).kind !== 'file') return;
+  const read = await readInstallLock(file);
+  const version = installSchemaVersionDiagnostic(read.diagnostics);
+  if (version) throw new Error(`${version.message} ${version.hint}`);
 }
 
 /** An explicit operator escape preserves unknown evidence; it never asserts owner death. */
@@ -119,6 +131,7 @@ async function quarantineUnownedLock(
   const check = async (): Promise<void> => {
     const boundary = await ensureStatePathBoundary(root, file);
     if (!boundary.ok) throw new Error(boundary.message);
+    await assertSupportedInstallLock(file);
   };
   await check();
   const handle = await open(
@@ -695,6 +708,7 @@ async function repairReconfiguration(
   const baseline = await readJsonDocument(
     backupFile,
     workspaceInstallManifestSchema,
+    WORKSPACE_MANIFEST_SCHEMA,
   );
   const rootObservation = await observePath(root);
   if (
@@ -706,7 +720,10 @@ async function repairReconfiguration(
       rootObservation.stats,
     )
   ) {
-    throw new Error('Ownership backup does not match this workspace.');
+    const version = installSchemaVersionDiagnostic(baseline.diagnostics);
+    throw new Error(
+      `Ownership backup does not match this workspace.${version ? ` ${version.message} ${version.hint}` : ''}`,
+    );
   }
   const lockPath = workspaceInstallPaths(root).lockPath;
   await clearDeadLock(lockPath, root);
@@ -720,6 +737,14 @@ async function repairReconfiguration(
     throw new Error(lock.message ?? 'Workspace is locked.');
   try {
     await assertJournalCurrent(file, journal);
+    const manifestPath = workspaceInstallPaths(root).manifestPath;
+    const boundary = await ensureStatePathBoundary(root, manifestPath);
+    if (!boundary.ok) throw new Error(boundary.message);
+    if ((await observePath(manifestPath)).kind === 'file') {
+      const manifest = await readWorkspaceManifest(root);
+      const version = installSchemaVersionDiagnostic(manifest.diagnostics);
+      if (version) throw new Error(`${version.message} ${version.hint}`);
+    }
     const actions: {
       entry: InstallJournal['entries'][number];
       target: string;
@@ -997,7 +1022,14 @@ export async function repairInstall(
     const candidates: { file: string; journal: InstallJournal }[] = [];
     for (const file of scan.files) {
       const read = await readInstallJournal(file);
-      if (read.value === null) throw new Error(`Unreadable journal: ${file}`);
+      if (read.value === null) {
+        const unsupported = installSchemaVersionDiagnostic(read.diagnostics);
+        throw new Error(
+          unsupported === undefined
+            ? `Unreadable journal: ${file}`
+            : `Unreadable journal: ${file}. ${unsupported.message} ${unsupported.hint}`,
+        );
+      }
       const journal = read.value;
       if (file !== join(directory, `${journal.installId}.json`)) {
         throw new Error(`Journal filename and identity disagree: ${file}`);

@@ -10,11 +10,11 @@ import {
 } from '../infra/private-lock.js';
 import { captureProcessIdentity } from '../infra/process-identity.js';
 import { publishPrivateLock } from '../infra/private-lock.js';
-import { installJournalSchema } from '../schemas/install.js';
 import { isPathInside } from '../schemas/paths.js';
 import { getPackageRoot } from '../package-info.js';
 import {
   ensureStatePathBoundary,
+  readInstallJournal,
   readJsonDocument,
   releaseInstallLock,
 } from './ownership.js';
@@ -344,7 +344,7 @@ export async function archiveRuntime(
           continue;
         }
         await boundary(root, file);
-        const read = await readJsonDocument(file, installJournalSchema);
+        const read = await readInstallJournal(file);
         const matching =
           read.value?.runtimeVersion === version &&
           read.value.operation === 'install-runtime' &&
