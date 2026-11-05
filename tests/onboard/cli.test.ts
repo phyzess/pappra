@@ -6,6 +6,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -299,14 +300,49 @@ test('onboard plans without writing and prints the handoff matrix', () => {
     assert.equal(handoff.status, 0, handoff.stderr);
     const report = parse(handoff.stdout);
     assert.equal(report.schema, 'pappra/handoff/1');
+    assert.equal(
+      realpathSync(String(report.workspaceRoot)),
+      realpathSync(box.workspace),
+    );
     assert(
       (report.share as readonly string[]).includes('.pappra/workspace.json'),
     );
-    assert(
-      (report.doNotCopy as readonly string[]).includes(
-        '.pappra/local/machine.json',
-      ),
+    const excluded = [
+      '.pappra/local/**',
+      '.pappra/local/machine.json',
+      '.pappra/local/collab-bindings.json',
+      '.pappra/local-archive/**',
+      '.pappra/host-bundles/**',
+      'private knowledge and task artifacts, including collaboration records',
+    ];
+    for (const entry of excluded) {
+      assert((report.doNotCopy as readonly string[]).includes(entry));
+    }
+    const commands = report.commands as readonly string[];
+    assert.equal(
+      commands[0],
+      '# If workspace.json pins a runtimeVersion, install that Pappra version.',
     );
+    assert.deepEqual(commands.slice(2), [
+      '# Run the following commands from the destination workspace root.',
+      '# To use a reviewed choices file, add --config <file> to both onboard commands.',
+      'pappra onboard --dry-run --json',
+      'pappra onboard --yes',
+      'pappra doctor --json',
+    ]);
+
+    const humanHandoff = invoke(
+      ['onboard', '--print-handoff'],
+      box.workspace,
+      box.env,
+    );
+    assert.equal(humanHandoff.status, 0, humanHandoff.stderr);
+    for (const entry of [...excluded, ...commands]) {
+      assert(humanHandoff.stdout.includes(entry));
+    }
+    assert.equal(existsSync(box.calls), false);
+    assert.equal(existsSync(box.dataDir), false);
+    assert.equal(existsSync(join(box.workspace, '.pappra')), false);
 
     const planned = invoke(
       [
