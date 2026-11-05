@@ -6,7 +6,12 @@ import {
   releaseInstallLock,
   writeBytesAtomic,
 } from '../install/ownership.js';
-import { inspectWorkspaceConfig } from '../workspace/config.js';
+import type { Diagnostic } from '../schemas/diagnostics.js';
+import { diagnosticCodes } from '../schemas/errors.js';
+import {
+  inspectMachineConfig,
+  inspectWorkspaceConfig,
+} from '../workspace/config.js';
 import { resolveWorkspaceRoot } from '../workspace/resolve.js';
 import { readBoundedFile } from './bounded-file.js';
 import { openTaskStore, type TaskStoreFailure } from './collab-task-store.js';
@@ -608,6 +613,32 @@ function bounded<T>(items: readonly T[]) {
   };
 }
 
+async function bindingRelocationDiagnostics(
+  root: string,
+  record?: string,
+): Promise<{ readonly diagnostics?: readonly Diagnostic[] }> {
+  const machine = await inspectMachineConfig(root);
+  const mismatch = machine.diagnostics.find(
+    (entry) => entry.code === diagnosticCodes.machineWorkspaceMismatch,
+  );
+  if (mismatch === undefined) return {};
+
+  const pinnedPath =
+    record === undefined
+      ? 'Listed bindings still use their stored absolute record paths.'
+      : `This binding still uses the stored absolute record path ${record}.`;
+  return {
+    diagnostics: [
+      {
+        ...mismatch,
+        severity: 'warning',
+        message: `${mismatch.message} ${pinnedPath}`,
+        hint: 'If the intended target changed, inspect a valid authoritative task.json first, then explicitly unbind the alias and bind the intended record.',
+      },
+    ],
+  };
+}
+
 export interface BindingCommandOptions {
   readonly root: string | null;
   readonly taskId: string | null;
@@ -677,6 +708,9 @@ export async function listBindings(
         unbound: tombstones.omitted,
       },
       truncated: limited.truncated || tombstones.truncated,
+      ...(aliases.length > 0
+        ? await bindingRelocationDiagnostics(workspace.value.root)
+        : {}),
       limits: ['pointer_metadata_only', 'no_protocol_content'],
     },
   };
@@ -731,6 +765,10 @@ export async function resolveBinding(
         target: checked.target?.target ?? null,
         candidates: [],
         errors: checked.errors,
+        ...(await bindingRelocationDiagnostics(
+          workspace.value.root,
+          binding.record,
+        )),
         limits: ['persisted_history_only', 'native_live_status_unknown'],
       },
     };
