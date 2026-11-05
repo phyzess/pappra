@@ -5,6 +5,7 @@ import {
   type MessageServiceFailure,
 } from '../../app/collab-messages.js';
 import { notifyRegisteredMessage } from '../../app/collab-notify.js';
+import type { CollabDelivery } from '../../schemas/collaboration.js';
 import type { CliOutput } from '../output.js';
 
 export const collaborationMessageUsage =
@@ -12,10 +13,12 @@ export const collaborationMessageUsage =
   '  send   --message <abs envelope.json> [--apply]\n' +
   '  list   [--limit <1-100>]\n' +
   '  read   --message-id <id>\n' +
-  '  notify --message-id <id> --binding <abs binding.json> [--caller-pane <id>] [--apply] [--retry]\n\n' +
+  '  notify --message-id <id> --binding <abs binding.json> [--caller-pane <id>] [--apply] [--retry] [--observe]\n\n' +
   'send plans by default and persists only with --apply; it never notifies.\n' +
   'notify forwards one registered pointer through the Herdr CLI without --wait and\n' +
-  'requires a task-local binding that matches the recipient and live agent metadata.';
+  'requires a task-local binding that matches the recipient and live agent metadata.\n' +
+  'notify observes nothing after the delivery unless --observe is passed; the run is\n' +
+  'then bounded to one policy window of read-only roster probes.';
 
 export type CollaborationMessageAction = 'send' | 'list' | 'read' | 'notify';
 
@@ -28,6 +31,8 @@ export interface CollaborationMessageOptions {
   readonly bindingFile: string | null;
   readonly apply: boolean;
   readonly retry: boolean;
+  /** Explicit opt-in for the bounded post-delivery observation. */
+  readonly observe: boolean;
   readonly limit: string | null;
   readonly callerPane: string | null;
   readonly json: boolean;
@@ -42,6 +47,25 @@ const SUCCESS_STATUSES = new Set([
   'submitted',
   'already_recorded',
 ]);
+
+/**
+ * Reads the saved observation of the **most recent** delivery attempt, which is
+ * also the attempt whose status the summary reports. An attempt without an
+ * observation is reported as unobserved — an old record and an observation that
+ * was never requested look the same, and neither becomes an `unknown` receipt.
+ * Earlier attempts keep their own observations in the record and in the JSON
+ * result; this human summary never mixes a later attempt's status with an earlier
+ * attempt's evidence.
+ */
+function receiptLine(delivery: CollabDelivery | null): string {
+  if (delivery === null) return 'not-notified';
+  const latest = delivery.attempts.at(-1);
+  if (latest === undefined) return 'unobserved';
+  const observation = latest.observation;
+  if (observation === undefined)
+    return `unobserved for the most recent attempt (${latest.status})`;
+  return `${observation.receipt} (${observation.reason}), ${String(observation.samples)} sample(s) over ${String(observation.window_ms)} ms; most recent attempt ${latest.status}`;
+}
 
 function emit(
   output: CliOutput,
@@ -235,6 +259,7 @@ export async function runCollaborationMessageCommand(
         `  file: ${value.messagePath}`,
         `  digest: ${value.digest}`,
         `  notification: ${value.delivery?.status ?? 'not-notified'}`,
+        `  receipt: ${receiptLine(value.delivery)}`,
       ],
       0,
     );
@@ -266,6 +291,9 @@ export async function runCollaborationMessageCommand(
     apply: options.apply,
     retry: options.retry,
     callerPane: options.callerPane,
+    // Off unless asked for: a notification without --observe sends the pointer
+    // and returns, with no probe and no extra wait.
+    observation: options.observe ? {} : false,
   });
   if (!result.ok) return serviceFailure(output, options, result);
   const value = result.value;
@@ -286,6 +314,11 @@ export async function runCollaborationMessageCommand(
           ...(value.deliveryPath === null
             ? []
             : [`  delivery: ${value.deliveryPath}`]),
+          ...(value.observation === null
+            ? []
+            : [
+                `  receipt: ${value.observation.receipt} (${value.observation.reason}), ${String(value.observation.samples)} sample(s) over ${String(value.observation.window_ms)} ms`,
+              ]),
         ]
       : [`Notification ${value.status}: ${String(value.detail)}`],
     ok ? 0 : 1,

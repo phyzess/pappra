@@ -82,7 +82,7 @@ The bounded request uses schema `pappra/collab-bootstrap-request/1`. It pins:
   the optional model selects OpenRouter explicitly; unrelated configuration
   overrides are rejected.
 - Optional `managed_runtime: { sdk_module_path, journal_path,
-  automatic_handoff_file?, handoff_context_file? }` selects the managed SDK
+automatic_handoff_file?, handoff_context_file? }` selects the managed SDK
   successor only for a fresh sibling with an explicit
   `selected_model.openrouter_model`. The SDK entry must be an absolute pinned
   regular file; the new journal and generated config live in an already-private
@@ -111,7 +111,7 @@ The `bundle_digest` is SHA-256 of the canonical JSON encoding of manifest entrie
 sorted by UTF-8 relative-path bytes:
 
 ```json
-[{"path":"relative/posix/path","digest":"sha256:<file-bytes>"}]
+[{ "path": "relative/posix/path", "digest": "sha256:<file-bytes>" }]
 ```
 
 Every bundle entry must be a regular file within the bounded file/count/total-byte
@@ -164,7 +164,7 @@ For `target.choice: "sibling"`, apply:
    `bootstrapExtensionPath`, exact `herdrAgentName`, owned `herdrPaneId`,
    journal/control paths and optional future handoff config. It queues only the
    current package CLI using `herdr pane run <created-pane-id> <fixed Nushell
-   command>`; argument values are encoded as literal Nushell strings, with no
+command>`; argument values are encoded as literal Nushell strings, with no
    configurable executable or shell command. It never falls back to
    `herdr agent start`.
    The config supplies no `executionScope`: the successor is not yet the
@@ -175,6 +175,7 @@ For `target.choice: "sibling"`, apply:
    captured transition and verified bundle before SDK launch. The receiver
    verifies/imports it and emits the native handoff ACK before starting work;
    bootstrap only validates and forwards its path.
+
 4. Legacy mode requires a live start result matching the requested agent, pane,
    workspace, terminal, UUID and interactive-ready state. Managed mode treats
    `pane run` as queue submission only, then requires matching Herdr name/cwd/
@@ -187,7 +188,21 @@ For `target.choice: "sibling"`, apply:
 5. Notifies the registered message pointer once through the existing message
    protocol, which forwards it only when the task record accepted that exact
    message. A successful prompt submission is reported as `submitted`, not as
-   consumed or accepted.
+   consumed or accepted. On request (`--observe`), a bounded observation of the
+   recipient's transport is recorded beside that status, and it is not a receipt:
+   every signal a supported
+   Herdr reports is agent-level, so the record stays `receipt: unknown` and names
+   the activity instead — `turn_activity_observed` when a turn started on that
+   terminal (cause unknown), `no_turn_activity_observed` when a complete quiet
+   window saw none (a queued pointer looks the same), or an unknown reason for an
+   already working recipient, a redraw-only change, a changed terminal identity,
+   a moved counter, a failed probe or an expired budget. `taken`/`not_taken`
+   remain defined for a transport that can correlate a state change with one
+   message; none emits them today. It reuses the roster read and adds bounded
+   probes only, never a resend or a key press. Without `--observe` no probe and no
+   wait are added at all. A rejected or failed observation write leaves the
+   recorded status and attempts intact and is reported as not recorded; see
+   [collaboration-messages.md](collaboration-messages.md#observed-receipt-on-request).
 
 If readiness fails or is unknown before startup, cleanup is limited to the pane
 returned by this request's successful split. Before `pane close`, apply rechecks
@@ -312,7 +327,10 @@ coordinator acceptance, and an integrator consumes accepted review output:
       "assignment_id": "integrate",
       "attempt": 1,
       "input_revision": "sha256:…",
-      "assignee": { "agent_id": "integrator", "session_id": "session-integrate" },
+      "assignee": {
+        "agent_id": "integrator",
+        "session_id": "session-integrate"
+      },
       "depends_on": ["review"],
       "resources": [{ "path": "/repo/src", "access": "write" }]
     }
@@ -341,10 +359,22 @@ entries map each `assignment_id` to its current runtime card:
   "caller_pane": "w3:p1",
   "max_concurrency": 2,
   "capability_cards": [
-    { "assignment_id": "writer-a", "capabilities_file": "/state/cards/writer-a.json" },
-    { "assignment_id": "writer-b", "capabilities_file": "/state/cards/writer-b.json" },
-    { "assignment_id": "review", "capabilities_file": "/state/cards/reviewer.json" },
-    { "assignment_id": "integrate", "capabilities_file": "/state/cards/integrator.json" }
+    {
+      "assignment_id": "writer-a",
+      "capabilities_file": "/state/cards/writer-a.json"
+    },
+    {
+      "assignment_id": "writer-b",
+      "capabilities_file": "/state/cards/writer-b.json"
+    },
+    {
+      "assignment_id": "review",
+      "capabilities_file": "/state/cards/reviewer.json"
+    },
+    {
+      "assignment_id": "integrate",
+      "capabilities_file": "/state/cards/integrator.json"
+    }
   ]
 }
 ```
@@ -790,7 +820,11 @@ caller-created participant hash:
   "schema": "pappra/collab-recovery-run-request/1",
   "taskRoot": "/abs/domain/tasks/TASK-1",
   "planFile": "/abs/domain/tasks/TASK-1/work-plan.json",
-  "self": { "agent_id": "writer", "session_id": "native-session", "harness": "pi" },
+  "self": {
+    "agent_id": "writer",
+    "session_id": "native-session",
+    "harness": "pi"
+  },
   "policy": { "role": "writer" },
   "requestId": "recovery-request-1",
   "expected": {
@@ -848,10 +882,10 @@ import * as experimental from '@phyzess/pappra/experimental';
 const { inspectRecoveryProjection } = experimental.collabRecoveryProjection;
 
 const result = await inspectRecoveryProjection({
-  taskRoot,  // absolute path to the task record directory
-  planFile,  // absolute path to the work-plan JSON document
-  self,      // full { agent_id, session_id, harness } identity of the caller
-  policy,    // { role: 'writer' | 'coordinator' | 'reviewer', authorizedSubtasks?: string[] }
+  taskRoot, // absolute path to the task record directory
+  planFile, // absolute path to the work-plan JSON document
+  self, // full { agent_id, session_id, harness } identity of the caller
+  policy, // { role: 'writer' | 'coordinator' | 'reviewer', authorizedSubtasks?: string[] }
 });
 ```
 
@@ -864,18 +898,18 @@ inspection) and returns a discriminated result:
 
 #### `RecoveryProjection`
 
-| field | meaning |
-| --- | --- |
-| `schema` | `pappra/collab-recovery-projection/1` |
-| `self` | the caller identity the projection was computed for |
-| `task_root` / `task_id` | the inspected task |
-| `plan_digest` | the plan digest of the consistent snapshot |
-| `record_revision` | the record `state_revision` at read time |
-| `coverage` | `complete` or `incomplete` |
-| `coordinator_verified` | whether `self` is the current record coordinator (relevant for the coordinator role) |
-| `actions` | the advisory `RecoveryAction[]` |
-| `notes` | human-readable evidence/limitation notes |
-| `limits` | fixed read-only/advisory limitations |
+| field                   | meaning                                                                              |
+| ----------------------- | ------------------------------------------------------------------------------------ |
+| `schema`                | `pappra/collab-recovery-projection/1`                                                |
+| `self`                  | the caller identity the projection was computed for                                  |
+| `task_root` / `task_id` | the inspected task                                                                   |
+| `plan_digest`           | the plan digest of the consistent snapshot                                           |
+| `record_revision`       | the record `state_revision` at read time                                             |
+| `coverage`              | `complete` or `incomplete`                                                           |
+| `coordinator_verified`  | whether `self` is the current record coordinator (relevant for the coordinator role) |
+| `actions`               | the advisory `RecoveryAction[]`                                                      |
+| `notes`                 | human-readable evidence/limitation notes                                             |
+| `limits`                | fixed read-only/advisory limitations                                                 |
 
 #### `RecoveryAction`
 
@@ -883,16 +917,16 @@ Each action carries a stable, unambiguous `key` (encoding the exact identity a
 later reservation/executor reserves on), a `kind`, the
 `subtask_id`/`attempt`, `prerequisites`, `evidence` and a `status`.
 
-| kind | when | status |
-| --- | --- | --- |
-| `resume_work` | a running attempt owned by `self` with no admissible corrective answer | `pending` |
-| `answer_supersedes_wait` | a registered coordinator ANSWER, digest-verified and correlated to this exact task/subtask/attempt/input/epoch, supersedes an obsolete wait | `pending` |
-| `progress_report_to_review` | the current coordinator has a registered `applied` owner report for the latest attempt/input awaiting review dispatch | `pending` |
-| `report_unadmitted` | an awaiting node whose report is late/superseded/withheld/unregistered or digest-unverifiable | `unknown` |
-| `blocked_awaiting_gate` | an approval, cancellation or revoked-claim gate holds the attempt | `blocked` |
-| `ambiguous_effect` | an unresolved persisted uncertainty is an unknown external effect; it blocks conflicting continuation/review | `unknown` |
-| `verified_completion` | the node is completed and coordinator-accepted; nothing to resume | `complete` |
-| `none` | nothing actionable | `pending` / `unknown` |
+| kind                        | when                                                                                                                                        | status                |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- |
+| `resume_work`               | a running attempt owned by `self` with no admissible corrective answer                                                                      | `pending`             |
+| `answer_supersedes_wait`    | a registered coordinator ANSWER, digest-verified and correlated to this exact task/subtask/attempt/input/epoch, supersedes an obsolete wait | `pending`             |
+| `progress_report_to_review` | the current coordinator has a registered `applied` owner report for the latest attempt/input awaiting review dispatch                       | `pending`             |
+| `report_unadmitted`         | an awaiting node whose report is late/superseded/withheld/unregistered or digest-unverifiable                                               | `unknown`             |
+| `blocked_awaiting_gate`     | an approval, cancellation or revoked-claim gate holds the attempt                                                                           | `blocked`             |
+| `ambiguous_effect`          | an unresolved persisted uncertainty is an unknown external effect; it blocks conflicting continuation/review                                | `unknown`             |
+| `verified_completion`       | the node is completed and coordinator-accepted; nothing to resume                                                                           | `complete`            |
+| `none`                      | nothing actionable                                                                                                                          | `pending` / `unknown` |
 
 ### Guarantees and limits
 
@@ -1184,17 +1218,17 @@ crash never promotes an unproven step.
 
 ### Module responsibilities
 
-| Module | Responsibility |
-| --- | --- |
-| `types.ts` | Contracts only: status/stage unions, report, journal and effect receipts, quiescence proof and receipt, host and bootstrap-executor interfaces, dependencies, retirement marker, schema literal constants. No behaviour, no I/O, no import of any sibling module. |
-| `context.ts` | Shared primitives and the typed transition context. Owns the small helpers every other module needs (`failure`, `nowIso`, `requestOf`, `immutableDigestOf`, `sameHarnessIdentity`, `parseRegisteredMessageEntry`), the bounded task-local file primitives (`ensureTaskLocalDirectory`, `readTaskLocalFile`, `writeTaskLocalExclusive`, `bootstrapData`), `loadContext` and `validateBootstrapTransition`. |
-| `journal.ts` | The durable record: journal bounds and key, `parseQuiescenceReceipt`, `readJournal`/`journalEntry`, the current-state drift checks (`currentStateDrift`, `managedExecutionScopeDrift`), intent/handoff lookup and `sameIntentRequest`, the append/receipt writers (`addJournalEntry`, `setJournalEffect`, `setJournalQuiescenceReceipt`), `intentTransaction` and `hasJournalConflict`. |
-| `report.ts` | Report assembly: limitations, capability block, `emptyReport`/`step`, the exact receipt validators (`exactQuiescenceReceipt`, `exactRouteBindingReceipt`, `exactRetirementReceipt`), `reportForContext` and `failureReport`. |
-| `effects.ts` | The effect journal protocol: `SessionTransitionEffectName`, `effectPhase`, `recordEffectIntent` and `recordEffectOutcome`. This is the only place that asserts intent-before-effect ordering and reconciles uncertain outcomes. |
-| `freeze.ts` | Freeze and quiescence: `plannedSteps`, host identity and proof-support validation, freeze-token equality, the quiescence receipt digest, and `freezeAndPrepare` (freeze, reconcile, prepare-transfer). |
-| `routing.ts` | Successor route binding: bootstrap reservation lookup, `validateSuccessorBinding`, and `ensureSuccessorRouteBinding` with its write/reconcile paths. |
-| `retirement.ts` | Task retirement: `ensureTaskRetirementMarker`, the reversible marker write and its receipt reconciliation. |
-| `collab-session-transition.ts` | The public `plan`/`apply` facade and the orchestration order: preflight, context load, intent, freeze, transfer, successor bootstrap, route binding, first work and retirement, plus the CLI/transport adapters that call them. |
+| Module                         | Responsibility                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `types.ts`                     | Contracts only: status/stage unions, report, journal and effect receipts, quiescence proof and receipt, host and bootstrap-executor interfaces, dependencies, retirement marker, schema literal constants. No behaviour, no I/O, no import of any sibling module.                                                                                                                                         |
+| `context.ts`                   | Shared primitives and the typed transition context. Owns the small helpers every other module needs (`failure`, `nowIso`, `requestOf`, `immutableDigestOf`, `sameHarnessIdentity`, `parseRegisteredMessageEntry`), the bounded task-local file primitives (`ensureTaskLocalDirectory`, `readTaskLocalFile`, `writeTaskLocalExclusive`, `bootstrapData`), `loadContext` and `validateBootstrapTransition`. |
+| `journal.ts`                   | The durable record: journal bounds and key, `parseQuiescenceReceipt`, `readJournal`/`journalEntry`, the current-state drift checks (`currentStateDrift`, `managedExecutionScopeDrift`), intent/handoff lookup and `sameIntentRequest`, the append/receipt writers (`addJournalEntry`, `setJournalEffect`, `setJournalQuiescenceReceipt`), `intentTransaction` and `hasJournalConflict`.                   |
+| `report.ts`                    | Report assembly: limitations, capability block, `emptyReport`/`step`, the exact receipt validators (`exactQuiescenceReceipt`, `exactRouteBindingReceipt`, `exactRetirementReceipt`), `reportForContext` and `failureReport`.                                                                                                                                                                              |
+| `effects.ts`                   | The effect journal protocol: `SessionTransitionEffectName`, `effectPhase`, `recordEffectIntent` and `recordEffectOutcome`. This is the only place that asserts intent-before-effect ordering and reconciles uncertain outcomes.                                                                                                                                                                           |
+| `freeze.ts`                    | Freeze and quiescence: `plannedSteps`, host identity and proof-support validation, freeze-token equality, the quiescence receipt digest, and `freezeAndPrepare` (freeze, reconcile, prepare-transfer).                                                                                                                                                                                                    |
+| `routing.ts`                   | Successor route binding: bootstrap reservation lookup, `validateSuccessorBinding`, and `ensureSuccessorRouteBinding` with its write/reconcile paths.                                                                                                                                                                                                                                                      |
+| `retirement.ts`                | Task retirement: `ensureTaskRetirementMarker`, the reversible marker write and its receipt reconciliation.                                                                                                                                                                                                                                                                                                |
+| `collab-session-transition.ts` | The public `plan`/`apply` facade and the orchestration order: preflight, context load, intent, freeze, transfer, successor bootstrap, route binding, first work and retirement, plus the CLI/transport adapters that call them.                                                                                                                                                                           |
 
 Import direction is one-way and acyclic:
 

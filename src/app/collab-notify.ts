@@ -7,12 +7,23 @@ import { notificationsDir } from '../collab/store.js';
 import type { Message, TaskRecord } from '../collab/types.js';
 import {
   collabBindingSchema,
+  collabDeliverySchema,
   type CollabBinding,
   type CollabBindingParticipant,
   type CollabDelivery,
+  type CollabDeliveryAgentState,
   type CollabDeliveryAttempt,
+  type CollabDeliveryObservation,
   type CollabDeliveryStatus,
 } from '../schemas/collaboration.js';
+import {
+  boundDetail,
+  delay,
+  normalizeDeliveryObservationPolicy,
+  observeDeliveryReceipt,
+  type DeliveryObservationPolicy,
+  type DeliveryObservationProbe,
+} from './collab-delivery-observation.js';
 import { isPathInside } from '../schemas/paths.js';
 import { observePath, resolveRealpath } from '../infra/fs.js';
 import { errorMessage } from '../schemas/outcome.js';
@@ -58,6 +69,17 @@ export interface HerdrAgentObservation {
   readonly sessionKind: string | null;
   readonly status: string;
   readonly focused: boolean;
+  /**
+   * Receipt-observation signals. They are optional because a transport may not
+   * report them; a missing value is never read as zero or false. `null` on the
+   * presence-checked fields means "reported as absent", which stays unknown.
+   */
+  readonly terminalId?: string | null;
+  readonly stateChangeSeq?: number | null;
+  readonly completionSeq?: number | null;
+  readonly revision?: number | null;
+  readonly interactiveReady?: boolean | null;
+  readonly launchPending?: boolean | null;
 }
 
 export interface HerdrCallerObservation {
@@ -109,7 +131,11 @@ export interface HerdrTransport {
   verifyCaller(options?: {
     readonly paneId?: string;
   }): Promise<HerdrCallerResult>;
-  list(): Promise<HerdrListResult>;
+  /**
+   * Reads the agent roster. `timeoutMs` bounds one receipt-observation probe;
+   * omitting it keeps the ordinary roster timeout.
+   */
+  list(options?: { readonly timeoutMs?: number }): Promise<HerdrListResult>;
   prompt(
     agent: string,
     text: string,
@@ -298,6 +324,26 @@ function sessionField(value: unknown): {
     kind: textAt(value, 'kind'),
     value: textAt(value, 'value'),
   };
+}
+
+/**
+ * Reads a non-negative integer counter. A missing, negative, fractional or
+ * non-numeric value is `null`, never zero: the difference decides whether a
+ * turn start can be attributed, so a fabricated zero would be evidence.
+ */
+function countAt(value: unknown, key: string): number | null {
+  const candidate = nested(value, key);
+  return typeof candidate === 'number' &&
+    Number.isInteger(candidate) &&
+    candidate >= 0
+    ? candidate
+    : null;
+}
+
+/** Reads a tri-state boolean; an absent flag stays `null`, never `false`. */
+function flagAt(value: unknown, key: string): boolean | null {
+  const candidate = nested(value, key);
+  return typeof candidate === 'boolean' ? candidate : null;
 }
 
 function callerObservation(
@@ -514,8 +560,12 @@ export function createHerdrTransport(
       }
       return { ok: true, caller: await nativeCaller(caller) };
     },
-    async list() {
-      const result = await run(bin, ['agent', 'list'], LIST_TIMEOUT_MS);
+    async list(listOptions = {}) {
+      const result = await run(
+        bin,
+        ['agent', 'list'],
+        listOptions.timeoutMs ?? LIST_TIMEOUT_MS,
+      );
       if (!result.spawned) {
         return {
           ok: false,
@@ -563,6 +613,12 @@ export function createHerdrTransport(
               ? item['agent_status']
               : 'unknown',
           focused: item['focused'] === true,
+          terminalId: textAt(item, 'terminal_id'),
+          stateChangeSeq: countAt(item, 'state_change_seq'),
+          completionSeq: countAt(item, 'completion_seq'),
+          revision: countAt(item, 'revision'),
+          interactiveReady: flagAt(item, 'interactive_ready'),
+          launchPending: flagAt(item, 'launch_pending'),
         });
       }
       if (options.taskRoot) {
@@ -719,6 +775,12 @@ export function reportedSessionIdentity(
   return { status: 'unknown', identity: null };
 }
 
+export interface NotifyObservationOptions extends Partial<DeliveryObservationPolicy> {
+  /** Monotonic-enough clock for the bounded window; defaults to `Date.now`. */
+  readonly now?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+}
+
 export interface NotifyOptions {
   readonly taskRoot: string;
   readonly messageId: string;
@@ -729,6 +791,13 @@ export interface NotifyOptions {
   readonly callerPane?: string | null;
   readonly transport?: HerdrTransport;
   readonly clock?: number;
+  /**
+   * Bounded transport observation after a submission. It is off unless a caller
+   * asks for it: omitting this (or passing `false`) keeps the notification
+   * exactly as it was before #20 — no probe, no extra wait, no observation in
+   * the record. Pass a policy (or `{}` for the defaults) to observe.
+   */
+  readonly observation?: NotifyObservationOptions | false;
 }
 
 export interface NotifyCallerEvidence {
@@ -778,6 +847,12 @@ export interface NotifyResult {
   readonly attempts: number;
   readonly priorStatus: CollabDeliveryStatus | null;
   readonly detail: string | null;
+  /**
+   * Receipt evidence from the bounded observation. `null` means no observation
+   * was taken (plan mode, or a refusal before any submission); the recorded
+   * attempt then holds no observation and stays unobserved.
+   */
+  readonly observation: CollabDeliveryObservation | null;
   /** Notification never proves consumption, execution or acceptance. */
   readonly consumed: false;
   readonly taskAccepted: false;
@@ -1105,6 +1180,23 @@ async function ensureNotificationsDirectory(
   return { ok: true, value: directory };
 }
 
+/**
+ * Renders one schema issue as a bounded sentence. It is diagnostic text only:
+ * the record is never reshaped to fit, because a shortened identity or status
+ * would be a different value that happens to look valid.
+ */
+function schemaIssue(error: {
+  readonly issues: readonly {
+    readonly path: readonly PropertyKey[];
+    readonly message: string;
+  }[];
+}): string {
+  const first = error.issues[0];
+  if (first === undefined) return 'invalid delivery document';
+  const where = first.path.map((part) => String(part)).join('.');
+  return `${where === '' ? '<root>' : where}: ${first.message}`;
+}
+
 function writeDelivery(
   taskRoot: string,
   directory: string,
@@ -1114,6 +1206,13 @@ function writeDelivery(
   if (!notificationsDirectorySyncOk(taskRoot, directory)) {
     throw new Error(`Delivery metadata directory is unsafe: ${directory}`);
   }
+  // Last gate before the atomic publish: a record that no reader could parse is
+  // never written over an intact one.
+  const validated = collabDeliverySchema.safeParse(delivery);
+  if (!validated.success)
+    throw new Error(
+      `Delivery record failed validation: ${schemaIssue(validated.error)}`,
+    );
   const temporary = path.join(
     directory,
     `${path.basename(file)}.tmp-${process.pid}-${Date.now()}`,
@@ -1217,6 +1316,7 @@ function resultOf(
     readonly priorStatus: CollabDeliveryStatus | null;
     readonly detail: string | null;
     readonly effect?: NotificationEffect;
+    readonly observation?: CollabDeliveryObservation | null;
   },
 ): NotifyResult {
   return {
@@ -1234,8 +1334,30 @@ function resultOf(
     attempts: fields.attempts,
     priorStatus: fields.priorStatus,
     detail: fields.detail,
+    observation: fields.observation ?? null,
     consumed: false,
     taskAccepted: false,
+  };
+}
+
+/**
+ * Normalizes one roster reading into the persisted observation state. A signal
+ * the transport did not report stays `null` so a reader can tell "unreported"
+ * from a real zero; nothing here invents a default.
+ */
+function agentState(
+  live: HerdrAgentObservation,
+  observedAt: string,
+): CollabDeliveryAgentState {
+  return {
+    observed_at: observedAt,
+    agent_status: live.status,
+    terminal_id: live.terminalId ?? null,
+    state_change_seq: live.stateChangeSeq ?? null,
+    completion_seq: live.completionSeq ?? null,
+    revision: live.revision ?? null,
+    interactive_ready: live.interactiveReady ?? null,
+    launch_pending: live.launchPending ?? null,
   };
 }
 
@@ -1531,6 +1653,18 @@ export async function notifyRegisteredMessage(
   }
 
   const transport = options.transport ?? createHerdrTransport({ taskRoot });
+  // Receipt observation is a bounded read-only probe loop, never a watcher and
+  // never a second submission. It starts only after a prompt outcome is recorded.
+  const observationSettings =
+    options.observation === undefined || options.observation === false
+      ? null
+      : options.observation;
+  const observationPolicy =
+    observationSettings === null
+      ? null
+      : normalizeDeliveryObservationPolicy(observationSettings);
+  const observationNow = observationSettings?.now ?? Date.now;
+  const observationSleep = observationSettings?.sleep ?? delay;
   const verifiedCaller = await transport.verifyCaller(
     options.callerPane === undefined || options.callerPane === null
       ? {}
@@ -1559,6 +1693,10 @@ export async function notifyRegisteredMessage(
   const caller = verifiedCaller.caller;
 
   const agents = await transport.list();
+  // The recipient reading that participant verification uses is also the
+  // "before" state of the receipt observation, so the observation adds no call
+  // and no ordering change around #17's final admission check.
+  const participantObservedAt = new Date(observationNow()).toISOString();
   if (!agents.ok) {
     return {
       ok: true,
@@ -1622,6 +1760,80 @@ export async function notifyRegisteredMessage(
     native_session_kind: recipientCheck.value.live.sessionKind,
   };
 
+  const recipientBefore = agentState(
+    recipientCheck.value.live,
+    participantObservedAt,
+  );
+  /**
+   * One probe: a bounded roster read compared against the reading participant
+   * verification already took. Identity, cwd and reported session are rechecked
+   * on every probe, because a name that now resolves elsewhere is not evidence
+   * about this recipient. The probe never prompts, waits for a state, or retries.
+   */
+  const probeRecipient = async (
+    budgetMs: number,
+  ): Promise<DeliveryObservationProbe> => {
+    let listed: HerdrListResult;
+    try {
+      // The observation loop owns the budget: it never asks for more time than
+      // the window has left, and a reading that arrives late is never classified.
+      listed = await transport.list({ timeoutMs: budgetMs });
+    } catch (error) {
+      return {
+        ok: false,
+        reason: 'probe_failed',
+        detail: `The transport probe threw: ${errorMessage(error)}`,
+      };
+    }
+    if (!listed.ok)
+      return { ok: false, reason: 'probe_failed', detail: listed.detail };
+    const matches = listed.agents.filter(
+      (entry) => entry.name === participant.herdr_agent,
+    );
+    if (matches.length !== 1)
+      return {
+        ok: false,
+        reason: 'target_missing',
+        detail: `Herdr reports ${matches.length} agents named ${participant.herdr_agent}`,
+      };
+    const live = matches[0]!;
+    if (live.paneId !== participant.pane_id)
+      return {
+        ok: false,
+        reason: 'target_identity_changed',
+        detail: `Herdr reports pane ${String(live.paneId)} for ${participant.herdr_agent}, binding says ${participant.pane_id}`,
+      };
+    if (live.harness !== participant.harness)
+      return {
+        ok: false,
+        reason: 'target_identity_changed',
+        detail: `Herdr reports ${live.harness} for ${participant.herdr_agent}, binding says ${participant.harness}`,
+      };
+    if (live.cwd === null || !sameCwd(live.cwd, participant.cwd))
+      return {
+        ok: false,
+        reason: 'target_identity_changed',
+        detail: `Herdr reports cwd ${String(live.cwd)} for ${participant.herdr_agent}, binding says ${participant.cwd}`,
+      };
+    const reported = reportedSessionIdentity(
+      live.sessionKind,
+      live.sessionValue,
+    );
+    if (
+      reported.status === 'match' &&
+      reported.identity !== message.to.session_id
+    )
+      return {
+        ok: false,
+        reason: 'target_session_changed',
+        detail: `Herdr reports native session ${String(reported.identity)} for ${participant.herdr_agent}, message targets ${message.to.session_id}`,
+      };
+    return {
+      ok: true,
+      state: agentState(live, new Date(observationNow()).toISOString()),
+    };
+  };
+
   const directory = await ensureNotificationsDirectory(opened.value);
   if (!directory.ok) return noEffect(directory);
   const deliveryFile = deliveryPathFor(taskRoot, message.message_id);
@@ -1659,6 +1871,8 @@ export async function notifyRegisteredMessage(
     );
   }
   let reserved: CollabDelivery;
+  /** Kept outside the reservation block so the observation write can reuse it. */
+  let reservationId: string | null = null;
   try {
     const current = readDeliveryRecord(taskRoot, message.message_id);
     if (current !== null && current.status === 'submitting') {
@@ -1702,7 +1916,7 @@ export async function notifyRegisteredMessage(
       );
     }
     const createdAt = current?.created_at ?? nowIso(options.clock);
-    const reservationId = randomUUID();
+    reservationId = randomUUID();
     reserved = deliveryDocument({
       message,
       messagePath,
@@ -1804,6 +2018,55 @@ export async function notifyRegisteredMessage(
       }),
     };
   }
+  // The submission outcome is durable before the observation starts, so the
+  // observation can never delay or replace it, and the reservation window is no
+  // wider than it was before #20. The observation is a bounded read-only loop
+  // written as additive evidence for the same reservation; a failed write
+  // leaves the recorded outcome untouched.
+  const receipt =
+    observationPolicy === null
+      ? null
+      : await observeDeliveryReceipt({
+          submitted:
+            result.status === 'submitted' || result.status === 'unknown',
+          before: recipientBefore,
+          probe: probeRecipient,
+          policy: observationPolicy,
+          now: observationNow,
+          sleep: observationSleep,
+        });
+  // The observation is recorded only if its own guarded write succeeds. When it
+  // does not, the already recorded status and attempts stay exactly as they are,
+  // the result names what was observed and why it was not stored, and the
+  // unrecorded value is not presented as stored evidence.
+  const observationWrite =
+    receipt === null || reservationId === null
+      ? null
+      : recordAttemptObservation({
+          taskRoot,
+          directory: directory.value,
+          deliveryFile,
+          reservationId,
+          observation: receipt,
+          clock: options.clock,
+        });
+  const observationRecorded = observationWrite !== null && observationWrite.ok;
+  const observationFailure =
+    receipt !== null && observationWrite !== null && !observationWrite.ok
+      ? observationWrite
+      : null;
+  const detail =
+    result.status === 'unavailable'
+      ? `Herdr was not callable; nothing was submitted${result.detail === null ? '' : `: ${result.detail}`}`
+      : result.detail;
+  const observationNote =
+    receipt === null
+      ? null
+      : observationRecorded
+        ? null
+        : observationFailure === null
+          ? `The transport observation (${receipt.receipt}/${receipt.reason}) was not recorded.`
+          : `The transport observation (${receipt.receipt}/${receipt.reason}) was not recorded (${observationFailure.code}: ${observationFailure.detail}).`;
   return {
     ok: true,
     value: resultOf(base, {
@@ -1816,9 +2079,10 @@ export async function notifyRegisteredMessage(
       attempts: finalized.attempts.length,
       priorStatus: existing?.status ?? null,
       detail:
-        result.status === 'unavailable'
-          ? `Herdr was not callable; nothing was submitted${result.detail === null ? '' : `: ${result.detail}`}`
-          : result.detail,
+        observationNote === null
+          ? detail
+          : `${detail === null ? '' : `${detail} `}${observationNote}`,
+      observation: observationRecorded ? receipt : null,
     }),
   };
 }
@@ -1827,10 +2091,134 @@ export async function notifyRegisteredMessage(
 const reservations = new Map<string, string>();
 
 /**
- * Updates only this invocation's reserved attempt. A changed reservation, a lost
- * attempt or an unreadable record is never overwritten; the caller reports an
- * unknown outcome instead.
+ * Why a guarded reserved-attempt update did not happen. These are diagnostics
+ * for the caller, never a status: the record on disk is left exactly as it was.
  */
+export type ReservedAttemptFailure = {
+  readonly ok: false;
+  readonly code:
+    | 'delivery_state_busy'
+    | 'delivery_state_unreadable'
+    | 'delivery_record_invalid'
+    | 'delivery_state_unwritable';
+  readonly detail: string;
+};
+
+export type ReservedAttemptUpdate =
+  | { readonly ok: true; readonly delivery: CollabDelivery }
+  | ReservedAttemptFailure;
+
+/** The persisted schema caps a free-text attempt detail at 4096. */
+const MAX_ATTEMPT_DETAIL_CHARS = 4096;
+
+/**
+ * Updates only this invocation's reserved attempt. A changed reservation, a lost
+ * attempt, an unreadable record or a candidate the schema would reject is never
+ * written over an intact one; the caller reports the failure and the record on
+ * disk keeps its last valid status and attempts.
+ *
+ * Two writes share this one guarded update: the transport outcome first, so the
+ * delivery status is durable as soon as the prompt returns exactly as it was
+ * before #20, then an additive observation for the same reservation. The second
+ * write can only add evidence — it never changes a status. Only the free-text
+ * `detail` is bounded; identity and state values are never shortened, so a value
+ * that is out of schema rejects the write instead of being trimmed into shape.
+ */
+function updateReservedAttempt(input: {
+  readonly taskRoot: string;
+  readonly directory: string;
+  readonly deliveryFile: string;
+  readonly reservationId: string;
+  /** Absent for an observation-only update. */
+  readonly outcome?: {
+    readonly status: CollabDeliveryStatus;
+    readonly detail: string | null;
+  };
+  readonly observation?: CollabDeliveryObservation;
+  readonly clock: number | undefined;
+}): ReservedAttemptUpdate {
+  const lockPath = lockPathFor(input.deliveryFile);
+  const lock = acquireDeliveryLock(lockPath);
+  if (lock !== 'acquired')
+    return {
+      ok: false,
+      code:
+        lock === 'busy' ? 'delivery_state_busy' : 'delivery_state_unwritable',
+      detail:
+        lock === 'busy'
+          ? 'another notification holds the delivery lock'
+          : `the delivery lock could not be created at ${lockPath}`,
+    };
+  try {
+    const current = readDeliveryRecord(
+      input.taskRoot,
+      path.basename(input.deliveryFile, '.json'),
+    );
+    if (current === null)
+      return {
+        ok: false,
+        code: 'delivery_state_unreadable',
+        detail: 'the delivery record could not be read back',
+      };
+    const index = current.attempts.findIndex(
+      (attempt) => attempt.reservation_id === input.reservationId,
+    );
+    if (index < 0)
+      return {
+        ok: false,
+        code: 'delivery_state_unreadable',
+        detail: 'the reserved attempt is no longer in the delivery record',
+      };
+    const attempts = current.attempts.map((attempt, position) =>
+      position === index
+        ? {
+            ...attempt,
+            ...(input.outcome === undefined
+              ? {}
+              : {
+                  status: input.outcome.status,
+                  detail: boundDetail(
+                    input.outcome.detail,
+                    MAX_ATTEMPT_DETAIL_CHARS,
+                  ),
+                }),
+            ...(input.observation === undefined
+              ? {}
+              : { observation: input.observation }),
+          }
+        : attempt,
+    );
+    const next: CollabDelivery = {
+      ...current,
+      ...(input.outcome === undefined ? {} : { status: input.outcome.status }),
+      attempts,
+      updated_at: nowIso(input.clock),
+    };
+    // Validate the candidate before the atomic publish, so a write that no
+    // reader could parse never replaces a valid record.
+    const validated = collabDeliverySchema.safeParse(next);
+    if (!validated.success)
+      return {
+        ok: false,
+        code: 'delivery_record_invalid',
+        detail: `the candidate record failed validation (${schemaIssue(validated.error)})`,
+      };
+    try {
+      writeDelivery(input.taskRoot, input.directory, input.deliveryFile, next);
+    } catch (error) {
+      return {
+        ok: false,
+        code: 'delivery_state_unwritable',
+        detail: errorMessage(error),
+      };
+    }
+    return { ok: true, delivery: next };
+  } finally {
+    releaseDeliveryLock(lockPath);
+  }
+}
+
+/** Records the transport outcome for this invocation's reservation. */
 function finalizeDelivery(input: {
   readonly taskRoot: string;
   readonly directory: string;
@@ -1841,42 +2229,38 @@ function finalizeDelivery(input: {
 }): CollabDelivery | null {
   const reservationId = reservations.get(input.deliveryFile);
   if (reservationId === undefined) return null;
-  const lockPath = lockPathFor(input.deliveryFile);
-  const lock = acquireDeliveryLock(lockPath);
-  if (lock !== 'acquired') return null;
-  try {
-    const current = readDeliveryRecord(
-      input.taskRoot,
-      path.basename(input.deliveryFile, '.json'),
-    );
-    if (current === null) return null;
-    const index = current.attempts.findIndex(
-      (attempt) => attempt.reservation_id === reservationId,
-    );
-    if (index < 0) return null;
-    const attempts = current.attempts.map((attempt, position) =>
-      position === index
-        ? {
-            ...attempt,
-            status: input.status,
-            detail: input.detail,
-          }
-        : attempt,
-    );
-    const next: CollabDelivery = {
-      ...current,
-      status: input.status,
-      attempts,
-      updated_at: nowIso(input.clock),
-    };
-    try {
-      writeDelivery(input.taskRoot, input.directory, input.deliveryFile, next);
-    } catch {
-      return null;
-    }
-    reservations.delete(input.deliveryFile);
-    return next;
-  } finally {
-    releaseDeliveryLock(lockPath);
-  }
+  const next = updateReservedAttempt({
+    taskRoot: input.taskRoot,
+    directory: input.directory,
+    deliveryFile: input.deliveryFile,
+    reservationId,
+    outcome: { status: input.status, detail: input.detail },
+    clock: input.clock,
+  });
+  if (!next.ok) return null;
+  reservations.delete(input.deliveryFile);
+  return next.delivery;
+}
+
+/**
+ * Adds observation evidence to the same reserved attempt. A failure here leaves
+ * the recorded delivery outcome intact and is reported to the caller with its
+ * own code; it never rewrites the status and never triggers a second submission.
+ */
+function recordAttemptObservation(input: {
+  readonly taskRoot: string;
+  readonly directory: string;
+  readonly deliveryFile: string;
+  readonly reservationId: string;
+  readonly observation: CollabDeliveryObservation;
+  readonly clock: number | undefined;
+}): ReservedAttemptUpdate {
+  return updateReservedAttempt({
+    taskRoot: input.taskRoot,
+    directory: input.directory,
+    deliveryFile: input.deliveryFile,
+    reservationId: input.reservationId,
+    observation: input.observation,
+    clock: input.clock,
+  });
 }

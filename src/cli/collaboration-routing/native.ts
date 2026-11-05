@@ -208,6 +208,7 @@ export async function handlePreflight(
       values['message-id'] !== undefined ||
       values.binding !== undefined ||
       values.retry === true ||
+      values.observe === true ||
       values['caller-pane'] !== undefined ||
       values.session !== undefined ||
       values.harness !== undefined ||

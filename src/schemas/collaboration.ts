@@ -381,15 +381,132 @@ export const collabDeliveryStatusSchema = z.enum([
 ]);
 export type CollabDeliveryStatus = z.infer<typeof collabDeliveryStatusSchema>;
 
+export const COLLAB_DELIVERY_OBSERVATION_SCHEMA =
+  'pappra/collab-delivery-observation/1';
+
+/**
+ * What a receipt observation may conclude about *this* pointer.
+ *
+ * `taken` and `not_taken` are message-level receipts: they require evidence that
+ * correlates an observed state change with the one message that was delivered.
+ * `unknown` is everything a transport cannot attribute to this pointer.
+ *
+ * No supported transport provides message-level correlation — the Herdr roster
+ * read reports agent-level status and counters, so a turn that starts may have
+ * been started by this pointer, by another message or by a human, and a pointer
+ * sitting unsubmitted looks identical to one that was never typed. The
+ * observation therefore records `unknown` with the activity it did observe, and
+ * never emits `taken` or `not_taken` from roster signals. None of the three
+ * values is consumption, acknowledgement or acceptance.
+ */
+export const collabDeliveryReceiptSchema = z.enum([
+  'taken',
+  'not_taken',
+  'unknown',
+]);
+export type CollabDeliveryReceipt = z.infer<typeof collabDeliveryReceiptSchema>;
+
+/**
+ * Closed reason codes. Each names the evidence that produced the receipt value,
+ * so a reader never has to infer why a delivery stayed unknown.
+ */
+export const COLLAB_DELIVERY_OBSERVATION_REASONS = [
+  /** A working turn started on the same terminal; not attributable to this pointer. */
+  'turn_activity_observed',
+  /** No turn started inside the window; a queued or untyped pointer looks the same. */
+  'no_turn_activity_observed',
+  /** The transport did not report the terminal identity or state counter. */
+  'signals_unavailable',
+  /** The transport outcome does not establish that anything was submitted. */
+  'submission_not_established',
+  /** The recipient was already mid-turn when the pointer arrived. */
+  'recipient_already_working',
+  /** The recipient's agent was blocked; a blocked UI is never answered. */
+  'recipient_blocked',
+  /** The recipient reported no usable agent state. */
+  'recipient_state_unknown',
+  /** The recipient was launching or not ready for input. */
+  'recipient_not_ready',
+  /** The named recipient is no longer in the roster. */
+  'target_missing',
+  /** The name now resolves to a different pane or harness. */
+  'target_identity_changed',
+  /** The reported native session is not the one the message targets. */
+  'target_session_changed',
+  /** The terminal identity changed, so the program was restarted. */
+  'terminal_changed',
+  /** A sample carried a state without the counters needed to compare it. */
+  'evidence_incomplete',
+  /** A probe failed; receipt stays unproven. */
+  'probe_failed',
+  /** The window ended before the planned samples were collected. */
+  'window_expired',
+  /** The state moved, but not into a working turn (for example blocked). */
+  'recipient_state_changed',
+  /** Counters moved without an observed turn; a redraw is not proof. */
+  'unattributed_activity',
+] as const;
+export const collabDeliveryObservationReasonSchema = z.enum(
+  COLLAB_DELIVERY_OBSERVATION_REASONS,
+);
+export type CollabDeliveryObservationReason = z.infer<
+  typeof collabDeliveryObservationReasonSchema
+>;
+
+/**
+ * One transport reading of the recipient. Null means the transport did not
+ * report that signal for this reading; it is never treated as zero or false.
+ */
+export const collabDeliveryAgentStateSchema = z.strictObject({
+  observed_at: z.string().min(1),
+  agent_status: z.string().min(1).max(64),
+  terminal_id: z.string().min(1).max(256).nullable(),
+  state_change_seq: z.number().int().min(0).nullable(),
+  completion_seq: z.number().int().min(0).nullable(),
+  revision: z.number().int().min(0).nullable(),
+  interactive_ready: z.boolean().nullable(),
+  launch_pending: z.boolean().nullable(),
+});
+export type CollabDeliveryAgentState = z.infer<
+  typeof collabDeliveryAgentStateSchema
+>;
+
+/**
+ * Receipt evidence recorded beside a delivery attempt. It is an observation, not
+ * a status: `submitted` keeps its meaning whatever the receipt says, including
+ * the `unknown` every roster-signal observation records.
+ */
+export const collabDeliveryObservationSchema = z.strictObject({
+  schema: z.literal(COLLAB_DELIVERY_OBSERVATION_SCHEMA),
+  receipt: collabDeliveryReceiptSchema,
+  reason: collabDeliveryObservationReasonSchema,
+  /** Which transport signal family produced the receipt. */
+  source: z.literal('herdr-agent-state'),
+  started_at: z.string().min(1),
+  ended_at: z.string().min(1),
+  window_ms: z.number().int().min(0).max(600_000),
+  samples: z.number().int().min(0).max(8),
+  before: collabDeliveryAgentStateSchema,
+  after: collabDeliveryAgentStateSchema.nullable(),
+  detail: z.string().max(1024).nullable(),
+});
+export type CollabDeliveryObservation = z.infer<
+  typeof collabDeliveryObservationSchema
+>;
+
 export const collabDeliveryAttemptSchema = z.strictObject({
   at: z.string().min(1),
   status: collabDeliveryStatusSchema,
   detail: z.string().max(4096).nullable(),
   /** Present for attempts reserved after the C0 repair; older evidence omits it. */
   reservation_id: z.string().min(1).max(64).optional(),
+  /**
+   * Present for attempts recorded after #20; older evidence omits it, and an
+   * absent observation is unobserved, never retroactively `unknown`-rewritten.
+   */
+  observation: collabDeliveryObservationSchema.optional(),
 });
 export type CollabDeliveryAttempt = z.infer<typeof collabDeliveryAttemptSchema>;
-
 /**
  * Optional caller-routing evidence. Selecting a pane (current or explicit) is
  * routing, not sender authentication: process affiliation is not established.

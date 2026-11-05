@@ -3171,7 +3171,14 @@ function commitEffectIntent(
     : { ok: false, code: outcome.reason, message: outcome.reason };
 }
 
-function guardedBootstrapTransport(
+/**
+ * Wraps the delivery transport used by the visible bootstrap. The guard owns the
+ * prompt: it refuses an unexpected recipient, a task it cannot reopen and a
+ * namespace that changed, and journals the intent before dispatching. It owns
+ * nothing else — `verifyCaller` and `list` (including its per-call bound) are
+ * forwarded unchanged.
+ */
+export function guardedBootstrapTransport(
   context: BootstrapContext,
   reservationId: string,
   now: () => number,
@@ -3181,7 +3188,9 @@ function guardedBootstrapTransport(
   return {
     id: `${underlying.id}-visible-bootstrap-guard`,
     verifyCaller: (options) => underlying.verifyCaller(options),
-    list: () => underlying.list(),
+    // Forward the read options unchanged: the guard wraps delivery authority,
+    // never the caller's own bound on a roster read.
+    list: (options) => underlying.list(options),
     prompt: async (agent, text, registered) => {
       if (agent !== context.herdrAgent)
         return {
