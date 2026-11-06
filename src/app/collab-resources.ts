@@ -188,7 +188,12 @@ export async function planResourceRequest(
       task_id: opened.value.record.task_id,
       domain_root: opened.value.domainRoot,
       request: requestSummary(request),
-      limits: ['plan_validates_request_and_namespace_only', 'no_reservation'],
+      limits: [
+        request.action === 'claim'
+          ? 'plan_validates_request_namespace_and_claim_participation'
+          : 'plan_validates_request_and_namespace_only',
+        'no_reservation',
+      ],
     },
   };
 }
