@@ -8,6 +8,7 @@ import {
 import fs from 'node:fs';
 import { emptyResult, type WorkflowResult } from './types.js';
 import { projectInterruption, type Interruption } from './interruption.js';
+import { projectReviewerAdvice } from './reviewer-advice.js';
 import { findAttempt } from '../../collab/lifecycle.js';
 import { nativeObservationAgeSummary } from '../../collab/native-observation.js';
 import { projectAttemptUsage } from '../../usage/attempt-usage.js';
@@ -232,6 +233,7 @@ export async function inspectWorkflow(
       coordinator: record.coordinator,
       limit: limit ?? null,
       context_advisory: advice,
+      reviewer_advice: await projectReviewerAdvice(task, undefined, limit),
       attempt_usage: {
         ...attemptUsage,
         omitted: attemptUsage.omitted + attempts.total - attempts.items.length,

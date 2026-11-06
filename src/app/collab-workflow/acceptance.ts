@@ -18,6 +18,10 @@ import {
   type PaneReclaimOptions,
 } from '../collab-pane-reclaim.js';
 import { currentBindingFile, unadoptedWarning } from './binding-generation.js';
+import {
+  projectReviewerAdvice,
+  type ReviewerAdvice,
+} from './reviewer-advice.js';
 import { validateWorkPlan } from '../../collab/work-plan.js';
 import {
   type WorkflowCaller,
@@ -54,6 +58,7 @@ export interface AcceptDetail {
   readonly report_digest: string;
   readonly pane_reclaim: readonly PaneReclaimEntry[];
   readonly delivery_fallback?: AcceptDeliveryFallback;
+  readonly reviewer_advice?: ReviewerAdvice;
 }
 
 /**
@@ -495,6 +500,14 @@ export async function applyAccept(
       report_message_id: report.message_id,
       report_digest: reportDigest,
       pane_reclaim: paneReclaim,
+      ...(writing
+        ? {}
+        : {
+            reviewer_advice: await projectReviewerAdvice(
+              task,
+              report.message_id,
+            ),
+          }),
       ...(deliveryFallback === null
         ? {}
         : { delivery_fallback: deliveryFallback }),

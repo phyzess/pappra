@@ -102,16 +102,17 @@ test('owned native delivery accepts registered pointers and refuses forged, stal
   );
   assert.equal(inputs.length, 0);
   pending = false;
-  const read = fs.readFileSync;
+  const open = fs.openSync;
   let committed = false;
-  const readMock = t.mock.method(
+  const openMock = t.mock.method(
     fs,
-    'readFileSync',
+    'openSync',
     (
-      file: Parameters<typeof fs.readFileSync>[0],
-      options?: Parameters<typeof fs.readFileSync>[1],
+      file: Parameters<typeof fs.openSync>[0],
+      flags: Parameters<typeof fs.openSync>[1],
+      mode?: Parameters<typeof fs.openSync>[2],
     ) => {
-      const result = options === undefined ? read(file) : read(file, options);
+      const descriptor = open(file, flags, mode);
       if (file === registered.value.file && !committed) {
         committed = true;
         assert.equal(
@@ -127,14 +128,14 @@ test('owned native delivery accepts registered pointers and refuses forged, stal
           true,
         );
       }
-      return result;
+      return descriptor;
     },
   );
   assert.equal(
     (await deliverManagedPiMessage(runtime, request, authorization)).ok,
     true,
   );
-  readMock.mock.restore();
+  openMock.mock.restore();
   assert.equal(committed, true);
   assert.equal(inputs.length, 1);
   assert.match(inputs[0]!, /COLLAB_MESSAGE task=delivery type=STATUS_QUERY/);

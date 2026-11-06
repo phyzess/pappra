@@ -8,6 +8,7 @@ import {
 import { transitionAttempt } from '../../collab/lifecycle.js';
 import { isAssignment } from '../../collab/contracts.js';
 import { nativeObservationAgeEvidence } from '../../collab/native-observation.js';
+import { validateReviewAttachment } from '../../collab/reviewer-report.js';
 import { captureAttemptUsage } from '../../usage/attempt-usage.js';
 import { releaseClaim } from '../../collab/resources.js';
 import {
@@ -495,6 +496,21 @@ export async function applyParticipant(
       };
     }
     const resolved = resolveOutputs(declaration.outputs, claims);
+    if (declaration.review !== undefined) {
+      const attachment = validateReviewAttachment(
+        record,
+        attempt,
+        declaration.review,
+      );
+      if (!attachment.ok)
+        blockers.push({
+          code: attachment.code,
+          detail:
+            'Structured findings require the current digest-pinned reviewer assignment.',
+          next_action:
+            'Check the sealed reviewer assignment and review declaration.',
+        });
+    }
     blockers.push(...resolved.blockers);
     if (blockers.length === 0) {
       const clock = options.clock ?? Date.now();
@@ -517,6 +533,9 @@ export async function applyParticipant(
           summary: declaration.summary,
           blockers: [...declaration.blockers],
           outputs: resolved.outputs,
+          ...(declaration.review === undefined
+            ? {}
+            : { review: declaration.review }),
           ...(usage === undefined ? {} : { usage_observation: usage }),
         }),
       )
@@ -538,6 +557,9 @@ export async function applyParticipant(
             summary: declaration.summary,
             blockers: [...declaration.blockers],
             outputs: resolved.outputs.map((item) => ({ ...item })),
+            ...(declaration.review === undefined
+              ? {}
+              : { review: declaration.review }),
             // `applyMessage` admits the result with this revision; omitting it makes a pinned
             // assignment classify the report as stale instead of completing it.
             input_revision:
