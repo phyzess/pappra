@@ -16,12 +16,20 @@ the workspace menu described in the [operations reference](operations.md).
 Without a terminal, or with `--json` or `--no-interactive`, a bare `pappra`
 prints the usage summary and exits `0`, so scripts see no change.
 
-A few families carry their own flag contracts and are routed in `run.ts` before
-the global option parser ever runs: `docs review` (its pinned expected digest is
-not a global flag), `collab workflow` (request documents are validated against
-schemas, not global flags) and `context` (`--session`, `--advise-percent`). The
-`collab` actions below are the ones that reach the collaboration router through
-the parsed option set.
+## Top-level command families
+
+`src/cli/run.ts` owns global parsing, shared option guards, help and command
+selection. For command-specific changes, start with the matching family:
+
+| Module under `src/cli/routing/` | Commands |
+| --- | --- |
+| `direct.ts` | `runtime archive`, `repair`, `session`, `docs review`, `collab workflow`, `context`, before global parsing |
+| `workspace.ts` | `docs`, `doctor`, `task`, `onboard`, `init` |
+| `continuity.ts` | `checkpoint`, `resume` |
+| `services.ts` | `mcp`, `runtime`, `code`, `host` |
+
+The `collab` actions below reach the collaboration router through the global
+option set. `tests/cli-routing.test.ts` exercises routing through public `runCli`.
 
 ## Layout
 
