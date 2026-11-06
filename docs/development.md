@@ -46,6 +46,29 @@ module set, the acyclic layering, the nineteen runtime exports, the ten-check
 order and a cold clone that runs the entry with no `dist/`, `.build/` or
 `node_modules/`.
 
+## Product source entry points
+
+The contributor changing an entry point owns the corresponding row in this
+map. Start with the [CLI routing guide](cli-routing.md) for argv and command
+selection. Follow the row into the module that owns the behavior.
+
+| Task                                   | Start here                                                                                                                                          | Check the contract here                                                                                                                  |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| Document scan and Git ignore filtering | [scan orchestration](../src/knowledge/scan.ts), then [discovery](../src/workspace/documents.ts) and [Git adapter](../src/infra/git.ts)              | [knowledge service tests](../tests/knowledge/service.test.ts)                                                                            |
+| Resource claim and release plans       | [resource CLI handler](../src/cli/commands/collaboration-resources.ts), then [plan and apply](../src/app/collab-resources.ts)                       | [resource CLI tests](../tests/collab/task-resources-cli.test.ts)                                                                         |
+| Retry after a dispatch refusal         | [typed workflow dispatch](../src/app/collab-workflow/dispatch.ts) and [work-run](../src/app/collab-work-execution.ts) have separate intent handling | [workflow retry tests](../tests/collab/workflow-dispatch-no-effect.test.ts) and [work-run tests](../tests/collab/work-execution.test.ts) |
+| Installation-state format and repair   | [file readers](../src/install/ownership.ts), then [runtime inspection](../src/install/runtime.ts) or [repair](../src/install/repair.ts)             | [install schema version tests](../tests/install/schema-version.test.ts)                                                                  |
+
+On a fresh worktree, run the repository's CodeGraph status and explore query
+as described in [AGENTS.md](../AGENTS.md). If the result is missing, stale or
+clipped, search the mapped owner and its tests in the current checkout. For
+example, search for `check-ignore` in `src/infra/git.ts` when following an
+ignore timeout. Use the file and its callers to confirm the current behavior.
+
+The map is maintained with these entry points. Generation, a coverage guard
+and whole-tree file summaries are deferred until representative tasks show
+navigation gaps this map cannot address.
+
 ## Admission comes first
 
 `dev:setup` writes nothing and starts no mutating child until the root is
