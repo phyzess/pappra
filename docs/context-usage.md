@@ -23,7 +23,36 @@ reading process.
 | Host | Source | What is read |
 | --- | --- | --- |
 | Claude Code | status-line beacon | `context_window.used_percentage` from the status-line payload, rounded to one decimal. It is null before the first response, which is not 0%. |
-| Codex | shared app-server daemon | `last.totalTokens / modelContextWindow` from the replayed `thread/tokenUsage/updated`. `total` is cumulative spend and is never used. |
+| Codex | shared app-server daemon | `last.totalTokens / modelContextWindow` from the replayed `thread/tokenUsage/updated`. `total` is a cumulative token counter that this occupancy calculation does not use. |
+
+## Attempt accounting design
+
+Attempt accounting reads completed native evidence registered for the exact
+attempt. It projects counts into workflow inspection and the advisory resume
+packet. Evidence references must resolve inside the task's private evidence
+scope and match their registered digests. The reader validates the native
+identity and the attempt boundary, caps work across attempts, and exposes
+only counters and a typed reason when evidence is unavailable. These reads
+do not launch a model or participate in execution admission.
+
+| Host | Native source | Attribution and cache accounting |
+| --- | --- | --- |
+| Codex | Rollout `event_msg` usage snapshots and native turn boundaries | Subtract the proven starting cumulative snapshot from the final snapshot of the attempt's completed turns. Input already includes cache reads. Cache writes are a native breakdown when both snapshots expose it. |
+| Claude Code | Captured `stream-json` terminal result and its execution envelope | Use the completed invocation's `usage`, with its session identity and invocation window checked against the attempt. Add `cache_creation_input_tokens` and `cache_read_input_tokens` to `input_tokens`. |
+| Pi | Persisted session JSONL usage rows | Sum usage attributable to the attempt's completed work. Add `cacheRead` and `cacheWrite` to native `input`; count each observed row once. |
+
+The normalized input count includes cache reads once. The total adds output
+to that inclusive input count. These values describe native token counters,
+with publication at a completed turn or invocation boundary. Activity still
+in flight can appear later. Missing, ambiguous or out-of-budget evidence is
+`unavailable` with a reason. The counters do not establish monetary cost.
+
+Codex's `turn.completed.usage` can contain cumulative thread counters,
+including usage from earlier work in a resumed thread. The terminal count
+alone cannot establish an attempt delta. See the
+[Codex JSONL event processor](https://github.com/openai/codex/blob/main/codex-rs/exec/src/event_processor_with_jsonl_output.rs),
+the [Claude usage fields](https://platform.claude.com/docs/en/api/typescript/messages)
+and the [Pi session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md).
 
 ## Reading it
 
