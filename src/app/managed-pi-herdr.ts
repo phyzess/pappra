@@ -1,3 +1,4 @@
+import { object } from '../infra/validation.js';
 import { runHerdrCommand, type CommandRunner } from './collab-notify.js';
 import type { ManagedPiSdkSessionController } from '../hosts/pi/managed-sdk-session.js';
 
@@ -5,9 +6,6 @@ type Runtime = Pick<
   ManagedPiSdkSessionController,
   'snapshot' | 'observe' | 'subscribe' | 'isDisposed'
 >;
-const object = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
-
 /** Publish only this process's owned native SDK runtime; publication is not task authority. */
 export async function publishManagedPiHerdrIdentity(
   runtime: Runtime,

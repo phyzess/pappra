@@ -1,3 +1,4 @@
+import { object } from '../infra/validation.js';
 import { findAttempt } from '../collab/lifecycle.js';
 import {
   coordinatorLineage,
@@ -80,9 +81,7 @@ function text(value: unknown): string | null {
 
 function bootstrapOf(entry: LaunchReservation): Record<string, unknown> | null {
   const value = (entry as { bootstrap?: unknown }).bootstrap;
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+  return object(value) ? value : null;
 }
 
 function ownedPane(bootstrap: Record<string, unknown>): OwnedPane | null {

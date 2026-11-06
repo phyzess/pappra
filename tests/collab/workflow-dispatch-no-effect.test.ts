@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
@@ -279,6 +279,84 @@ test('binding_sender_missing records no-effect and a corrected binding dispatche
     );
     assert.equal(existsSync(`${f.outcomeFile}.lock`), false);
   } finally {
+    f.domain.cleanup();
+  }
+});
+
+test('a dispatch staging collision preserves foreign bytes and fences the retry', async () => {
+  const f = await fixture('dispatch-outcome-collision');
+  const live = liveAdapter(f, [{ status: 'submitted', detail: null }]);
+  const open = fs.openSync;
+  try {
+    removeCoordinatorBinding(f);
+    const first = await applyDispatch(f.request, { adapter: live.adapter });
+    assert.equal(first.ok, false);
+    assert.equal(live.observations[0]?.effect, 'none');
+    const before = readFileSync(f.outcomeFile);
+    writeFileSync(f.bindingFile, f.originalBinding);
+    let collision: string | undefined;
+    fs.openSync = (file, flags, mode) => {
+      if (String(file).startsWith(`${f.outcomeFile}.tmp-`) && flags === 'wx') {
+        assert.equal(collision, undefined);
+        collision = String(file);
+        const foreign = open(file, 'wx', 0o600);
+        try {
+          writeFileSync(foreign, 'foreign bytes');
+        } finally {
+          fs.closeSync(foreign);
+        }
+      }
+      return open(file, flags, mode);
+    };
+    const second = await applyDispatch(f.request, { adapter: live.adapter });
+    assert.ok(
+      second.blockers.some(({ code }) => code === 'dispatch_outcome_unsafe'),
+    );
+    assert.equal(live.promptCalls(), 0);
+    assert.deepEqual(readFileSync(f.outcomeFile), before);
+    assert.ok(collision);
+    assert.ok(existsSync(collision));
+    assert.equal(readFileSync(collision, 'utf8'), 'foreign bytes');
+  } finally {
+    fs.openSync = open;
+    f.domain.cleanup();
+  }
+});
+
+test('a changed dispatch outcome survives the final digest check and fences the retry', async () => {
+  const f = await fixture('dispatch-outcome-changed');
+  const live = liveAdapter(f, [{ status: 'submitted', detail: null }]);
+  const open = fs.openSync;
+  try {
+    removeCoordinatorBinding(f);
+    const first = await applyDispatch(f.request, { adapter: live.adapter });
+    assert.equal(first.ok, false);
+    assert.equal(live.observations[0]?.effect, 'none');
+    const replacement = `${readFileSync(f.outcomeFile, 'utf8')}\n`;
+    writeFileSync(f.bindingFile, f.originalBinding);
+    let staged: string | undefined;
+    fs.openSync = (file, flags, mode) => {
+      const descriptor = open(file, flags, mode);
+      if (String(file).startsWith(`${f.outcomeFile}.tmp-`) && flags === 'wx') {
+        staged = String(file);
+        writeFileSync(f.outcomeFile, replacement);
+      }
+      return descriptor;
+    };
+    const second = await applyDispatch(f.request, { adapter: live.adapter });
+    assert.ok(
+      second.blockers.some(
+        ({ code, detail }) =>
+          code === 'dispatch_outcome_unsafe' &&
+          detail.includes('outcome_changed_before_publish'),
+      ),
+    );
+    assert.equal(live.promptCalls(), 0);
+    assert.equal(readFileSync(f.outcomeFile, 'utf8'), replacement);
+    assert.ok(staged);
+    assert.equal(existsSync(staged), false);
+  } finally {
+    fs.openSync = open;
     f.domain.cleanup();
   }
 });

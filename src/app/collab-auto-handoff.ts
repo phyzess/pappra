@@ -1,3 +1,4 @@
+import { object } from '../infra/validation.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -107,10 +108,6 @@ export interface AutomaticHandoffResult {
   readonly transition: SessionTransitionReport | null;
   /** Exact revalidated request used for the guarded transition, including admitted evidence. */
   readonly request?: SessionTransitionRequest;
-}
-
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function entries(record: TaskRecord): Entry[] {

@@ -5,6 +5,7 @@ import {
 } from '../collab-pane-reclaim.js';
 import path from 'node:path';
 import fs, { lstatSync } from 'node:fs';
+import { replacePrivateFile } from '../../infra/private-file.js';
 import {
   isAssignment,
   isCard,
@@ -185,33 +186,21 @@ function writeDispatchOutcome(
   const bytes = `${JSON.stringify(outcome, null, 2)}\n`;
   const digest = digestText(bytes);
   const temporary = `${file}.tmp-${process.pid}-${Date.now()}`;
-  let handle: number | null = null;
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    handle = fs.openSync(temporary, 'wx', 0o600);
-    fs.writeSync(handle, bytes);
-    fs.fsyncSync(handle);
-    fs.closeSync(handle);
-    handle = null;
-    if (
-      assertRealChain(taskRoot, file) !== null ||
-      !outcomeDigestMatches(file, expectedDigest)
-    )
+    const published = replacePrivateFile(file, temporary, bytes, {
+      beforePublish: () =>
+        assertRealChain(taskRoot, file) === null &&
+        outcomeDigestMatches(file, expectedDigest),
+    });
+    if (!published)
       return { ok: false, detail: 'outcome_changed_before_publish' };
-    fs.renameSync(temporary, file);
     return { ok: true, digest };
   } catch (error) {
     return {
       ok: false,
       detail: error instanceof Error ? error.message : String(error),
     };
-  } finally {
-    if (handle !== null) fs.closeSync(handle);
-    try {
-      fs.unlinkSync(temporary);
-    } catch {
-      // The temporary was renamed or was never created; unknown files are not removed.
-    }
   }
 }
 

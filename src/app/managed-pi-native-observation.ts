@@ -1,3 +1,4 @@
+import { object } from '../infra/validation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readBoundedFile } from './bounded-file.js';
@@ -5,9 +6,6 @@ import { openTaskStore, assertTaskStoreCurrent } from './collab-task-store.js';
 import { requestManagedPiControl } from '../hosts/pi/managed-session.js';
 import { managedPiSocketPeerPid } from './managed-pi-repair-stop.js';
 import type { CommandRunner } from './collab-notify.js';
-
-const object = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 export interface ManagedPiNativeObservation {
   readonly descriptorFile: string;

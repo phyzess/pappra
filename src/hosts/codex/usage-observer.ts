@@ -1,3 +1,4 @@
+import { object as isRecord } from '../../infra/validation.js';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
@@ -74,9 +75,6 @@ const CLIENT_INFO = {
 const HOST_VERSION = /codex-tui\/([0-9A-Za-z.+-]+)/;
 
 type Phase = 'upgrade' | 'initialize' | 'resume' | 'awaiting_usage';
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
 
 const clampDetail = (value: string): string =>
   value.length > MAX_DETAIL_LENGTH ? value.slice(0, MAX_DETAIL_LENGTH) : value;

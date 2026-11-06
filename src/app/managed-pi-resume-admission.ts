@@ -1,3 +1,4 @@
+import { object } from '../infra/validation.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -77,8 +78,6 @@ const RESERVATIONS = 'managed_pi_resume_admissions';
 const REGISTRY = 'managed_pi_runtime_registry';
 const MAX_JOURNAL_BYTES = 32 * 1024 * 1024;
 const MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024;
-const object = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 const digest = (value: string) =>
   crypto.createHash('sha256').update(value).digest('hex');
 const fail = (code: string): never => {

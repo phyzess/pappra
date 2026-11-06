@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { object as isPlainObject } from '../infra/validation.js';
 import {
   acquireInstallLock,
   ensureStatePathBoundary,
@@ -112,10 +113,6 @@ function failure(
     nextAction,
     ...(details === undefined ? {} : { details }),
   };
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function safeAlias(value: unknown): value is string {

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { object as isObject } from '../infra/validation.js';
 import {
   buildMessage,
   contentDigest,
@@ -232,10 +233,6 @@ const DISPATCH_RECONCILIATION_NEXT_ACTION =
   'Inspect current delivery and native evidence, reconcile through the existing supported flow, and create an explicit repair/new attempt if needed. Do not delete the intent or treat notification as consumption, execution, or acceptance.';
 function sha256(value: string): string {
   return `sha256:${createHash('sha256').update(value).digest('hex')}`;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseJson(text: string): unknown {

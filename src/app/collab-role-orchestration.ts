@@ -1,4 +1,5 @@
 import { object as isRecord } from '../infra/validation.js';
+import { replacePrivateFile } from '../infra/private-file.js';
 import { createHash, randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -218,28 +219,9 @@ function withJournalLock<T>(file: string, action: () => T): T | null {
 
 function writeJournal(file: string, journal: Journal): void {
   const temporary = `${file}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`;
-  let descriptor: number | null = null;
-  try {
-    descriptor = fs.openSync(temporary, 'wx', 0o600);
-    fs.writeFileSync(descriptor, `${JSON.stringify(journal)}\n`, 'utf8');
-    fs.fsyncSync(descriptor);
-    fs.closeSync(descriptor);
-    descriptor = null;
-    fs.renameSync(temporary, file);
-    const parent = fs.openSync(path.dirname(file), 'r');
-    try {
-      fs.fsyncSync(parent);
-    } finally {
-      fs.closeSync(parent);
-    }
-  } finally {
-    if (descriptor !== null) fs.closeSync(descriptor);
-    try {
-      fs.unlinkSync(temporary);
-    } catch {
-      // The rename already consumed it or cleanup is best effort.
-    }
-  }
+  replacePrivateFile(file, temporary, `${JSON.stringify(journal)}\n`, {
+    syncParent: true,
+  });
 }
 
 type Reservation =
