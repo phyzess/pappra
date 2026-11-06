@@ -1,3 +1,4 @@
+import type { reconciliationStatus } from '../../schemas/reconciliation.js';
 import type { Outcome } from '../../schemas/outcome.js';
 import type { WorkflowFailure } from '../../schemas/collab-workflow.js';
 import {
@@ -42,7 +43,7 @@ export type WorkflowStatus =
   | 'applied'
   | 'blocked'
   | 'refused'
-  | 'needs-reconciliation'
+  | typeof reconciliationStatus.aggregate
   | 'invalid'
   // `await` only. `decided`: a valid coordinator accept decision was observed in the persisted
   // record (`ok`). `timeout`: the bounded wait ended without one (not `ok`, so the CLI exits

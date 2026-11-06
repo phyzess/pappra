@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../schemas/reconciliation.js';
 import { readManagedSourceAssignment } from './managed-pi-source-admission.js';
 import { findAttempt } from '../collab/lifecycle.js';
 import * as rollover from '../collab/rollover.js';
@@ -1660,7 +1661,7 @@ async function applyFirstWorkAndRetirement(
       return failureReport(
         'apply',
         request,
-        'reconcile_required',
+        reconciliationStatus.native,
         'successor_route_binding_receipt_missing',
         'The route binding changed before first-work recording.',
         'Reconcile the successor-only binding and journal before proceeding.',

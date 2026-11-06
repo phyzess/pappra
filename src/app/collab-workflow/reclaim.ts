@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import type { WorkflowReclaimRequest } from '../../schemas/collab-workflow.js';
 import {
   reclaimOwnedPanes,
@@ -79,7 +80,11 @@ export async function applyReclaim(
   );
   return {
     ...common,
-    status: failed ? 'needs-reconciliation' : writing ? 'applied' : 'planned',
+    status: failed
+      ? reconciliationStatus.aggregate
+      : writing
+        ? 'applied'
+        : 'planned',
     ok: !failed,
     warnings: entries
       .filter((entry) => entry.state === 'skipped')

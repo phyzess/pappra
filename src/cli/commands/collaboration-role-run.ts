@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import {
   loadRoleRunRequest,
   watchRoleOrchestration,
@@ -98,7 +99,7 @@ export async function runCollaborationRoleRunCommand(
     emit(report);
     return [
       'blocked',
-      'reconciliation-required',
+      reconciliationStatus.workOrRole,
       'repair-required',
       'repair-exhausted',
       'budget-exhausted',

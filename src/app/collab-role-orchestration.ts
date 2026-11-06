@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../schemas/reconciliation.js';
 import { object as isRecord } from '../infra/validation.js';
 import { replacePrivateFile } from '../infra/private-file.js';
 import { createHash, randomBytes } from 'node:crypto';
@@ -68,7 +69,7 @@ export type RoleOrchestrationStatus =
   | 'repair-required'
   | 'repair-exhausted'
   | 'blocked'
-  | 'reconciliation-required'
+  | typeof reconciliationStatus.workOrRole
   | 'budget-exhausted'
   | 'duplicate';
 
@@ -584,7 +585,9 @@ export async function tickRoleOrchestration(
   )
     return failure(
       request,
-      initial.status === 'incomplete' ? 'reconciliation-required' : 'blocked',
+      initial.status === 'incomplete'
+        ? reconciliationStatus.workOrRole
+        : 'blocked',
       'authoritative_plan_inspection_unavailable_or_mismatched',
     );
   const initialReady = [
@@ -623,7 +626,7 @@ export async function tickRoleOrchestration(
   if (reservation.kind === 'locked')
     return failure(
       request,
-      'reconciliation-required',
+      reconciliationStatus.workOrRole,
       'journal_lock_present_or_busy',
     );
   if (reservation.kind === 'budget')
@@ -654,7 +657,7 @@ export async function tickRoleOrchestration(
     const saved = completeTick(request, requestDigest, status);
     return result(
       request,
-      saved ? status : 'reconciliation-required',
+      saved ? status : reconciliationStatus.workOrRole,
       round,
       reservation.actions,
       {
@@ -735,7 +738,7 @@ export async function tickRoleOrchestration(
       planFile: request.execution.plan_file,
     });
   } catch {
-    return finish('reconciliation-required', {
+    return finish(reconciliationStatus.workOrRole, {
       diagnostics: ['authoritative_inspection_failed_after_tick_reservation'],
     });
   }
@@ -748,7 +751,9 @@ export async function tickRoleOrchestration(
     )
   )
     return finish(
-      current.status === 'incomplete' ? 'reconciliation-required' : 'blocked',
+      current.status === 'incomplete'
+        ? reconciliationStatus.workOrRole
+        : 'blocked',
       {
         diagnostics: ['plan_or_authoritative_evidence_changed'],
       },
@@ -758,7 +763,7 @@ export async function tickRoleOrchestration(
     return finish('accepted', { aggregate });
   if (aggregate.rejected_nodes.length > 0) return repairRejected(aggregate);
   if (aggregate.outcome === 'unknown' || aggregate.outcome === 'missing')
-    return finish('reconciliation-required', {
+    return finish(reconciliationStatus.workOrRole, {
       aggregate,
       diagnostics: ['authoritative_evidence_incomplete_or_uncertain'],
     });
@@ -827,7 +832,7 @@ export async function tickRoleOrchestration(
     // this event is never replayed because a native outcome may be unknown.
     return result(
       request,
-      'reconciliation-required',
+      reconciliationStatus.workOrRole,
       round,
       reservation.actions,
       {
@@ -844,7 +849,7 @@ export async function tickRoleOrchestration(
       planFile: request.execution.plan_file,
     });
   } catch {
-    return finish('reconciliation-required', {
+    return finish(reconciliationStatus.workOrRole, {
       aggregate,
       execution,
       diagnostics: ['post_execution_inspection_failed'],
@@ -858,7 +863,7 @@ export async function tickRoleOrchestration(
       request.execution.plan_file,
     )
   )
-    return finish('reconciliation-required', {
+    return finish(reconciliationStatus.workOrRole, {
       aggregate,
       execution,
       diagnostics: ['post_execution_evidence_unavailable_or_mismatched'],
@@ -868,8 +873,8 @@ export async function tickRoleOrchestration(
     return finish('accepted', { aggregate: finalAggregate, execution });
   if (finalAggregate.rejected_nodes.length > 0)
     return repairRejected(finalAggregate, execution);
-  if (execution.status === 'needs-reconciliation')
-    return finish('reconciliation-required', {
+  if (execution.status === reconciliationStatus.aggregate)
+    return finish(reconciliationStatus.workOrRole, {
       aggregate: finalAggregate,
       execution,
       diagnostics: ['work_execution_requires_reconciliation'],

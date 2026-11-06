@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import path from 'node:path';
 import { canonicalJson } from '../../collab/envelope.js';
 import type { LaunchReservation, TaskRecord } from '../../collab/types.js';
@@ -200,7 +201,7 @@ type RouteBindingEnsureResult =
 function routeBindingFailure(
   context: TransitionContext,
   task: OpenedTaskStore,
-  status: 'needs_input' | 'reconcile_required' | 'unknown',
+  status: 'needs_input' | typeof reconciliationStatus.native | 'unknown',
   code: string,
   message: string,
   nextAction: string | null,
@@ -292,7 +293,7 @@ async function ensureSuccessorRouteBinding(
       return routeBindingFailure(
         context,
         task,
-        'reconcile_required',
+        reconciliationStatus.native,
         'successor_route_binding_receipt_mismatch',
         'The completed route-binding receipt no longer matches its exact task-local artifact.',
         'Reconcile the binding file and journal; do not overwrite or re-create it.',
@@ -311,7 +312,7 @@ async function ensureSuccessorRouteBinding(
       return routeBindingFailure(
         context,
         task,
-        'reconcile_required',
+        reconciliationStatus.native,
         'successor_route_binding_outcome_unknown',
         'A prior route-binding effect is pending/unknown and its exact artifact is not present for reconciliation.',
         'Inspect the task-local path and journal; never replay an ambiguous write.',
@@ -358,7 +359,7 @@ async function ensureSuccessorRouteBinding(
     return routeBindingFailure(
       context,
       task,
-      intent.kind === 'invalid' ? 'needs_input' : 'reconcile_required',
+      intent.kind === 'invalid' ? 'needs_input' : reconciliationStatus.native,
       intent.code,
       intent.message,
       intent.nextAction,
@@ -409,7 +410,7 @@ async function ensureSuccessorRouteBinding(
     return routeBindingFailure(
       context,
       resultTask,
-      'reconcile_required',
+      reconciliationStatus.native,
       'successor_route_binding_outcome_unknown',
       `The successor route binding write did not return a confirmed result (${written.code}).`,
       'Inspect the exact task-local artifact and journal; do not replay the write blindly.',

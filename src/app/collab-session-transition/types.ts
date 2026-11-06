@@ -1,3 +1,4 @@
+import type { reconciliationStatus } from '../../schemas/reconciliation.js';
 import * as rollover from '../../collab/rollover.js';
 import type {
   FreezeOutcome,
@@ -49,7 +50,7 @@ export type SessionTransitionStatus =
   | 'progressed'
   | 'waiting'
   | 'needs_input'
-  | 'reconcile_required'
+  | typeof reconciliationStatus.native
   | 'unknown'
   | 'invalid';
 export type SessionTransitionStage =

@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../schemas/reconciliation.js';
 import { object as isRecord } from '../infra/validation.js';
 import { createHash } from 'node:crypto';
 import { canonicalJsonDigest } from '../infra/json.js';
@@ -136,7 +137,7 @@ export interface RoleRepairOutcome {
     | 'repaired'
     | 'repair-required'
     | 'repair-exhausted'
-    | 'reconciliation-required';
+    | typeof reconciliationStatus.workOrRole;
   readonly role_plan: RolePlanRequest | null;
   readonly expansion: RolePlanSuccess | null;
   readonly execution: WorkExecutionRequest | null;
@@ -689,7 +690,7 @@ export async function repairRejectedRoleNode(
     !requireTaskLocalFile(request.task_root, request.plan_file)
   )
     return outcome(
-      'reconciliation-required',
+      reconciliationStatus.workOrRole,
       'repair_paths_not_task_local_regular_files',
     );
 
@@ -769,10 +770,16 @@ export async function repairRejectedRoleNode(
 
   const opened = await openTaskStore(request.task_root);
   if (!opened.ok)
-    return outcome('reconciliation-required', 'repair_task_record_unavailable');
+    return outcome(
+      reconciliationStatus.workOrRole,
+      'repair_task_record_unavailable',
+    );
   const current = await assertTaskStoreCurrent(opened.value);
   if (current !== null)
-    return outcome('reconciliation-required', 'repair_task_record_changed');
+    return outcome(
+      reconciliationStatus.workOrRole,
+      'repair_task_record_changed',
+    );
   const record = opened.value.record;
   const coordinator = record.coordinator;
   if (
@@ -809,11 +816,14 @@ export async function repairRejectedRoleNode(
   const authDigest = stableDigest(authorization);
   const journalFile = `${request.journal_file}.repair.json`;
   if (!requireTaskLocalFile(request.task_root, journalFile))
-    return outcome('reconciliation-required', 'repair_journal_path_invalid');
+    return outcome(
+      reconciliationStatus.workOrRole,
+      'repair_journal_path_invalid',
+    );
   const journal = readJournal(journalFile);
   if (!journal)
     return outcome(
-      'reconciliation-required',
+      reconciliationStatus.workOrRole,
       'repair_journal_invalid_or_unreadable',
     );
   let intent = journal.intents.find(
@@ -838,7 +848,7 @@ export async function repairRejectedRoleNode(
           updatedExpansion,
           intent.next_execution,
         )
-      : outcome('reconciliation-required', 'repair_journal_plan_invalid');
+      : outcome(reconciliationStatus.workOrRole, 'repair_journal_plan_invalid');
   }
   if (intent) {
     if (
@@ -850,7 +860,7 @@ export async function repairRejectedRoleNode(
       !sameJson(intent.next_execution, updatedExecution)
     )
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'repair_intent_conflicts_with_current_authority',
       );
   } else {
@@ -881,7 +891,7 @@ export async function repairRejectedRoleNode(
       );
     if (await assertTaskStoreCurrent(opened.value))
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'repair_authority_changed_during_native_stop',
       );
     // Normal commits replace task.json. Revalidate the authority that justified
@@ -904,7 +914,7 @@ export async function repairRejectedRoleNode(
       canonicalJson(currentSource) !== canonicalJson(sourceAttempt)
     )
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'repair_authority_changed_during_native_stop',
       );
     const activeClaims = (afterStop.claims ?? []).filter(
@@ -985,7 +995,10 @@ export async function repairRejectedRoleNode(
     try {
       persistJournal(journalFile, journal);
     } catch {
-      return outcome('reconciliation-required', 'repair_intent_persist_failed');
+      return outcome(
+        reconciliationStatus.workOrRole,
+        'repair_intent_persist_failed',
+      );
     }
   }
 
@@ -1026,7 +1039,7 @@ export async function repairRejectedRoleNode(
         persistJournal(journalFile, journal);
       } catch {
         return outcome(
-          'reconciliation-required',
+          reconciliationStatus.workOrRole,
           'repair_intent_persist_failed',
         );
       }
@@ -1041,7 +1054,7 @@ export async function repairRejectedRoleNode(
       )
     )
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'source_close_protocol_refused',
       );
     intent.state = 'source-closed';
@@ -1049,7 +1062,7 @@ export async function repairRejectedRoleNode(
       persistJournal(journalFile, journal);
     } catch {
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'source_closed_but_repair_journal_update_failed',
       );
     }
@@ -1065,7 +1078,7 @@ export async function repairRejectedRoleNode(
       )
     )
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'source_resource_claim_release_refused',
       );
     intent.state = 'source-claims-released';
@@ -1073,7 +1086,7 @@ export async function repairRejectedRoleNode(
       persistJournal(journalFile, journal);
     } catch {
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'source_claims_released_but_repair_journal_update_failed',
       );
     }
@@ -1081,7 +1094,7 @@ export async function repairRejectedRoleNode(
   if (intent.state === 'source-claims-released') {
     if (!submitIdempotently(request.task_root, intent.assign_message))
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'next_assignment_protocol_refused',
       );
     intent.state = 'assignment-applied';
@@ -1089,7 +1102,7 @@ export async function repairRejectedRoleNode(
       persistJournal(journalFile, journal);
     } catch {
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'assignment_applied_but_repair_journal_update_failed',
       );
     }
@@ -1097,7 +1110,7 @@ export async function repairRejectedRoleNode(
   if (intent.state === 'assignment-applied') {
     if (!acquireNextClaims(request.task_root, authorization))
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'next_attempt_resource_claims_unavailable',
       );
     intent.state = 'next-claims-acquired';
@@ -1105,7 +1118,7 @@ export async function repairRejectedRoleNode(
       persistJournal(journalFile, journal);
     } catch {
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'next_claims_acquired_but_repair_journal_update_failed',
       );
     }
@@ -1115,7 +1128,7 @@ export async function repairRejectedRoleNode(
       !writeUpdatedPlan(request.plan_file, intent.source_plan, intent.next_plan)
     )
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'assignment_applied_but_plan_update_failed',
       );
     intent.state = 'complete';
@@ -1123,7 +1136,7 @@ export async function repairRejectedRoleNode(
       persistJournal(journalFile, journal);
     } catch {
       return outcome(
-        'reconciliation-required',
+        reconciliationStatus.workOrRole,
         'plan_updated_but_repair_journal_update_failed',
       );
     }

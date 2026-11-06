@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../schemas/reconciliation.js';
 import { object } from '../infra/validation.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -90,7 +91,7 @@ interface Entry {
     | 'prepared'
     | 'active'
     | 'complete'
-    | 'reconcile_required';
+    | typeof reconciliationStatus.native;
   request: SessionTransitionRequest | null;
   code: string | null;
 }
@@ -103,7 +104,7 @@ export interface AutomaticHandoffResult {
     | 'progressed'
     | 'complete'
     | 'blocked'
-    | 'reconcile_required';
+    | typeof reconciliationStatus.native;
   readonly code: string | null;
   readonly transition: SessionTransitionReport | null;
   /** Exact revalidated request used for the guarded transition, including admitted evidence. */
@@ -126,7 +127,7 @@ function entries(record: TaskRecord): Entry[] {
           'prepared',
           'active',
           'complete',
-          'reconcile_required',
+          reconciliationStatus.native,
         ].includes(String(row.stage)) &&
         (row.request === null || object(row.request)) &&
         (row.code === null || typeof row.code === 'string'),
@@ -318,10 +319,10 @@ export async function tickAutomaticHandoff(
       return result('blocked', 'automatic_handoff_config_conflict');
     if (
       entry?.stage === 'capture_reserved' ||
-      entry?.stage === 'reconcile_required'
+      entry?.stage === reconciliationStatus.native
     )
       return result(
-        'reconcile_required',
+        reconciliationStatus.native,
         entry.code ?? 'summary_capture_outcome_unknown',
       );
     if (!entry) {
@@ -533,7 +534,10 @@ export async function tickAutomaticHandoff(
       task = await storeEntry(task, entry, false);
     }
     if (!entry.request)
-      return result('reconcile_required', 'automatic_handoff_request_missing');
+      return result(
+        reconciliationStatus.native,
+        'automatic_handoff_request_missing',
+      );
     const request = await transitionEvidence(entry.request);
     prepareManagedHandoffContextReference(request);
     const transition = await applySessionTransition(request, dependencies);
@@ -564,7 +568,7 @@ export async function tickAutomaticHandoff(
           task,
           {
             ...entry,
-            stage: 'reconcile_required',
+            stage: reconciliationStatus.native,
             code: 'summary_or_checkpoint_outcome_unknown',
           },
           false,
@@ -574,7 +578,7 @@ export async function tickAutomaticHandoff(
       }
     }
     return result(
-      'reconcile_required',
+      reconciliationStatus.native,
       error instanceof Error && /^[A-Za-z0-9_-]+$/.test(error.message)
         ? error.message
         : 'automatic_handoff_failed',

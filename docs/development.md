@@ -111,6 +111,31 @@ invoke the next stage directly, preserving the order of guards and effects.
 [Bootstrap tests](../tests/collab/bootstrap-app-cli.test.ts) cover success,
 refusal, cleanup, and reconciliation after an ambiguous native result.
 
+## Collaboration outcomes and reconciliation
+
+Use [`Outcome<T, Rejection>`](../src/schemas/outcome.ts) for a helper that
+returns a value or a typed refusal. Workflow and work-run reports also carry
+the effects already observed, including when the overall invocation needs
+reconciliation. Those reports keep their own status and blocker fields.
+
+Use the matching value in [`reconciliationStatus`](../src/schemas/reconciliation.ts)
+for each established boundary.
+
+| Boundary | Serialized status |
+| --- | --- |
+| Work-run node, role-run or role repair | `reconciliation-required` |
+| Work-run aggregate or typed workflow result | `needs-reconciliation` |
+| Native bootstrap, successor and session transition, including the automatic-handoff journal stage | `reconcile_required` |
+
+Keep the existing spelling when reading or writing a versioned result or
+journal. A blocker code identifies the operation and the reason for the
+refusal. It stays distinct from the status and retains the specific next action
+where one exists.
+
+Use asynchronous I/O for work that can yield safely. Keep the final authority
+or digest check, the durable fence and the guarded effect together where an
+existing lock or recovery contract requires synchronous ordering.
+
 ## Collaboration test fixtures
 
 Use [fake-herdr.ts](../tests/helpers/fake-herdr.ts) for collaboration tests

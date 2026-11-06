@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import path from 'node:path';
 import { object as isRecord } from '../../infra/validation.js';
 import { canonicalJson } from '../../collab/envelope.js';
@@ -553,7 +554,7 @@ async function freezeAndPrepare(
         report: failureReport(
           'apply',
           request,
-          'reconcile_required',
+          reconciliationStatus.native,
           'source_freeze_outcome_unknown',
           'A previous freeze may have taken effect, but the exact token is not confirmed by the current host observation.',
           'Reconcile the in-process controller and journal; do not repeat freeze or continue transfer.',
@@ -664,7 +665,7 @@ async function freezeAndPrepare(
           report: failureReport(
             'apply',
             request,
-            'reconcile_required',
+            reconciliationStatus.native,
             'source_freeze_outcome_unknown',
             'The host freeze call threw and its effect cannot be determined.',
             'Inspect the source controller and task journal; never replay the freeze blindly.',
@@ -720,7 +721,7 @@ async function freezeAndPrepare(
           report: failureReport(
             'apply',
             request,
-            'reconcile_required',
+            reconciliationStatus.native,
             'source_freeze_token_mismatch',
             'The host freeze returned a different token.',
             'Inspect the in-process controller and journal; do not continue or replay.',
@@ -746,7 +747,7 @@ async function freezeAndPrepare(
           report: failureReport(
             'apply',
             request,
-            'reconcile_required',
+            reconciliationStatus.native,
             'post_freeze_observation_unknown',
             'Freeze returned success, but its current host status could not be observed.',
             'Reconcile the freeze and complete quiescence proof before transfer.',
@@ -769,7 +770,7 @@ async function freezeAndPrepare(
           report: failureReport(
             'apply',
             request,
-            'reconcile_required',
+            reconciliationStatus.native,
             'freeze_receipt_not_observed',
             'Freeze returned success but the exact token is absent from the current host status.',
             'Reconcile the source controller; no ownership transfer was attempted.',
@@ -808,7 +809,7 @@ async function freezeAndPrepare(
       report: failureReport(
         'apply',
         request,
-        'reconcile_required',
+        reconciliationStatus.native,
         'source_freeze_receipt_mismatch',
         'The journal says the source is frozen, but the current controller does not expose the exact freeze token.',
         'Reconcile the in-process controller; no transfer is permitted.',
