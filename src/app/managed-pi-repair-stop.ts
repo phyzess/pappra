@@ -1,5 +1,10 @@
 import crypto from 'node:crypto';
 import {
+  replacePrivateFile,
+  writeExclusivePrivateFile,
+} from '../infra/private-file.js';
+import { object } from '../infra/validation.js';
+import {
   captureProcessIdentity,
   type LocalProcessIdentity,
 } from '../infra/process-identity.js';
@@ -25,8 +30,6 @@ import {
 } from './managed-pi-resume-admission.js';
 
 const REGISTRY = 'managed_pi_runtime_registry';
-const object = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 const hash = (value: unknown) =>
   crypto.createHash('sha256').update(canonicalJson(value)).digest('hex');
 
@@ -430,13 +433,7 @@ export function managedPiRepairDependencies(
       const reservation = Buffer.from(
         `${JSON.stringify({ schema: 'pappra/managed-native-stop-journal/1', key, state: 'reserved' })}\n`,
       );
-      const fd = fs.openSync(file, 'wx', 0o600);
-      try {
-        fs.writeFileSync(fd, reservation);
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
+      writeExclusivePrivateFile(file, reservation);
       const response = await control(registered.descriptor_file, 'stop');
       const exit = object(response.exit) ? response.exit : null;
       const final =
@@ -480,21 +477,11 @@ export function managedPiRepairDependencies(
         directory,
         `.stop-${crypto.randomUUID()}.tmp`,
       );
-      try {
-        const output = fs.openSync(temporary, 'wx', 0o600);
-        try {
-          fs.writeFileSync(
-            output,
-            `${JSON.stringify({ schema: 'pappra/managed-native-stop-journal/1', key, state: 'confirmed', receipt, native: exit })}\n`,
-          );
-          fs.fsyncSync(output);
-        } finally {
-          fs.closeSync(output);
-        }
-        fs.renameSync(temporary, file);
-      } finally {
-        if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
-      }
+      replacePrivateFile(
+        file,
+        temporary,
+        `${JSON.stringify({ schema: 'pappra/managed-native-stop-journal/1', key, state: 'confirmed', receipt, native: exit })}\n`,
+      );
       return receipt;
     },
   };

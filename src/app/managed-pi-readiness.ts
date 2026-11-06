@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { replacePrivateFile } from '../infra/private-file.js';
 import { derivePiStartupCard } from './capability-evidence/pi.js';
 import { readBoundedFile } from './bounded-file.js';
 import { runCollaborationPreflight } from './collab-preflight.js';
@@ -68,7 +69,6 @@ export function publishManagedPiReadiness(
     cardFile: config.cardFile,
     preflight,
   });
-  let temporary: string | null = null;
   try {
     const files = [
       config.assignmentFile,
@@ -159,22 +159,19 @@ export function publishManagedPiReadiness(
     const current = pinDirectory(directory);
     if (current.dev !== parent.dev || current.ino !== parent.ino)
       return result('blocked', 'readiness_directory_changed');
-    temporary = path.join(
+    const temporary = path.join(
       directory,
       `.pappra-readiness-${crypto.randomUUID()}.tmp`,
     );
-    const fd = fs.openSync(temporary, 'wx', 0o600);
-    try {
-      fs.writeFileSync(fd, bytes);
-      fs.fsyncSync(fd);
-    } finally {
-      fs.closeSync(fd);
-    }
-    const beforePublish = pinDirectory(directory);
-    if (beforePublish.dev !== parent.dev || beforePublish.ino !== parent.ino)
-      return result('blocked', 'readiness_directory_changed');
-    fs.renameSync(temporary, config.cardFile);
-    temporary = null;
+    const published = replacePrivateFile(config.cardFile, temporary, bytes, {
+      beforePublish: () => {
+        const beforePublish = pinDirectory(directory);
+        return (
+          beforePublish.dev === parent.dev && beforePublish.ino === parent.ino
+        );
+      },
+    });
+    if (!published) return result('blocked', 'readiness_directory_changed');
     const preflight = runCollaborationPreflight({
       assignmentFile: config.assignmentFile,
       capabilitiesFile: config.cardFile,
@@ -182,14 +179,6 @@ export function publishManagedPiReadiness(
     return result('published', 'native_card_published', preflight.status);
   } catch {
     return result('blocked', 'readiness_publication_failed');
-  } finally {
-    if (temporary !== null) {
-      try {
-        fs.unlinkSync(temporary);
-      } catch {
-        /* only this call's temporary file */
-      }
-    }
   }
 }
 

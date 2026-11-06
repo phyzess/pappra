@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
+import { object as isRecord } from '../../infra/validation.js';
 import {
   contentDigest,
   isSafeMessageId,
@@ -168,10 +169,6 @@ export interface AwaitOptions {
   readonly now?: () => number;
   /** Sleep between observations. Tests inject one that advances the virtual clock. */
   readonly sleep?: (milliseconds: number) => Promise<void>;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function readDecisionEnvelope(taskRoot: string, id: string): Message | null {

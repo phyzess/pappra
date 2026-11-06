@@ -1,3 +1,4 @@
+import { object as isRecord } from '../../infra/validation.js';
 import { execFile } from 'node:child_process';
 
 /**
@@ -96,8 +97,6 @@ export function defaultRunner(herdrBin = 'herdr'): HerdrRunner {
     });
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
 const str = (value: unknown): string | null =>
   typeof value === 'string' && value.length > 0 ? value : null;
 

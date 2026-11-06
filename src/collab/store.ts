@@ -19,6 +19,10 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  replacePrivateFile,
+  writeExclusivePrivateFile,
+} from '../infra/private-file.js';
 
 // Task collaboration record. The record is data, never an executable script, and it
 // stays separate from harness session stores and generated registry manifests.
@@ -163,14 +167,7 @@ export function readRecord(taskRoot: string): TaskRecord | null {
 
 function writeJsonAtomic<T>(file: string, value: T): T {
   const temporary = `${file}.tmp-${createNonce()}`;
-  const handle = fs.openSync(temporary, 'wx', 0o600);
-  try {
-    fs.writeSync(handle, `${JSON.stringify(value, null, 2)}\n`);
-    fs.fsyncSync(handle);
-  } finally {
-    fs.closeSync(handle);
-  }
-  fs.renameSync(temporary, file);
+  replacePrivateFile(file, temporary, `${JSON.stringify(value, null, 2)}\n`);
   return value;
 }
 
@@ -504,13 +501,10 @@ export function transact<T = unknown>(
       lockPath(taskRoot),
       `txn-${current.state_revision + 1}-${holder.nonce}.meta.json`,
     );
-    const handle = fs.openSync(transactionFile, 'wx', 0o600);
-    try {
-      fs.writeSync(handle, `${JSON.stringify(next, null, 2)}\n`);
-      fs.fsyncSync(handle);
-    } finally {
-      fs.closeSync(handle);
-    }
+    writeExclusivePrivateFile(
+      transactionFile,
+      `${JSON.stringify(next, null, 2)}\n`,
+    );
     fs.writeFileSync(
       metadataFile,
       `${JSON.stringify(

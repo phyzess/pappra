@@ -1,7 +1,9 @@
+import { object } from '../infra/validation.js';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { replacePrivateFile } from '../infra/private-file.js';
 import { contentDigest, isSafeMessageId } from '../collab/envelope.js';
 import { notificationsDir } from '../collab/store.js';
 import type { Message, TaskRecord } from '../collab/types.js';
@@ -249,9 +251,7 @@ function parsedJson(text: string): unknown {
 }
 
 function record(value: unknown): Record<string, unknown> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
+  return object(value) ? value : null;
 }
 
 function nested(value: unknown, key: string): unknown {
@@ -1217,14 +1217,7 @@ function writeDelivery(
     directory,
     `${path.basename(file)}.tmp-${process.pid}-${Date.now()}`,
   );
-  const handle = fs.openSync(temporary, 'wx', 0o600);
-  try {
-    fs.writeSync(handle, `${JSON.stringify(delivery, null, 2)}\n`);
-    fs.fsyncSync(handle);
-  } finally {
-    fs.closeSync(handle);
-  }
-  fs.renameSync(temporary, file);
+  replacePrivateFile(file, temporary, `${JSON.stringify(delivery, null, 2)}\n`);
 }
 
 function lockPathFor(deliveryFile: string): string {

@@ -1,3 +1,4 @@
+import { object as isRecord } from '../infra/validation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readBoundedFile } from '../infra/bounded-file.js';
@@ -41,8 +42,6 @@ export type UsageReadResult =
         'missing' | 'stale' | 'invalid' | 'unreadable' | 'session_id_invalid';
     };
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
 const isCount = (value: unknown): value is number =>
   typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 const roundTenth = (value: number) => Math.round(value * 10) / 10;

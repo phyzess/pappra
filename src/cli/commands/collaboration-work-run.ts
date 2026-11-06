@@ -1,5 +1,6 @@
 import path from 'node:path';
-import { readBoundedFile } from '../../app/bounded-file.js';
+import { readBoundedFile } from '../../infra/bounded-file.js';
+import { object as isObject } from '../../infra/validation.js';
 import {
   COLLAB_WORK_EXECUTION_SCHEMA,
   runWorkExecution,
@@ -82,10 +83,6 @@ export function parseCollaborationWorkRunArgs(
     } else errors.push(`unknown option: ${String(arg)}`);
   }
   return { options: { requestFile, apply, json }, errors };
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isAbsolute(value: unknown): value is string {

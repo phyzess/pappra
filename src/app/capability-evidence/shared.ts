@@ -1,3 +1,4 @@
+import { object as record } from '../../infra/validation.js';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -62,9 +63,7 @@ export function parseExecution(text: string): Record<string, unknown> {
   }
 }
 
-export function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+export { record };
 
 export function digestOf(bytes: Buffer): string {
   return `sha256:${crypto.createHash('sha256').update(bytes).digest('hex')}`;

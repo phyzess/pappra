@@ -1,3 +1,4 @@
+import { object } from '../infra/validation.js';
 /** Counters from completed native work, with cache reads included exactly once. */
 export interface AttemptTokenCounters {
   readonly input_tokens: number;
@@ -8,9 +9,7 @@ export interface AttemptTokenCounters {
 }
 
 function fields(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : {};
+  return object(value) ? value : {};
 }
 
 function count(value: unknown): number | null {

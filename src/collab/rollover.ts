@@ -1,3 +1,4 @@
+import { object as isObject } from '../infra/validation.js';
 import { createHash } from 'node:crypto';
 import type { Identity, Message, TaskRecord } from './types.js';
 import { canonicalJson, contentDigest, validateEnvelope } from './envelope.js';
@@ -117,9 +118,6 @@ const failure = (
   reason: string,
   detail: Record<string, unknown> = {},
 ): RolloverFailure => ({ ok: false, reason, ...detail });
-
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 const isSafeString = (value: unknown, max = MAX_STRING): value is string =>
   typeof value === 'string' &&

@@ -1,6 +1,7 @@
 import { object as isRecord } from '../infra/validation.js';
 import { createHash } from 'node:crypto';
 import { canonicalJsonDigest } from '../infra/json.js';
+import { replacePrivateFile } from '../infra/private-file.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { assertTaskStoreCurrent, openTaskStore } from './collab-task-store.js';
@@ -231,28 +232,7 @@ function readJournal(file: string): RepairJournal | null | undefined {
 
 function writeAtomic(file: string, content: string): void {
   const temporary = `${file}.${process.pid}.${createHash('sha256').update(`${Date.now()}-${Math.random()}`).digest('hex').slice(0, 16)}.tmp`;
-  let descriptor: number | null = null;
-  try {
-    descriptor = fs.openSync(temporary, 'wx', 0o600);
-    fs.writeFileSync(descriptor, content, 'utf8');
-    fs.fsyncSync(descriptor);
-    fs.closeSync(descriptor);
-    descriptor = null;
-    fs.renameSync(temporary, file);
-    const parent = fs.openSync(path.dirname(file), 'r');
-    try {
-      fs.fsyncSync(parent);
-    } finally {
-      fs.closeSync(parent);
-    }
-  } finally {
-    if (descriptor !== null) fs.closeSync(descriptor);
-    try {
-      fs.unlinkSync(temporary);
-    } catch {
-      // Rename already consumed it, or cleanup can be retried later.
-    }
-  }
+  replacePrivateFile(file, temporary, content, { syncParent: true });
 }
 
 function persistJournal(file: string, journal: RepairJournal): void {
