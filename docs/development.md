@@ -162,6 +162,15 @@ Checks that need Pappra report `blocked` with the exact command to run while
 failing silently. `codegraph` must be installed on `PATH` separately; the entry
 reports it and never installs it.
 
+## CodeGraph CI coverage
+
+The standard CI matrix exercises the no-engine fallback and reports the
+real-engine tests as skipped when CodeGraph is absent. The separate
+[CodeGraph integration workflow](../.github/workflows/codegraph.yml) runs the
+four real-engine cases weekly and on pull requests that touch selected engine
+and test paths. It verifies a pinned Linux release archive and runs the binary
+from the runner's temporary directory.
+
 ## Limits worth stating plainly
 
 The aliases are source-first directories on disk. They make this repository's
