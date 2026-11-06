@@ -9,7 +9,8 @@ import fs from 'node:fs';
 import { emptyResult, type WorkflowResult } from './types.js';
 import { projectInterruption, type Interruption } from './interruption.js';
 import { projectReviewerAdvice } from './reviewer-advice.js';
-import { findAttempt } from '../../collab/lifecycle.js';
+import { CLOSED_STATES, findAttempt } from '../../collab/lifecycle.js';
+import type { ResultEntry } from '../../collab/types.js';
 import { nativeObservationAgeSummary } from '../../collab/native-observation.js';
 import { projectAttemptUsage } from '../../usage/attempt-usage.js';
 import { resolveUserDataDir } from '../../install/data-dir.js';
@@ -104,6 +105,22 @@ function ackRegistered(
       message.attempt === attempt &&
       message.state === 'applied',
   );
+}
+
+function attemptResult(
+  results: readonly ResultEntry[],
+  subtaskId: string,
+  attempt: number,
+): string | null {
+  const applied = results.filter(
+    (item) =>
+      item.subtask_id === subtaskId &&
+      item.attempt === attempt &&
+      item.classification === 'applied',
+  );
+  // Progress remains in the ledger but cannot displace an admitted final result.
+  const final = applied.find((item) => CLOSED_STATES.includes(item.status));
+  return (final ?? applied.at(-1))?.status ?? null;
 }
 
 export async function inspectWorkflow(
@@ -276,13 +293,11 @@ export async function inspectWorkflow(
             claim.subtask_id === attempt.subtask_id &&
             claim.attempt === attempt.attempt,
         ).length,
-        result:
-          (record.results ?? []).find(
-            (item) =>
-              item.subtask_id === attempt.subtask_id &&
-              item.attempt === attempt.attempt &&
-              item.classification === 'applied',
-          )?.status ?? null,
+        result: attemptResult(
+          record.results ?? [],
+          attempt.subtask_id,
+          attempt.attempt,
+        ),
       })),
       deferred: deferredBounded.items,
       open_uncertainty: uncertainty.items.map((item) => ({

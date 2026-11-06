@@ -560,6 +560,72 @@ test('workflow report digests only files inside the claimed write scope', async 
   }
 });
 
+test('workflow inspect prefers an applied final result over progress reports', async () => {
+  const fixture = makeTaskDomain('workflow-inspect-result', ['cohort'], {
+    initialize: [],
+  });
+  try {
+    const prepared = await applyPrepare(
+      prepareRequest(
+        fixture.domainRoot,
+        fixture.root,
+        baseAssignments(fixture.root),
+      ),
+    );
+    assert.equal(prepared.status, 'applied', JSON.stringify(prepared.blockers));
+    const taskRoot = join(fixture.domainRoot, 'tasks', 'cohort');
+    const inspectWriter = async () => {
+      const inspected = await inspectWorkflow(taskRoot);
+      const attempts = inspected.detail?.['attempts'] as {
+        subtask_id: string;
+        state: string;
+        result: string | null;
+      }[];
+      return attempts.find((item) => item.subtask_id === 'writer-one');
+    };
+    const progress = reportRequest(
+      taskRoot,
+      WRITER_A,
+      'writer-one',
+      1,
+      [],
+      'needs_input',
+    );
+    const blocked = await applyParticipant(progress, { notify: silentNotify });
+    assert.equal(blocked.status, 'applied', JSON.stringify(blocked.blockers));
+    assert.equal((await inspectWriter())?.result, 'needs_input');
+
+    const completed = await applyParticipant(
+      reportRequest(taskRoot, WRITER_A, 'writer-one', 1, []),
+      { notify: silentNotify },
+    );
+    assert.equal(
+      completed.status,
+      'applied',
+      JSON.stringify(completed.blockers),
+    );
+    assert.ok(progress.report);
+    const laterProgress = await applyParticipant(
+      {
+        ...progress,
+        report: { ...progress.report, summary: 'An additional observation.' },
+      },
+      { notify: silentNotify },
+    );
+    assert.equal(
+      laterProgress.status,
+      'applied',
+      JSON.stringify(laterProgress.blockers),
+    );
+
+    const writer = await inspectWriter();
+    assert.equal(writer?.state, 'completed');
+    assert.equal(writer?.result, 'completed');
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('workflow acceptance is separate, explicit and never self-review', async () => {
   const fixture = makeTaskDomain('workflow-accept', ['cohort'], {
     initialize: [],
