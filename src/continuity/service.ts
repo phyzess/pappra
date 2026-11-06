@@ -8,6 +8,7 @@ import { ensurePrivateState } from '../infra/private-state.js';
 import { publishPrivateLock } from '../infra/private-lock.js';
 import { captureProcessIdentity } from '../infra/process-identity.js';
 import { isAbsolute, join, resolve } from 'node:path';
+import { projectAttemptUsage } from '../usage/attempt-usage.js';
 import type { Diagnostic } from '../schemas/diagnostics.js';
 import { createDiagnostic } from '../schemas/diagnostics.js';
 import { diagnosticCodes, type DiagnosticCode } from '../schemas/errors.js';
@@ -733,6 +734,11 @@ async function observeCollaboration(
       pendingApprovals,
       blockerCodes,
     },
+    ...(record.attempts.length === 0
+      ? {}
+      : {
+          attemptUsage: projectAttemptUsage(record, record.attempts),
+        }),
     scope: 'persisted-history',
     liveStatus: 'unknown',
   };

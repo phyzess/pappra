@@ -18,6 +18,13 @@ import {
   CONTINUITY_PAYLOAD_MAX_BYTES,
 } from '../../src/continuity/paths.js';
 import * as store from '../../src/collab/store.js';
+import { buildMessage } from '../../src/collab/envelope.js';
+import { submitMessage } from '../../src/collab/messages.js';
+import { inspectWorkflow } from '../../src/app/collab-workflow/inspect.js';
+import { applyParticipant } from '../../src/app/collab-workflow/participant.js';
+import { loadParticipantRequest } from '../../src/app/collab-workflow.js';
+import { WORKFLOW_PARTICIPANT_REQUEST_SCHEMA } from '../../src/schemas/collab-workflow.js';
+import { owner } from '../collab/scenarios.js';
 import { diagnosticCodes } from '../../src/schemas/errors.js';
 import { sha256Digest } from '../../src/infra/fs.js';
 import {
@@ -1432,6 +1439,167 @@ test('oversized Git diff capture is unknown and cannot verify current', async ()
         (entry) => entry.code === 'snapshot_incomplete',
       ),
     );
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('inspect and resume project private usage captured through a workflow report', async () => {
+  const root = makeWorkspace();
+  try {
+    const taskRoot = join(root, 'domain', 'tasks', 'review-task');
+    const domainRoot = join(root, 'domain');
+    const clock = Date.parse('2026-11-06T01:00:00Z');
+    const assignee = {
+      agent_id: 'writer',
+      session_id: 'pi-test-session',
+      harness: 'pi',
+    };
+    store.initTask(taskRoot, {
+      taskId: 'review-task',
+      domainRoot,
+      coordinator: owner,
+      clock,
+    });
+    const assignment = buildMessage(
+      {
+        type: 'ASSIGN',
+        message_id: 'assign-work',
+        task_id: 'review-task',
+        from: owner,
+        to: assignee,
+        subtask_id: 'work',
+        attempt: 1,
+        owner_epoch: 1,
+        body: { assignment_digest: 'sha256:fixture' },
+      },
+      { clock },
+    );
+    assert.equal(submitMessage(taskRoot, assignment, { clock }).ok, true);
+
+    const evidence = [
+      { type: 'session', id: assignee.session_id },
+      {
+        type: 'message',
+        id: 'prompt-a',
+        parentId: null,
+        timestamp: new Date(clock + 500).toISOString(),
+        message: { role: 'user' },
+      },
+      {
+        type: 'message',
+        id: 'reply-a',
+        parentId: 'prompt-a',
+        timestamp: new Date(clock + 1000).toISOString(),
+        message: {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: 'private transcript fixture',
+          usage: {
+            input: 10,
+            output: 20,
+            cacheRead: 40,
+            cacheWrite: 5,
+            totalTokens: 75,
+          },
+        },
+      },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join('\n');
+    const file = join(root, 'private-report.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        schema: WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
+        action: 'report',
+        task_root: taskRoot,
+        caller: { ...assignee, cwd: root },
+        subtask_id: 'work',
+        attempt: 1,
+        report: {
+          status: 'completed',
+          summary: 'Reviewed',
+          blockers: [],
+          outputs: [],
+          usage_capture: {
+            through: new Date(clock + 1500).toISOString(),
+            jsonl: evidence,
+          },
+        },
+        release: null,
+      }),
+      { mode: 0o600 },
+    );
+    const request = loadParticipantRequest(file);
+    assert(request.ok, JSON.stringify(request));
+    const notify = async () => ({
+      ok: false as const,
+      code: 'fixture_no_native',
+      message: 'No native transport in this test.',
+      retryable: false,
+      nextAction: null,
+    });
+    const report = await applyParticipant(request.value, {
+      clock: clock + 2000,
+      notify,
+    });
+    assert.equal(report.status, 'applied', JSON.stringify(report));
+    const stateBefore = readFileSync(join(taskRoot, 'task.json'));
+    assert.doesNotMatch(
+      stateBefore.toString(),
+      /private transcript fixture|usage_capture/,
+    );
+    assert.deepEqual(store.readRecord(taskRoot)?.results[0]?.outputs, []);
+    assert.equal(
+      store.readRecord(taskRoot)?.results[0]?.classification,
+      'applied',
+    );
+
+    const replay = await applyParticipant(request.value, {
+      clock: clock + 3000,
+      notify,
+    });
+    assert.equal(replay.messages[0]?.duplicate, true, JSON.stringify(replay));
+    const messageId = report.detail?.message_id;
+    assert(messageId);
+    assert.doesNotMatch(
+      readFileSync(join(taskRoot, 'messages', messageId + '.json'), 'utf8'),
+      /private transcript fixture|usage_capture/,
+    );
+    // The request may be discarded after reporting. Inspect and resume use the
+    // admitted receipt and never reopen a transcript or a request path.
+    unlinkSync(file);
+    const service = new CheckpointService(root);
+    const saved = await service.save({
+      ...initialInput(),
+      collaborationRecordRef: join(taskRoot, 'task.json'),
+    });
+    assert.equal(saved.ok, true, saved.diagnostics[0]?.message);
+    const inspected = await inspectWorkflow(taskRoot);
+    const resumed = await service.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    const usage = resumed.packet?.collaborationObservation.attemptUsage;
+    assert.deepEqual(inspected.detail?.['attempt_usage'], usage);
+    assert.deepEqual(usage?.attempts[0]?.token_usage, {
+      state: 'available',
+      harness: 'pi',
+      through: new Date(clock + 1500).toISOString(),
+      input_tokens: 55,
+      output_tokens: 20,
+      cache_read_input_tokens: 40,
+      cache_write_input_tokens: 5,
+      total_tokens: 75,
+      evidence_digests: [sha256Digest(evidence)],
+    });
+    assert.equal(resumed.packet?.executionAllowed, false);
+    assert.doesNotMatch(
+      JSON.stringify(usage),
+      /private transcript fixture|pi-test-session/,
+    );
+    assert.deepEqual(readFileSync(join(taskRoot, 'task.json')), stateBefore);
   } finally {
     cleanup(root);
   }

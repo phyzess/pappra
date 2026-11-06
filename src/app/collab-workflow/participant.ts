@@ -8,6 +8,7 @@ import {
 import { transitionAttempt } from '../../collab/lifecycle.js';
 import { isAssignment } from '../../collab/contracts.js';
 import { nativeObservationAgeEvidence } from '../../collab/native-observation.js';
+import { captureAttemptUsage } from '../../usage/attempt-usage.js';
 import { releaseClaim } from '../../collab/resources.js';
 import {
   coordinatorLineage,
@@ -496,6 +497,17 @@ export async function applyParticipant(
     const resolved = resolveOutputs(declaration.outputs, claims);
     blockers.push(...resolved.blockers);
     if (blockers.length === 0) {
+      const clock = options.clock ?? Date.now();
+      const closed =
+        attempt.closed_at === undefined ? clock : Date.parse(attempt.closed_at);
+      const usage =
+        declaration.usage_capture === undefined
+          ? undefined
+          : captureAttemptUsage(
+              attempt,
+              declaration.usage_capture,
+              Number.isFinite(closed) ? Math.min(clock, closed) : clock,
+            );
       // A report id is deterministic per attempt and report content: an honest resend is a
       // duplicate, while a legitimately different later report gets its own id instead of a
       // content conflict against the first one.
@@ -505,45 +517,49 @@ export async function applyParticipant(
           summary: declaration.summary,
           blockers: [...declaration.blockers],
           outputs: resolved.outputs,
+          ...(usage === undefined ? {} : { usage_observation: usage }),
         }),
       )
         .replace('sha256:', '')
         .slice(0, 12);
-      const message = buildMessage({
-        type: 'REPORT',
-        task_id: record.task_id,
-        from: sender,
-        to: recipient,
-        message_id: `report-${request.subtask_id}-${request.attempt}-${reportKey}`,
-        subtask_id: request.subtask_id,
-        attempt: request.attempt,
-        owner_epoch:
-          attempt.owner_epoch ?? record.coordinator?.owner_epoch ?? 1,
-        body: {
-          status: declaration.status,
-          summary: declaration.summary,
-          blockers: [...declaration.blockers],
-          outputs: resolved.outputs.map((item) => ({ ...item })),
-          // `applyMessage` admits the result with this revision; omitting it makes a pinned
-          // assignment classify the report as stale instead of completing it.
-          input_revision:
-            attempt.input_revision ?? record.input_revision ?? null,
-          // `native_ref` stays exactly as recorded; `native_age` is the reader's guard so a
-          // stale observation cannot be mistaken for a current one. Nothing is refused here,
-          // and the projection carries no clock-dependent value: the report id is derived from
-          // this body, so an honest resend has to stay identical to register as a duplicate.
-          native_ref: attempt.native ?? null,
-          native_age: nativeObservationAgeEvidence(attempt.native),
-          evidence_ref:
-            resolved.outputs.length === 0
-              ? null
-              : digestText(JSON.stringify(resolved.outputs)),
+      const message = buildMessage(
+        {
+          type: 'REPORT',
+          task_id: record.task_id,
+          from: sender,
+          to: recipient,
+          message_id: `report-${request.subtask_id}-${request.attempt}-${reportKey}`,
+          subtask_id: request.subtask_id,
+          attempt: request.attempt,
+          owner_epoch:
+            attempt.owner_epoch ?? record.coordinator?.owner_epoch ?? 1,
+          body: {
+            status: declaration.status,
+            summary: declaration.summary,
+            blockers: [...declaration.blockers],
+            outputs: resolved.outputs.map((item) => ({ ...item })),
+            // `applyMessage` admits the result with this revision; omitting it makes a pinned
+            // assignment classify the report as stale instead of completing it.
+            input_revision:
+              attempt.input_revision ?? record.input_revision ?? null,
+            // Preserve the stored native binding. The optional receipt contains
+            // only derived counters and provenance from the private request.
+            native_ref:
+              usage === undefined
+                ? (attempt.native ?? null)
+                : { ...attempt.native, usage_observation: usage },
+            native_age: nativeObservationAgeEvidence(attempt.native),
+            evidence_ref:
+              resolved.outputs.length === 0
+                ? null
+                : digestText(JSON.stringify(resolved.outputs)),
+          },
         },
-        ...(options.clock === undefined ? {} : { clock: options.clock }),
-      });
+        { clock },
+      );
       const submitted = writing
         ? submitMessage(task.taskRoot, message, {
-            ...(options.clock === undefined ? {} : { clock: options.clock }),
+            clock,
           })
         : {
             ok: true as const,

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { attemptUsageProjectionSchema } from './attempt-usage.js';
 
 export const TASK_CONTEXT_SCHEMA = 'pappra/task-context/1';
 export const CHECKPOINT_SCHEMA = 'pappra/checkpoint/1';
@@ -200,6 +201,7 @@ const collaborationObservationSchema = z.strictObject({
   }),
   scope: z.literal('persisted-history'),
   liveStatus: z.literal('unknown'),
+  attemptUsage: attemptUsageProjectionSchema.optional(),
 });
 
 export const resumePacketSchema = z.strictObject({
