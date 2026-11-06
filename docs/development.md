@@ -95,6 +95,18 @@ caller. For structural non-array record checks, use
 [`validation.object`](../src/infra/validation.ts). Schema checks and readers
 with intentionally different array rules retain their own validation.
 
+## Visible sibling bootstrap
+
+Start with [the bootstrap entry](../src/app/collab-bootstrap.ts) for admission,
+reservation and the reuse path. For a new sibling, follow
+[allocation and shell readiness](../src/app/collab-bootstrap-sibling/allocate.ts),
+[native start and identity proof](../src/app/collab-bootstrap-sibling/launch.ts),
+and [binding and notification](../src/app/collab-bootstrap-sibling/deliver.ts).
+The three stages share one reservation revision and effect log. Stage handoffs
+invoke the next stage directly, preserving the order of guards and effects.
+[Bootstrap tests](../tests/collab/bootstrap-app-cli.test.ts) cover success,
+refusal, cleanup, and reconciliation after an ambiguous native result.
+
 ## Collaboration test fixtures
 
 Use [fake-herdr.ts](../tests/helpers/fake-herdr.ts) for collaboration tests
