@@ -14,6 +14,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { createFixtureClock } from '../helpers/fake-herdr.js';
 
 import { buildMessage } from '../../src/collab/envelope.js';
 import { submitMessage } from '../../src/collab/messages.js';
@@ -609,20 +610,18 @@ test('only a known-no-effect failure retries within the bounded budget', async (
       detail: 'never connected',
       observation: 'none',
     });
-    const sleeps: number[] = [];
+    const time = createFixtureClock(0);
     const r = await executeRecovery(
       baseRequest(flow, planFile, { maxRetries: 2 }),
       {
         controller: rec.controller,
-        sleep: async (ms) => {
-          sleeps.push(ms);
-        },
+        sleep: time.sleep,
       },
     );
     assert.equal(r.status, 'unknown', JSON.stringify(r));
     assert.equal(r.retries, 2);
     assert.equal(rec.calls.length, 3, 'initial attempt plus two retries');
-    assert.equal(sleeps.length, 2);
+    assert.equal(time.waits.length, 2);
   } finally {
     flow.cleanup();
   }

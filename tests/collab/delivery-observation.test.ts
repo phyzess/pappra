@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { createFixtureClock } from '../helpers/fake-herdr.js';
 import { buildMessage } from '../../src/collab/envelope.js';
 import { initTask, notificationsDir } from '../../src/collab/store.js';
 import type { Identity, Message } from '../../src/collab/types.js';
@@ -104,7 +105,7 @@ function observe(
     readonly policy?: DeliveryObservationPolicy;
   } = {},
 ): Harness {
-  let current = clock;
+  const time = createFixtureClock(clock);
   let probes = 0;
   const budgets: number[] = [];
   const samples = options.samples ?? [];
@@ -116,22 +117,20 @@ function observe(
       budgets.push(budgetMs);
       const next = samples[probes] ?? samples[samples.length - 1];
       probes += 1;
-      current += costs[probes - 1] ?? 0;
+      time.advance(costs[probes - 1] ?? 0);
       if (next === undefined) throw new Error('no scripted probe');
       if (next instanceof Error) throw next;
       return next;
     },
     policy: options.policy ?? policy,
-    now: () => current,
-    sleep: async (milliseconds) => {
-      current += milliseconds;
-    },
+    now: time.now,
+    sleep: time.sleep,
   });
   return {
     observation,
     probes: () => probes,
     budgets,
-    elapsed: () => current - clock,
+    elapsed: () => time.now() - clock,
   };
 }
 

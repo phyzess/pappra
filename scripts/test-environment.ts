@@ -1,4 +1,6 @@
-import { devNull } from 'node:os';
+import { realpathSync } from 'node:fs';
+import { devNull, homedir } from 'node:os';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 export interface TestEnvironmentOptions {
   /** Only the named PAPPRA variables can be injected deliberately by this test case. */
@@ -32,4 +34,41 @@ export function testSubprocessEnvironment(
     if (!/^PAPPRA_/i.test(key) || allowed.has(key)) result[key] = value;
   }
   return result;
+}
+
+/** Give the default suite its own home and no inherited Herdr route. */
+export function isolatedTestSuiteEnvironment(
+  suiteHome: string,
+): NodeJS.ProcessEnv {
+  const root = realpathSync(suiteHome);
+  const fromHome = relative(realpathSync(homedir()), root);
+  if (
+    fromHome === '' ||
+    (!isAbsolute(fromHome) &&
+      fromHome !== '..' &&
+      !fromHome.startsWith(`..${sep}`))
+  ) {
+    throw new Error(
+      'The test suite home must be outside the real home directory.',
+    );
+  }
+
+  const env = testSubprocessEnvironment();
+  for (const key of Object.keys(env)) {
+    if (/^(HERDR_|XDG_|HOME$|USERPROFILE$|HOMEDRIVE$|HOMEPATH$)/i.test(key)) {
+      delete env[key];
+    }
+  }
+  return {
+    ...env,
+    HOME: root,
+    USERPROFILE: root,
+    XDG_CONFIG_HOME: join(root, 'config'),
+    XDG_DATA_HOME: join(root, 'data'),
+    XDG_CACHE_HOME: join(root, 'cache'),
+    XDG_STATE_HOME: join(root, 'state'),
+    XDG_RUNTIME_DIR: join(root, 'run'),
+    HERDR_BIN_PATH: join(root, 'disabled-herdr'),
+    HERDR_SOCKET_PATH: join(root, 'disabled-herdr.sock'),
+  };
 }

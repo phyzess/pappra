@@ -174,8 +174,10 @@ finally:
 const ptyProbe = spawnSync('python3', ['-c', 'import fcntl, pty, termios'], {
   encoding: 'utf8',
   shell: false,
-  timeout: 5_000,
+  timeout: 30_000,
 });
+const probeError = ptyProbe.error as NodeJS.ErrnoException | undefined;
+if (probeError?.code !== 'ENOENT') assert.ifError(probeError);
 const ptySkip =
   process.platform === 'win32' || ptyProbe.status !== 0
     ? 'POSIX Python PTY facilities are unavailable on this platform.'

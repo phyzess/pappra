@@ -13,6 +13,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { createFakeHerdr, createFixtureClock } from '../helpers/fake-herdr.js';
 import {
   buildMessage,
   messageFile,
@@ -46,7 +47,6 @@ import {
 import {
   type HerdrAgentObservation,
   type HerdrCallerObservation,
-  type HerdrListResult,
   type HerdrPromptResult,
   type HerdrTransport,
   type NotifyOptions,
@@ -613,18 +613,16 @@ function fakeOps(
     paneId: 'w1:p2',
     cwd: value.cwd,
   });
-  let agents: HerdrAgentObservation[] = [
+  const agents: HerdrAgentObservation[] = [
     sourceAgent,
     ...(options.includeSuccessor ? [successorAgent] : []),
   ];
   let processCall = 0;
-  const transport: HerdrTransport = {
-    id: 'fake-herdr',
+  const transportHandlers: Omit<HerdrTransport, 'id' | 'list'> = {
     verifyCaller: async () => {
       await options.onTransportVerify?.();
       return { ok: true, caller };
     },
-    list: async (): Promise<HerdrListResult> => ({ ok: true, agents }),
     prompt: async (): Promise<HerdrPromptResult> => {
       counts.prompt += 1;
       events.push('transport-prompt');
@@ -632,9 +630,7 @@ function fakeOps(
       return { status: 'submitted', detail: null };
     },
   };
-  const ops: HerdrBootstrapOps = {
-    id: 'fake-herdr-bootstrap',
-    transport,
+  const bootstrap: Omit<HerdrBootstrapOps, 'id' | 'transport'> = {
     verifyCaller: async (paneId) => {
       counts.verify += 1;
       events.push('verify-caller');
@@ -651,7 +647,7 @@ function fakeOps(
     listAgents: async () => {
       counts.list += 1;
       events.push('list-agents');
-      return { ok: true, agents };
+      return { ok: true, agents: state.agents };
     },
     paneGet: async (paneId) => {
       counts.paneGet += 1;
@@ -717,8 +713,8 @@ function fakeOps(
       events.push('start-agent');
       await input.onReceipt?.(commandReceipt('agent.start'));
       const name = `pappra-${createHash('sha256').update(value.request.request_id).digest('hex').slice(0, 8)}`;
-      agents = [
-        ...agents,
+      state.agents = [
+        ...state.agents,
         agentObservation({
           name,
           identity: SUCCESSOR,
@@ -757,9 +753,17 @@ function fakeOps(
       counts.close += 1;
       events.push('close-pane');
       await input.onReceipt?.(commandReceipt('pane.close'));
-      return operationOk('pane.close', { paneId: input.paneId, closed: true });
+      return operationOk('pane.close', {
+        paneId: input.paneId,
+        closed: true,
+      });
     },
   };
+  const { ops, transport, state } = createFakeHerdr({
+    agents,
+    transport: transportHandlers,
+    bootstrap,
+  });
   return { ops, events, counts, transport, caller, pane };
 }
 
@@ -821,11 +825,12 @@ function dependencies(
   } = {},
   request: VisibleBootstrapRequest = value.request,
 ): VisibleBootstrapDependencies {
+  const clock = createFixtureClock(NOW);
   const common: VisibleBootstrapDependencies = {
     ops: host.ops,
     acceptedArtifactPath: value.acceptedArtifactFile,
-    clock: () => NOW,
-    sleeper: async () => undefined,
+    clock: clock.now,
+    sleeper: clock.sleep,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
   };
   if (options.useDefaultNotify) return common;

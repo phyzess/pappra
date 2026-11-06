@@ -69,6 +69,23 @@ The map is maintained with these entry points. Generation, a coverage guard
 and whole-tree file summaries are deferred until representative tasks show
 navigation gaps this map cannot address.
 
+## Collaboration test fixtures
+
+Use [fake-herdr.ts](../tests/helpers/fake-herdr.ts) for collaboration tests
+that need a Herdr roster, a scripted operation, or a recorded call. Keep each
+scenario in its own fixture. Update `state.agents` or supply a list handler to
+script changes to the agent status, terminal ID, and sequence counters across
+observations. For native arguments or raw parser responses, script command
+responses by operation, such as `agent.get` or `pane.read`, and pass the
+fixture's `run` to the adapter.
+
+The fixture clock supplies a clock and a sleeper that advances it without
+waiting. Use it to test receipt observation windows, readiness polling, or
+recovery backoff. For the default `pnpm test` run, the runner creates a
+temporary home and gives test workers isolated XDG paths and disabled Herdr
+routes. Explicit [native recovery experiments](provider-network-recovery.md)
+retain their separate entry points.
+
 ## Admission comes first
 
 `dev:setup` writes nothing and starts no mutating child until the root is

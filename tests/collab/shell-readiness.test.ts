@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createFakeHerdr, createFixtureClock } from '../helpers/fake-herdr.js';
 import type {
   BootstrapCommandReceipt,
   BootstrapOperationResult,
@@ -76,41 +77,22 @@ function opsFor(
 ): HerdrBootstrapOps {
   let paneIndex = 0;
   let processIndex = 0;
-  return {
-    id: 'test-herdr',
-    transport: {} as HerdrBootstrapOps['transport'],
-    verifyCaller: async () => ({
-      ok: false,
-      status: 'unavailable',
-      code: 'unused',
-      detail: 'unused',
-    }),
-    listAgents: async () => ({ ok: true, agents: [] }),
-    paneGet: async () => {
-      options.onPaneGet?.();
-      const values = options.panes ?? [pane()];
-      const value = values[Math.min(paneIndex++, values.length - 1)]!;
-      return ok('pane.get', value);
+  return createFakeHerdr({
+    bootstrap: {
+      paneGet: async () => {
+        options.onPaneGet?.();
+        const values = options.panes ?? [pane()];
+        const value = values[Math.min(paneIndex++, values.length - 1)]!;
+        return ok('pane.get', value);
+      },
+      paneProcessInfo: async () => {
+        options.onProcessInfo?.();
+        const values = options.processes ?? [processInfo()];
+        const value = values[Math.min(processIndex++, values.length - 1)]!;
+        return ok('pane.process-info', value);
+      },
     },
-    paneProcessInfo: async () => {
-      options.onProcessInfo?.();
-      const values = options.processes ?? [processInfo()];
-      const value = values[Math.min(processIndex++, values.length - 1)]!;
-      return ok('pane.process-info', value);
-    },
-    paneLayout: async () => {
-      throw new Error('not used');
-    },
-    splitPane: async () => {
-      throw new Error('not used');
-    },
-    startAgent: async () => {
-      throw new Error('not used');
-    },
-    closePane: async () => {
-      throw new Error('not used');
-    },
-  };
+  }).ops;
 }
 
 test('available shell requires the exact shell process group and final pane identity', async () => {
@@ -125,7 +107,7 @@ test('available shell requires the exact shell process group and final pane iden
 });
 
 test('transient foreground activity is polled locally until the shell predicate passes', async () => {
-  let clock = 1_000;
+  const clock = createFixtureClock(1_000);
   let processCalls = 0;
   const ops = opsFor({
     processes: [
@@ -140,15 +122,14 @@ test('transient foreground activity is polled locally until the shell predicate 
     },
   });
   const result = await verifyAvailableShell(ops, identity, {
-    clock: () => clock,
-    sleeper: async (milliseconds) => {
-      clock += milliseconds;
-    },
+    clock: clock.now,
+    sleeper: clock.sleep,
     intervalMs: 100,
     maxSamples: 3,
   });
   assert.equal(result.status, 'ready');
   assert.equal(processCalls, 2);
+  assert.deepEqual(clock.waits, [100]);
   assert.equal(result.evidence.samples[0]?.code, 'foreground_group_not_shell');
   assert.equal(result.evidence.samples[1]?.state, 'ready');
 });
