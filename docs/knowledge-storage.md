@@ -36,9 +36,21 @@ automatically recreate an archived registration.
 
 `docs scan --apply` acquires one lock per batch and revalidates with a fresh
 context/catalog snapshot under that lock. Up to 300 **new** documents are
-registered at a time; existing records do not consume that budget. Rerun after a
-partial batch to reach later candidates. Configured directories are traversed to
-a bounded depth of 64; directory, entry, depth and candidate limits report
+registered at a time. Existing records do not consume that budget. When the
+batch cap leaves more candidates, the command exits 1 and JSON reports
+`ok: false` with the batch-limit diagnostic, even if it registered the entire
+current batch. Read `registered` to see the progress already committed. Rerun
+when the batch cap is the only reason coverage is incomplete. Inspect any other
+diagnostics before retrying.
+
+In a registered Git repository, discovery uses Git's ignore rules to filter
+candidates. If that query times out or fails, discovery retains the candidates
+and reports `ignore_filter_unavailable`. A preview can still exit 0. When ignore
+rules determine what should enter the catalog, correct the warning and rerun
+the preview before applying.
+
+Configured directories are traversed to a bounded depth of 64. Directory,
+entry, depth and candidate limits report
 incomplete coverage instead of silent success. Batch journals record
 preparation, completion or failure. An interrupted shared batch can leave
 individually committed records; rerunning scan reconciles those records without
