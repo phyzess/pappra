@@ -1889,14 +1889,17 @@ export async function runInitCommand(
 }
 
 export const initUsage =
-  'pappra init [--config <file> | --yes | --no-interactive] [--print-choices]\n' +
+  'pappra init [--config <file> | --yes] [--no-interactive] [--print-choices]\n' +
   '             [--apply] [--json] [--reconfigure] [--no-runtime]\n' +
   '             [--install-runtime (--runtime-tarball <file> | --runtime-version <version>)]\n\n' +
-  'Without --config or --yes, a TTY opens the wizard when selections are still needed: a valid\n' +
-  'existing configuration is reused (only missing local state is requested) and --reconfigure\n' +
-  'opens the editor. --config reads a pappra/init-choices/1 document and stays preview-only\n' +
-  'without --apply, even on a TTY. --yes and --no-interactive derive selections from discovery.\n' +
-  'Planning and preview never write. --apply creates planned files through a managed journal.\n' +
+  'Choose settings with the terminal wizard, --yes discovery, or a reviewed\n' +
+  'pappra/init-choices/1 document supplied with --config. The wizard opens when\n' +
+  'selections are needed. It reuses valid workspace settings, asks for missing local\n' +
+  'settings and opens the editor with --reconfigure.\n' +
+  '--no-interactive disables prompts. With no --config, it selects the discovery\n' +
+  'path as --yes does. With --config, it keeps the supplied settings.\n' +
+  'Planning and preview never write. --config stays preview-only without --apply,\n' +
+  'even on a terminal. --apply writes the plan through a managed journal.\n' +
   '--print-choices prints the selections and writes nothing; with --reconfigure it prints the\n' +
   'current represented choices instead of newly derived ones, and --yes --reconfigure keeps\n' +
   'those current choices rather than deriving them again.\n' +
