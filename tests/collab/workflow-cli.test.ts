@@ -316,6 +316,29 @@ test('interruption reports the current approval BLOCK and never falls back to an
   );
 });
 
+test('a failed report does not classify provider cause or retryability', async () => {
+  await withInterruptionFixture(
+    'workflow-interruption-provider-report',
+    async ({ send, inspect }) => {
+      send({
+        type: 'REPORT',
+        message_id: 'provider-report',
+        from: interruptionWriter,
+        to: owner,
+        owner_epoch: null,
+        body: {
+          status: 'failed',
+          summary: 'Provider returned 429. Retry requested.',
+        },
+      });
+      const result = await inspect();
+      assert.equal(result.kind, 'unknown');
+      assert.equal(result.reason, 'attempt_inactive');
+      assert.equal(result.evidence, null);
+    },
+  );
+});
+
 test('an approval BLOCK does not borrow a same-clock REPORT transition', async () => {
   await withInterruptionFixture(
     'workflow-interruption-same-clock',
