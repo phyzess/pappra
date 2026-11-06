@@ -80,6 +80,36 @@ function assertUnchangedAfterApply(
   assert.deepEqual(after, before);
 }
 
+test('init previews supplied choices with explicit prompt suppression', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-prompt-control-'));
+  try {
+    const choices = join(temporary, 'choices.json');
+    writeChoices(choices);
+    const args = ['init', '--config', choices, '--no-runtime', '--json'];
+    const ordinary = invoke(args, temporary, runtimeEnv(temporary));
+    assert.equal(ordinary.status, 0, ordinary.stderr);
+    const suppressed = invoke(
+      [...args, '--no-interactive'],
+      temporary,
+      runtimeEnv(temporary),
+    );
+    assert.equal(suppressed.status, 0, suppressed.stdout || suppressed.stderr);
+    const baseline = parseJson(ordinary.stdout);
+    const preview = parseJson(suppressed.stdout);
+    assert.equal(preview.ok, true);
+    assert.equal(preview.mode, 'plan');
+    const baselineScope = baseline.scope as Record<string, unknown>;
+    const previewScope = preview.scope as Record<string, unknown>;
+    assert.equal(previewScope.name, baselineScope.name);
+    assert.deepEqual(previewScope.repositories, baselineScope.repositories);
+    assert.deepEqual(previewScope.code, baselineScope.code);
+    assert.equal(suppressed.stderr, '');
+    assert.deepEqual(readdirSync(temporary), ['choices.json']);
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
 test('init runtime preview is read-only; --apply ensures and reuses an isolated runtime', async () => {
   const temporary = mkdtempSync(join(tmpdir(), 'pappra-init-cli-'));
   const dataDir = join(temporary, 'pappra-data');

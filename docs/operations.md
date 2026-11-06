@@ -129,7 +129,11 @@ needs an explicit `--force`.
 
 Scripts, agents and CI keep the explicit contract: `--json` never prompts, `--apply` never
 prompts, `init` takes `--yes` or `--config`, and `--no-interactive`, `CI=true` or a non-TTY
-stream turns every prompt off. `pappra onboard` with no flags on a terminal runs the guided
+stream turns every prompt off. Use `init --config` for reviewed settings in an existing
+project. It previews by default and accepts `--no-interactive` for scripts that use the
+same prompt policy across commands. With no configuration document, `--no-interactive`
+uses discovery just as `--yes` does. `--config` and `--yes` remain incompatible.
+`pappra onboard` with no flags on a terminal runs the guided
 setup when there is no workspace; in an existing workspace it runs the optional steps (code
 index, documents, coding agents, health check) and does not show the menu. Its flags keep
 working unchanged.

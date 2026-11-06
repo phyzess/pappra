@@ -276,7 +276,9 @@ export function routeWorkspace({
         installRuntime: values['install-runtime'] === true,
         runtimeTarball: values['runtime-tarball'] ?? null,
         runtimeVersion: values['runtime-version'] ?? null,
-        yes: values.yes === true || values['no-interactive'] === true,
+        yes:
+          values.yes === true ||
+          (values.config === undefined && values['no-interactive'] === true),
         printChoices: values['print-choices'] === true,
         noRuntime: values['no-runtime'] === true,
         reconfigure: values.reconfigure === true,
