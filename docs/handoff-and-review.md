@@ -59,11 +59,35 @@ the existing workflow.
 registered document it reports `fileDigest`, `recordDigest` and `freshness`, so a
 reviewer can see whether the file on disk is still the file that was reviewed.
 
+### Interpreting interruption evidence
+
+The takeover view carries the work and its verification. For a collaboration
+attempt, use [workflow interruption inspection](collaboration-reference.md#inspecting-an-attempt-interruption)
+to read verified protocol evidence separately.
+
+| Observation                      | Evidence and interpretation                                                                                                                                                                                                                                                                                           |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Waiting for approval             | An applied approval `BLOCK` for the current assignment and active gate yields `approval_wait`. A free-text report or a clarification does not establish an approval gate.                                                                                                                                             |
+| Cancellation requested           | An applied current-owner `CANCEL` with open cancellation uncertainty yields `cancel_requested`. Native stop and human origin require separate evidence.                                                                                                                                                               |
+| Provider or network interruption | [Managed Pi provider diagnostics](managed-pi.md#managed-provider-network-diagnostics) can describe a specific run and fetch. The workflow projection does not bind those observations to its task attempt. A report, HTTP status, abort signal or generic error alone leaves provider cause and retryability unknown. |
+| Proven no effect                 | A validated outcome for a specific operation describes that operation's effect. Apply the [dispatch path's own retry policy](collaboration-reference.md#bounded-collaboration-work-execution) separately.                                                                                                             |
+| Time, round or cost limit        | A limit needs evidence from the native controller that enforced it. The current interruption projection does not classify these stops.                                                                                                                                                                                |
+
+Use only evidence scoped to the current assignment, attempt and owner epoch.
+Keep missing, conflicting or stale evidence explicit. A successor can read the
+packet and identify the next action. Waiting for a person, a verified user stop
+or a native limit stop grants no authority to retry or dispatch a successor.
+Carry forward existing task authorization within its original scope. Obtain
+execution authority through the workflow. Dispatch, recovery and any required
+native stop verification are separate coordinator actions.
+
 ## Building a package
 
 1. Save the checkpoint at the revision you want handed over. Name the objective, the
    acceptance criteria, the constraints, the next action and every file the successor
    must read as `--artifact`.
+   Include retained review findings as a digest-checked artifact when they are
+   available. The packet displays the pointer and its verification status.
 2. Hand over the **task id** and the checkpoint ref, revision and digest. The
    successor runs `pappra resume <taskId> --takeover` in a fresh session and
    compares all three checkpoint fields with the handoff before using the view.
