@@ -1,19 +1,9 @@
-import fs, { type Stats } from 'node:fs';
+import fs, { type BigIntStats } from 'node:fs';
 import path from 'node:path';
 
-function writeExclusive(
-  file: string,
-  content: string | Uint8Array,
-  onOpen?: (descriptor: number) => void,
-): void {
-  const descriptor = fs.openSync(file, 'wx', 0o600);
-  try {
-    onOpen?.(descriptor);
-    fs.writeFileSync(descriptor, content);
-    fs.fsyncSync(descriptor);
-  } finally {
-    fs.closeSync(descriptor);
-  }
+function writeAndSync(descriptor: number, content: string | Uint8Array): void {
+  fs.writeFileSync(descriptor, content);
+  fs.fsyncSync(descriptor);
 }
 
 /** Create and sync a new private file. The caller owns any staged recovery. */
@@ -21,11 +11,16 @@ export function writeExclusivePrivateFile(
   file: string,
   content: string | Uint8Array,
 ): void {
-  writeExclusive(file, content);
+  const descriptor = fs.openSync(file, 'wx', 0o600);
+  try {
+    writeAndSync(descriptor, content);
+  } finally {
+    fs.closeSync(descriptor);
+  }
 }
 
-function isOwnedTemporary(file: string, owned: Stats): boolean {
-  const current = fs.lstatSync(file, { throwIfNoEntry: false });
+function isOwnedTemporary(file: string, owned: BigIntStats): boolean {
+  const current = fs.lstatSync(file, { bigint: true, throwIfNoEntry: false });
   return (
     current?.isFile() === true &&
     current.dev === owned.dev &&
@@ -37,6 +32,7 @@ function isOwnedTemporary(file: string, owned: Stats): boolean {
  * Stage a private file beside its destination and sync before renaming it.
  * A synchronous caller guard can refuse publication. The caller provides the
  * namespace and lock policy needed to make that guard meaningful.
+ * A final close or parent sync can fail after the rename has succeeded.
  */
 export function replacePrivateFile(
   file: string,
@@ -47,13 +43,15 @@ export function replacePrivateFile(
     readonly syncParent?: boolean;
   } = {},
 ): boolean {
-  let owned: Stats | undefined;
+  const descriptor = fs.openSync(temporary, 'wx', 0o600);
+  let owned: BigIntStats | undefined;
   try {
-    writeExclusive(temporary, content, (descriptor) => {
-      owned = fs.fstatSync(descriptor);
-    });
+    // Keep the inode alive through publication or cleanup so a recreated entry
+    // cannot inherit its identity even after the original pathname is unlinked.
+    owned = fs.fstatSync(descriptor, { bigint: true });
+    writeAndSync(descriptor, content);
     if (options.beforePublish?.() === false) return false;
-    if (owned === undefined || !isOwnedTemporary(temporary, owned)) {
+    if (!isOwnedTemporary(temporary, owned)) {
       throw new Error(
         `Private temporary file changed before publish: ${temporary}`,
       );
@@ -77,5 +75,6 @@ export function replacePrivateFile(
         // Preserve the publication result when best-effort cleanup fails.
       }
     }
+    fs.closeSync(descriptor);
   }
 }

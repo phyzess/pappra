@@ -84,14 +84,16 @@ keep the outcome lock and recheck the namespace and expected digest immediately
 before publication. Readiness publication rechecks its pinned directory.
 Each caller owns its lock, authority and error shape. The writer checks that the
 temporary entry still has the device and inode it created before rename or
-cleanup. These checks are pathname observations. A guarded rename relies on
-the caller's namespace and lock policy for exclusion.
+cleanup, holding the descriptor open to prevent inode reuse. These checks are
+pathname observations. A guarded rename relies on the caller's namespace and
+lock policy for exclusion. A final close or parent sync can report failure
+after the rename has succeeded.
 
 Use [the descriptor-bounded reader](../src/infra/bounded-file.ts) for
-synchronous no-follow reads with fatal UTF-8 decoding. The asynchronous
-[bounded reader](../src/infra/fs.ts) permits symlinks and has its own
-diagnostic contract. Both leave byte limits and domain validation with the
-caller. For structural non-array record checks, use
+synchronous no-follow reads. Its text projection uses UTF-8 replacement
+decoding. The asynchronous [bounded reader](../src/infra/fs.ts) permits
+symlinks and its text variant rejects invalid UTF-8. Both leave byte limits
+and domain validation with the caller. For structural non-array record checks, use
 [`validation.object`](../src/infra/validation.ts). Schema checks and readers
 with intentionally different array rules retain their own validation.
 

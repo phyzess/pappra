@@ -55,15 +55,24 @@ test('private replacement respects a failed guard and publishes exact bytes on s
 
 test('private replacement preserves a substituted temporary entry and the destination', () => {
   const directory = makeTempDir('private-replace-substitution');
+  const open = fs.openSync;
   try {
     const file = path.join(directory, 'destination');
     const temporary = path.join(directory, 'staged');
     fs.writeFileSync(file, 'old');
+    let staged: number | undefined;
+    fs.openSync = (file, flags, mode) => {
+      const descriptor = open(file, flags, mode);
+      if (file === temporary && flags === 'wx') staged = descriptor;
+      return descriptor;
+    };
     assert.throws(
       () =>
         replacePrivateFile(file, temporary, 'new', {
           beforePublish: () => {
-            fs.renameSync(temporary, path.join(directory, 'moved'));
+            fs.unlinkSync(temporary);
+            assert.ok(staged !== undefined);
+            assert.equal(fs.fstatSync(staged, { bigint: true }).nlink, 0n);
             fs.writeFileSync(temporary, 'foreign');
             return true;
           },
@@ -73,6 +82,38 @@ test('private replacement preserves a substituted temporary entry and the destin
     assert.equal(fs.readFileSync(file, 'utf8'), 'old');
     assert.equal(fs.readFileSync(temporary, 'utf8'), 'foreign');
   } finally {
+    fs.openSync = open;
+    cleanup(directory);
+  }
+});
+
+test('a late close error reports uncertainty without deleting the published file', () => {
+  const directory = makeTempDir('private-replace-close');
+  const open = fs.openSync;
+  const close = fs.closeSync;
+  try {
+    const file = path.join(directory, 'destination');
+    const temporary = path.join(directory, 'staged');
+    let staged: number | undefined;
+    fs.openSync = (file, flags, mode) => {
+      const descriptor = open(file, flags, mode);
+      if (file === temporary && flags === 'wx') staged = descriptor;
+      return descriptor;
+    };
+    fs.closeSync = (descriptor) => {
+      close(descriptor);
+      if (descriptor === staged) throw new Error('late close failure');
+    };
+    assert.throws(
+      () => replacePrivateFile(file, temporary, 'published'),
+      /late close failure/,
+    );
+    fs.closeSync = close;
+    assert.equal(fs.readFileSync(file, 'utf8'), 'published');
+    assert.equal(fs.existsSync(temporary), false);
+  } finally {
+    fs.openSync = open;
+    fs.closeSync = close;
     cleanup(directory);
   }
 });
