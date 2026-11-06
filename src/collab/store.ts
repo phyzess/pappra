@@ -19,10 +19,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {
-  replacePrivateFile,
-  writeExclusivePrivateFile,
-} from '../infra/private-file.js';
+import { writeExclusivePrivateFile } from '../infra/private-file.js';
 
 // Task collaboration record. The record is data, never an executable script, and it
 // stays separate from harness session stores and generated registry manifests.
@@ -167,7 +164,10 @@ export function readRecord(taskRoot: string): TaskRecord | null {
 
 function writeJsonAtomic<T>(file: string, value: T): T {
   const temporary = `${file}.tmp-${createNonce()}`;
-  replacePrivateFile(file, temporary, `${JSON.stringify(value, null, 2)}\n`);
+  // Initialization writes its first ledger entry after this publication.
+  // A failed staging close must leave the record absent so init can retry.
+  writeExclusivePrivateFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
+  fs.renameSync(temporary, file);
   return value;
 }
 

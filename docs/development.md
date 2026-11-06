@@ -75,8 +75,10 @@ Use [the shared private writer](../src/infra/private-file.ts) when a synchronous
 collaboration path must sync private bytes before the next effect. Exclusive
 creation uses `wx` and mode `0600`. The task-store transaction still stages
 the next record, writes its recovery metadata and publishes the record in that
-order. Plain exclusive writes, directory locks and open session descriptors
-keep their existing lifetime and durability contracts.
+order. Task initialization also finishes the staging close before publishing
+the record that its first ledger entry depends on. Plain exclusive writes,
+directory locks and open session descriptors keep their existing lifetime and
+durability contracts.
 
 The same writer stages and renames private replacements. Repair and
 orchestration journals also sync the parent directory. Dispatch outcome writes

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import {
+import fs, {
   existsSync,
   mkdtempSync,
   readFileSync,
@@ -14,9 +14,11 @@ import test from 'node:test';
 import {
   doctor,
   initTask,
+  ledgerPath,
   listTransactions,
   readLock,
   readRecord,
+  recordPath,
 } from '../../src/collab/store.js';
 import { object, parseJson } from '../../src/collab/validation.js';
 import { owner } from './scenarios.js';
@@ -53,6 +55,46 @@ function run(args: string[], injected: NodeJS.ProcessEnv = {}) {
     );
   });
 }
+
+test('task initialization remains retryable after the staged record fails to close', () => {
+  const root = mkdtempSync(join(realpathSync(tmpdir()), 'pappra-init-close-'));
+  const task = join(root, 'domain', 'tasks', 'sample');
+  const open = fs.openSync;
+  const close = fs.closeSync;
+  try {
+    let staged: number | undefined;
+    fs.openSync = (file, flags, mode) => {
+      const descriptor = open(file, flags, mode);
+      if (String(file).startsWith(`${recordPath(task)}.tmp-`) && flags === 'wx')
+        staged = descriptor;
+      return descriptor;
+    };
+    fs.closeSync = (descriptor) => {
+      close(descriptor);
+      if (descriptor === staged) throw new Error('staging close failed');
+    };
+    assert.throws(
+      () => initTask(task, { taskId: 'sample', coordinator: owner }),
+      /staging close failed/,
+    );
+    fs.closeSync = close;
+    assert.equal(existsSync(recordPath(task)), false);
+    assert.equal(existsSync(ledgerPath(task)), false);
+    assert.equal(
+      initTask(task, { taskId: 'sample', coordinator: owner }).created,
+      true,
+    );
+    assert.equal(readRecord(task)?.state_revision, 1);
+    assert.equal(
+      JSON.parse(readFileSync(ledgerPath(task), 'utf8')).revision,
+      1,
+    );
+  } finally {
+    fs.openSync = open;
+    fs.closeSync = close;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test('simultaneous processes can reserve one attempt only once', async () => {
   const box = launchFixture();
