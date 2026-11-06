@@ -677,14 +677,19 @@ test('an oversize frame is a protocol_error and kills the proxy', async () => {
   assert.ok(daemon.killed);
 });
 
-test('a silent initialize is a timeout, and the proxy is still killed', async () => {
+test('a silent initialize is a timeout, and the proxy is still killed', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const daemon = new FakeDaemon({ initializeSilent: true });
-  const started = Date.now();
-  const result = await discover(daemon, { deadlineMs: 500 });
+  const pending = discover(daemon, { deadlineMs: 500 });
+  assert.deepEqual(daemon.methods, ['initialize']);
+  t.mock.timers.tick(499);
+  assert.equal(daemon.stdinEnded, false);
+  assert.equal(daemon.killed, false);
+  t.mock.timers.tick(1);
+  assert.equal(daemon.stdinEnded, true);
+  const result = await pending;
   assert.equal(unavailableOf(result).reason, 'timeout');
-  assert.ok(Date.now() - started >= 500);
   assert.ok(daemon.killed);
-  assert.ok(daemon.stdinEnded);
 });
 
 test('a thread that is never answered is a timeout', async () => {
