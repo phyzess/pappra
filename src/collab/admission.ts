@@ -884,6 +884,7 @@ export function settleLaunch(
           result: { outcome, attempt_missing: true },
         };
       const at = nowIso(clock);
+      const previousState = attempt.state;
       // The native runner owns execution; the shared layer keeps the pointer and the fact
       // that this attempt has been started at all.
       attempt.native = {
@@ -900,15 +901,6 @@ export function settleLaunch(
         identity_status: identityStatusResolved,
       };
       attempt.updated_at = at;
-      attempt.transitions = attempt.transitions ?? [];
-      attempt.transitions.push({
-        from: attempt.state,
-        to: attempt.state,
-        at,
-        actor: 'launcher',
-        reason: `native launch settled: ${outcome}`,
-        evidence: evidenceRef,
-      });
       if (ran && ['assigned', 'accepted'].includes(attempt.state))
         attempt.state = 'running';
       if (ran) {
@@ -970,6 +962,19 @@ export function settleLaunch(
                   ? 'derive a capability card for this native session, then continue it with --launch-kind resume'
                   : 'query the native runner for this session/run and reconcile before any new dispatch',
           clock,
+        });
+      }
+      // The reservation and native observation carry the settlement evidence.
+      // Record only the state change visible after this transaction.
+      if (attempt.state !== previousState) {
+        attempt.transitions = attempt.transitions ?? [];
+        attempt.transitions.push({
+          from: previousState,
+          to: attempt.state,
+          at,
+          actor: 'launcher',
+          reason: `native launch settled: ${outcome}`,
+          evidence: evidenceRef,
         });
       }
       return {
