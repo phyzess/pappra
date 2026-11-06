@@ -273,8 +273,19 @@ already recorded as assigned-but-not-started can be notified; a report status
 alone does not create or relaunch work. Independent eligible nodes are sent in a
 bounded concurrent batch (default two, maximum eight). Overlapping write scopes
 block instead of running concurrently; dependency edges are what serialize work.
-Existing/unknown intents are reconciliation only and are never automatically
-replayed.
+The retry boundary differs from [typed workflow dispatch](./collaboration-workflow.md#dispatch).
+If a routing preflight refuses before `work-run` records an intent, correct the
+blocker and invoke the command again. Once it records an intent, later invocations
+report `reconciliation-required` even if the original adapter returned
+`effect: "none"`. The intent preserves the attempted dispatch and its existing
+claims. `work-run` has no durable, validated outcome that can authorize replay of
+that intent. Inspect delivery and native evidence and follow explicit repair or
+new-attempt handling.
+
+`workflow dispatch` can retry the same attempt after correction because it
+validates its own stored no-effect outcome against the intent and fences that
+outcome before retrying. A missing, invalid or ambiguous outcome keeps the fence.
+Each command interprets the evidence written by its own dispatch path.
 
 ### Define a planner/writer/reviewer/integrator workflow
 

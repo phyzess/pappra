@@ -802,6 +802,47 @@ test('duplicate invocation and unknown notification are reconciliation-only', as
   }
 });
 
+test('work-run keeps the intent and claims after a post-intent no-effect refusal', async () => {
+  const fixture = makeFixture('known-no-effect', { count: 1 });
+  try {
+    let sends = 0;
+    const adapter = planAdapter(() => {
+      sends += 1;
+      return {
+        ok: false,
+        status: 'refused',
+        effect: 'none',
+        detail: 'transport refused before sending the prompt',
+      };
+    });
+    const options = { request: fixture.request, apply: true };
+    const first = await runWorkExecution(options, { adapter });
+    const node = first.nodes[0];
+    assert.equal(node?.execution_status, 'blocked');
+    assert.equal(node.delivery?.status, 'refused');
+    assert(node.intent_message_id);
+    const record = readRecord(fixture.taskRoot);
+    assert(
+      record?.messages.some(
+        (message) => message.message_id === node.intent_message_id,
+      ),
+    );
+    assert(record?.claims?.some((claim) => claim.released_at === null));
+    const afterRefusal = snapshotTree(fixture.root);
+
+    const retry = await runWorkExecution(options, { adapter });
+    assert.equal(retry.status, 'needs-reconciliation');
+    assert.equal(retry.nodes[0]?.intent_message_id, node.intent_message_id);
+    assert(
+      retry.nodes[0]?.blockers.includes('dispatch_intent_exists_reconcile'),
+    );
+    assert.equal(sends, 1);
+    assert.deepEqual(snapshotTree(fixture.root), afterRefusal);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test('conflicting assignment resources and missing claims never dispatch', async () => {
   const fixture = makeFixture('overlap', { overlap: true });
   try {
