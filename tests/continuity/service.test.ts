@@ -18,6 +18,10 @@ import {
   CONTINUITY_PAYLOAD_MAX_BYTES,
 } from '../../src/continuity/paths.js';
 import * as store from '../../src/collab/store.js';
+import { buildMessage } from '../../src/collab/envelope.js';
+import { submitMessage } from '../../src/collab/messages.js';
+import { inspectWorkflow } from '../../src/app/collab-workflow/inspect.js';
+import { owner } from '../collab/scenarios.js';
 import { diagnosticCodes } from '../../src/schemas/errors.js';
 import { sha256Digest } from '../../src/infra/fs.js';
 import {
@@ -1431,6 +1435,150 @@ test('oversized Git diff capture is unknown and cannot verify current', async ()
       resumed.packet?.blockingReasons.some(
         (entry) => entry.code === 'snapshot_incomplete',
       ),
+    );
+  } finally {
+    cleanup(root);
+  }
+});
+
+test('inspect and resume observe the same attempt usage from a registered report output', async () => {
+  const root = makeWorkspace();
+  try {
+    const taskRoot = join(root, 'domain', 'tasks', 'review-task');
+    const domainRoot = join(root, 'domain');
+    const clock = Date.parse('2026-11-06T01:00:00Z');
+    const assignee = {
+      agent_id: 'writer',
+      session_id: 'pi-test-session',
+      harness: 'pi',
+    };
+    store.initTask(taskRoot, {
+      taskId: 'review-task',
+      domainRoot,
+      coordinator: owner,
+      clock,
+    });
+    const assignment = buildMessage(
+      {
+        type: 'ASSIGN',
+        message_id: 'assign-work',
+        task_id: 'review-task',
+        from: owner,
+        to: assignee,
+        subtask_id: 'work',
+        attempt: 1,
+        owner_epoch: 1,
+        body: { assignment_digest: 'sha256:fixture' },
+      },
+      { clock },
+    );
+    assert.equal(submitMessage(taskRoot, assignment, { clock }).ok, true);
+
+    const file = join(taskRoot, 'native-usage', 'work-1.pi-session.jsonl');
+    mkdirSync(join(taskRoot, 'native-usage'), { mode: 0o700 });
+    const evidence = [
+      { type: 'session', id: assignee.session_id },
+      {
+        type: 'message',
+        id: 'prompt-a',
+        parentId: null,
+        timestamp: new Date(clock + 500).toISOString(),
+        message: { role: 'user' },
+      },
+      {
+        type: 'message',
+        id: 'reply-a',
+        parentId: 'prompt-a',
+        timestamp: new Date(clock + 1000).toISOString(),
+        message: {
+          role: 'assistant',
+          stopReason: 'stop',
+          content: 'private transcript fixture',
+          usage: {
+            input: 10,
+            output: 20,
+            cacheRead: 40,
+            cacheWrite: 5,
+            totalTokens: 75,
+          },
+        },
+      },
+    ]
+      .map((row) => JSON.stringify(row))
+      .join('\n');
+    writeFileSync(file, evidence, { mode: 0o600 });
+    const report = buildMessage(
+      {
+        type: 'REPORT',
+        message_id: 'report-work',
+        task_id: 'review-task',
+        from: assignee,
+        to: owner,
+        subtask_id: 'work',
+        attempt: 1,
+        owner_epoch: 1,
+        body: {
+          status: 'completed',
+          outputs: [{ ref: file, digest: sha256Digest(evidence) }],
+        },
+      },
+      { clock: clock + 2000 },
+    );
+    assert.equal(
+      submitMessage(taskRoot, report, { clock: clock + 2000 }).ok,
+      true,
+    );
+    const stateBefore = readFileSync(join(taskRoot, 'task.json'));
+    assert.deepEqual(store.readRecord(taskRoot)?.results[0]?.outputs, [
+      { ref: file, digest: sha256Digest(evidence) },
+    ]);
+    assert.equal(
+      store.readRecord(taskRoot)?.results[0]?.classification,
+      'applied',
+    );
+
+    const service = new CheckpointService(root);
+    const saved = await service.save({
+      ...initialInput(),
+      collaborationRecordRef: join(taskRoot, 'task.json'),
+    });
+    assert.equal(saved.ok, true, saved.diagnostics[0]?.message);
+    const inspected = await inspectWorkflow(taskRoot);
+    const resumed = await service.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    const usage = resumed.packet?.collaborationObservation.attemptUsage;
+    assert.deepEqual(inspected.detail?.['attempt_usage'], usage);
+    assert.deepEqual(usage?.attempts[0]?.token_usage, {
+      state: 'available',
+      harness: 'pi',
+      input_tokens: 55,
+      output_tokens: 20,
+      cache_read_input_tokens: 40,
+      cache_write_input_tokens: 5,
+      total_tokens: 75,
+      evidence_digests: [sha256Digest(evidence)],
+    });
+    assert.equal(resumed.packet?.executionAllowed, false);
+    assert.doesNotMatch(
+      JSON.stringify(usage),
+      /private transcript fixture|pi-test-session/,
+    );
+    assert.deepEqual(readFileSync(join(taskRoot, 'task.json')), stateBefore);
+
+    writeFileSync(file, evidence + '\n');
+    const drift = await service.resume({
+      taskId: 'task-p07',
+      currentSession: 'pi-session-a',
+    });
+    assert.deepEqual(
+      drift.packet?.collaborationObservation.attemptUsage?.attempts[0]
+        ?.token_usage,
+      {
+        state: 'unavailable',
+        reason: 'evidence_unreadable_or_changed',
+      },
     );
   } finally {
     cleanup(root);

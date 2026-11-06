@@ -35,6 +35,19 @@ identity and the attempt boundary, caps work across attempts, and exposes
 only counters and a typed reason when evidence is unavailable. These reads
 do not launch a model or participate in execution admission.
 
+Register native files as outputs of the final report for the attempt. Use
+`native-usage/<subtask>-<attempt>.<source>` inside the task directory, with
+source names `codex-rollout.jsonl`, `pi-session.jsonl`, or both
+`claude-events.jsonl` and `claude-execution.json`. The Claude capture's
+`events_file` must identify its paired stream. Keep the raw files private and
+register their digests through the normal report path. The reader considers
+up to 16 attempts, with 16 MiB total native bytes per projection.
+
+Read `detail.attempt_usage` in `pappra collab workflow inspect --json` and
+`collaborationObservation.attemptUsage` in the JSON resume packet. The
+projection includes the number of omitted attempts. Unregistered files and
+overlapping attempt windows for one native session cannot establish usage.
+
 | Host | Native source | Attribution and cache accounting |
 | --- | --- | --- |
 | Codex | Rollout `event_msg` usage snapshots and native turn boundaries | Subtract the proven starting cumulative snapshot from the final snapshot of the attempt's completed turns. Input already includes cache reads. Cache writes are a native breakdown when both snapshots expose it. |

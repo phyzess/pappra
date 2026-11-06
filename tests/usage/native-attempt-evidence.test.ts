@@ -122,23 +122,50 @@ test('Pi ignores prior session usage and requires a completed response', () => {
     cacheWrite: 40,
     totalTokens: 100,
   };
-  const assistant = (id: string, timestamp: number, stopReason: string) => ({
+  const message = (
+    id: string,
+    parentId: string | null,
+    timestamp: number,
+    payload: object,
+  ) => ({
     type: 'message',
     id,
+    parentId,
     timestamp: stamp(timestamp),
-    message: { role: 'assistant', stopReason, usage },
+    message: payload,
   });
+  const assistant = (
+    id: string,
+    parentId: string,
+    timestamp: number,
+    stopReason: string,
+  ) =>
+    message(id, parentId, timestamp, { role: 'assistant', stopReason, usage });
   const rows = [
     { type: 'session', id: 'session-a' },
-    assistant('prior', 1, 'stop'),
-    assistant('tools', 12, 'toolUse'),
-    assistant('done', 30, 'stop'),
-    assistant('later', 41, 'stop'),
+    message('prior-user', null, 0, { role: 'user' }),
+    assistant('prior', 'prior-user', 1, 'stop'),
+    message('attempt-user', 'prior', 11, { role: 'user' }),
+    assistant('tools', 'attempt-user', 12, 'toolUse'),
+    message('tool-result', 'tools', 20, { role: 'toolResult' }),
+    assistant('done', 'tool-result', 30, 'stop'),
+    message('later-user', 'done', 41, { role: 'user' }),
+    assistant('later', 'later-user', 42, 'stop'),
   ];
   assert.equal(piSessionAttempt(jsonl(rows), window)?.total_tokens, 200);
-  assert.equal(piSessionAttempt(jsonl(rows.slice(0, 3)), window), null);
+  assert.equal(piSessionAttempt(jsonl(rows.slice(0, 6)), window), null);
   assert.equal(
-    piSessionAttempt(jsonl([...rows, assistant('done', 39, 'stop')]), window),
+    piSessionAttempt(jsonl(rows), { ...window, started: clock + 12 }),
+    null,
+  );
+  assert.equal(
+    piSessionAttempt(
+      jsonl([
+        ...rows.slice(0, 6),
+        assistant('other-branch', 'attempt-user', 30, 'stop'),
+      ]),
+      window,
+    ),
     null,
   );
 });

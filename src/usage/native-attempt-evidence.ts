@@ -158,28 +158,47 @@ export function piSessionAttempt(
     return null;
   const attributed: unknown[] = [];
   const seen = new Set<string>();
-  let stop: unknown;
+  let tip: string | null = null;
+  let openTurn = false;
+  let completeTurn = false;
   for (const row of rows.slice(1)) {
     if (row['type'] === 'session') return null;
     const message = record(row['message']) ? row['message'] : null;
+    const user = row['type'] === 'message' && message?.['role'] === 'user';
     const assistant =
       row['type'] === 'message' && message?.['role'] === 'assistant';
     const usage =
       row['type'] === 'usage' ||
-      (row['type'] === 'compaction' && row['usage'] !== undefined);
-    if (!assistant && !usage) continue;
+      ((row['type'] === 'compaction' || row['type'] === 'branch_summary') &&
+        row['usage'] !== undefined);
+    if (tip === null && !user && !assistant && !usage) continue;
     const at = millis(row['timestamp']);
     if (!Number.isFinite(at)) return null;
     if (!inside(at, window)) continue;
     const id = row['id'];
-    if (typeof id !== 'string' || seen.has(id)) return null;
+    if (
+      typeof id !== 'string' ||
+      seen.has(id) ||
+      (tip === null ? !user : row['parentId'] !== tip)
+    )
+      return null;
     seen.add(id);
+    tip = id;
+    if (user) {
+      if (openTurn) return null;
+      openTurn = true;
+    }
     if (assistant) {
-      stop = message['stopReason'];
+      const stop = message['stopReason'];
+      if (!openTurn || (stop !== 'stop' && stop !== 'toolUse')) return null;
+      if (stop === 'stop') {
+        openTurn = false;
+        completeTurn = true;
+      }
       attributed.push(message['usage']);
-    } else {
+    } else if (usage) {
       attributed.push(row['usage']);
     }
   }
-  return stop === 'stop' ? piAttemptCounters(attributed) : null;
+  return completeTurn && !openTurn ? piAttemptCounters(attributed) : null;
 }
