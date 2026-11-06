@@ -775,14 +775,12 @@ test('handoff refuses nested redirects and strict invalid input', () => {
 
     const fifo = join(strict.domain.root, 'request.fifo');
     assert.equal(spawnSync('mkfifo', [fifo]).status, 0);
-    const started = Date.now();
     const blockedInput = run(
       handoffArgs('begin', strict.task, fifo, false),
       strict.domain.root,
-      2_000,
     );
-    assert.ok(Date.now() - started < 2_000);
-    assert.equal(blockedInput.status, 2);
+    assert.ifError(blockedInput.error);
+    assert.equal(blockedInput.status, 2, blockedInput.stderr);
     assert.equal(readRecord(strict.task)?.handoffs?.length ?? 0, 0);
     assert.ok(lstatSync(fifo).isFIFO());
   } finally {

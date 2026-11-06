@@ -27,7 +27,9 @@ test(
       spawnSync('codegraph', ['--version'], {
         encoding: 'utf8',
         timeout: 10_000,
-      }).status !== 0,
+      }).status === 0
+        ? false
+        : 'codegraph CLI is not installed',
   },
   async () => {
     const root = makeTempDir('code-prepare-head-drift');

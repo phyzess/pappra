@@ -246,6 +246,36 @@ ACK/REPORT/authority guards and does not promote scoped inventory into global st
 After registered successor first work, the CLI can dispose its source runtime and retain a
 verified transcript while leaving native history unchanged.
 
+### Managed SDK upgrade procedure
+
+Keep the exact SDK version and private-source checks while managed execution
+depends on Pi's internal session queues, compaction and interactive lifecycle.
+The Pi CLI version used for workspace discovery and host wiring is a separate
+contract. A newer CLI on `PATH` can coexist with the pinned SDK at its own
+absolute path.
+
+1. Identify the workflow that needs the new SDK. Stage the exact package in an
+   isolated directory and record its package name, version and artifact
+   integrity. Keep the currently supported SDK available for active work.
+2. Inspect the SDK exports and changes in `dist/core/compaction/compaction.js`,
+   `dist/core/agent-session.js` and `dist/modes/interactive/interactive-mode.js`.
+   Compare the queue, quiescence, summary, resume and interactive handoff
+   behavior that Pappra relies on. Adopt a public replacement only when it
+   supplies those behaviors and their evidence.
+3. In one reviewed candidate, update the exact version and source digests in
+   [the managed SDK gate](../src/hosts/pi/managed-sdk-session.ts), with the
+   affected contract tests. Verify the matching package passes the read-only
+   gate, and that a different version and changed source bytes are refused.
+4. Run the managed SDK, resume-admission and resume-plan tests. Independently
+   review the session and recovery boundaries. Exercise any changed native
+   behavior on the approved host with the pinned package and disposable state
+   before declaring that version supported. Record the exact artifact and
+   which checks ran against fixtures or a native session.
+5. Use the newly supported package only for explicitly selected SDK work.
+   Apply the existing controlled-resume admission to any retained session,
+   including its identity and quiescence evidence. Keep the old package and
+   its records available for investigation.
+
 ## Owned SDK task lifecycle
 
 `initialAssignment` enables deferred first-task admission, while a bootstrap receiver binds

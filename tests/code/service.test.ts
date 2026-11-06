@@ -754,8 +754,11 @@ test('prepare lock release preserves replacement and redirected user files', asy
   }
 });
 
-test('redirected private registration is not trusted as ready', async () => {
-  if (!codeGraphInstalled) return;
+test('redirected private registration is not trusted as ready', async (t) => {
+  if (!codeGraphInstalled) {
+    t.skip('codegraph CLI is not installed');
+    return;
+  }
   const root = makeSingleWorkspace({ source });
   try {
     const service = new CodeIntelligenceService(root);

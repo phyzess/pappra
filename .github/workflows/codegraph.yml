@@ -1,0 +1,63 @@
+name: CodeGraph integration
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/codegraph.yml'
+      - 'src/code/**'
+      - 'src/infra/fs.ts'
+      - 'src/infra/git.ts'
+      - 'src/schemas/**'
+      - 'src/workspace/**'
+      - 'tests/code/**'
+      - 'tests/workspace/fixtures.ts'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'tsconfig*.json'
+  schedule:
+    - cron: '23 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codegraph:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    env:
+      CODEGRAPH_VERSION: '1.4.1'
+      CODEGRAPH_SHA256: fb585ff5018d6faaa46d282b61f4f689bc7967ed8a1b467a5c556dd7ced9b542
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+      - run: pnpm install --frozen-lockfile
+      - name: Prepare pinned CodeGraph
+        shell: bash
+        run: |
+          engine="$RUNNER_TEMP/pappra-codegraph"
+          mkdir "$engine"
+          bundle="$engine/codegraph.tar.gz"
+          url="https://github.com/colbymchenry/codegraph/releases/download/v${CODEGRAPH_VERSION}/codegraph-linux-x64.tar.gz"
+          curl --fail --silent --show-error --location --retry 2 --max-time 60 --output "$bundle" "$url"
+          printf '%s  %s\n' "$CODEGRAPH_SHA256" "$bundle" | sha256sum --check
+          tar -xzf "$bundle" -C "$engine" --strip-components=1
+          test "$("$engine/bin/codegraph" --version)" = "$CODEGRAPH_VERSION"
+          printf '%s\n' "$engine/bin" >> "$GITHUB_PATH"
+      - run: pnpm exec tsc -p tsconfig.test.json
+      - name: Exercise real CodeGraph cases
+        shell: bash
+        run: |
+          test "$(codegraph --version)" = "$CODEGRAPH_VERSION"
+          report="$RUNNER_TEMP/pappra-codegraph.tap"
+          node --test --test-reporter=tap \
+            --test-name-pattern '^(prepare refreshes HEAD|real selected preparation|redirected private registration|multi-repository preparation)' \
+            .build/test/tests/code/observation-scope.test.js .build/test/tests/code/service.test.js | tee "$report"
+          grep -Fx '# tests 4' "$report"
+          grep -Fx '# pass 4' "$report"
+          grep -Fx '# skipped 0' "$report"
