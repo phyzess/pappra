@@ -345,6 +345,39 @@ For each dispatched attempt the coordinator has already written `workflow/partic
   registers no message and touches no claim. See [Awaiting the
   decision](#awaiting-the-decision).
 
+### Structured reviewer findings
+
+A participant with a digest-pinned reviewer assignment may include a
+`report.review` object with schema `pappra/reviewer-report/1`. It names the
+completed writer report by message id and content digest, its input
+revision, and the reviewed candidate's commit and optional patch digest.
+An optional checkpoint reference and digest can identify the #30 review
+package. The `base` field gives the task-start revision or an explicit
+`unavailable` reason. Candidate and base identities are reported separately.
+
+Include up to 16 findings. Each gives a title, location, severity
+(`critical`, `major`, `minor`, or `info`), origin (`introduced` or
+`preexisting`), scope (`in_scope` or `out_of_scope`), and proof. A critical
+finding affects a primary safety or correctness invariant. A major finding
+materially affects a requirement. A minor finding has limited impact.
+Informational findings record context. Observed proof states what the
+reviewer saw or ran and can include bounded evidence references.
+Unverified proof gives a reason and retains its declared severity.
+
+`inspect --json` and a read-only `accept --json` plan expose
+`detail.reviewer_advice` with the rule version, bounded reports and reasons.
+A current, observed, in-scope introduced concern at major or critical
+severity is highlighted for the coordinator. Unverified concerns at that
+level and introduced concerns with an unavailable base need judgment.
+Pre-existing and out-of-scope concerns remain visible as delivery risks.
+An explicitly empty list records `no_findings_reported` for that candidate.
+
+The projection checks the registered candidate report, its applied
+attempt and pinned input. A changed digest or a newer candidate attempt
+makes the advice historical. It makes no observation about the live
+worktree or external proof files. The coordinator still records an
+explicit decision on the exact report through the existing accept command.
+
 ## Acceptance
 
 `accept` is a separate coordinator decision. It refuses a caller that is not the

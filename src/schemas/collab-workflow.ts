@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { z } from 'zod';
+import { reviewerReportSchema } from './reviewer-report.js';
 
 /**
  * Typed orchestration facade documents.
@@ -371,6 +372,7 @@ const reportDeclarationSchema = z
     summary: boundedText(WORKFLOW_MAX_OBJECTIVE),
     blockers: uniqueStrings(WORKFLOW_MAX_ACCEPTANCE),
     outputs: uniqueStrings(WORKFLOW_MAX_DECLARED_RESOURCES * 4),
+    review: reviewerReportSchema.optional(),
   })
   .superRefine((value, context) => {
     if (value.status === 'needs_input' && value.blockers.length === 0)

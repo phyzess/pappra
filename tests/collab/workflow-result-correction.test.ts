@@ -9,12 +9,23 @@ import {
   applyDispatch,
   applyParticipant,
   applyPrepare,
+  inspectWorkflow,
+  loadParticipantRequest,
   planDispatch,
   type WorkflowPrepareRequest,
 } from '../../src/app/collab-workflow.js';
 import { workflowIntentsDir } from '../../src/schemas/collab-workflow.js';
 import { readRecord } from '../../src/collab/store.js';
-import { readRegisteredMessage } from '../../src/collab/envelope.js';
+import {
+  buildMessage,
+  messageFile,
+  readRegisteredMessage,
+} from '../../src/collab/envelope.js';
+import { submitMessage } from '../../src/collab/messages.js';
+import {
+  reviewerReportSchema,
+  type ReviewerReport,
+} from '../../src/schemas/reviewer-report.js';
 import { workflowAssignmentPath } from '../../src/schemas/collab-workflow.js';
 
 function readRegisteredAssignment(taskRoot: string, subtask: string): string {
@@ -51,6 +62,30 @@ const REVIEWER = {
   surface: 'cli',
   configuration_id: 'daily-visible',
 };
+
+function reviewOf(
+  taskRoot: string,
+  reportId: string,
+  digest: string | null,
+): ReviewerReport {
+  assert(digest);
+  const writer = readRecord(taskRoot)?.results.find(
+    (item) => item.message_id === reportId,
+  );
+  assert(writer);
+  return {
+    schema: 'pappra/reviewer-report/1',
+    candidate: {
+      report_message_id: reportId,
+      report_digest: digest,
+      input_revision: writer.input_revision,
+      head: 'a'.repeat(40),
+      patch_digest: null,
+    },
+    base: { state: 'known', revision: 'b'.repeat(40) },
+    findings: [],
+  };
+}
 
 async function cli(args: string[]): Promise<{
   status: number;
@@ -596,6 +631,34 @@ test('target-less reviewer activation registers only, states it, and never repla
       after.claims.some((claim) => claim.subtask_id === 'review'),
       'the reviewer footprint is claimed',
     );
+    const source = report.messages[0]!;
+    const review = reviewOf(taskRoot, source.message_id, source.digest);
+    const written = await applyParticipant(
+      {
+        schema: 'pappra/collab-workflow-participant-request/1',
+        action: 'report',
+        task_root: taskRoot,
+        caller: { ...REVIEWER, cwd: fixture.root },
+        subtask_id: 'review',
+        attempt: 1,
+        caller_pane: null,
+        release: null,
+        report: {
+          status: 'completed',
+          summary: 'No findings.',
+          blockers: [],
+          outputs: [],
+          review,
+        },
+      },
+      { notify: silentNotify },
+    );
+    assert.equal(written.status, 'applied', JSON.stringify(written.blockers));
+    const inspection = await inspectWorkflow(taskRoot);
+    const advice = inspection.detail?.[
+      'reviewer_advice'
+    ] as import('../../src/app/collab-workflow/reviewer-advice.js').ReviewerAdvice;
+    assert.equal(advice.reports[0]?.state, 'no_findings_reported');
   } finally {
     fixture.cleanup();
   }
@@ -1024,6 +1087,61 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
     );
 
     // 5. The reviewer completes the same public path with no outputs.
+    const source = writerReport.messages[0]!;
+    const review = reviewOf(taskRoot, source.message_id, source.digest);
+    const issue = {
+      severity: 'major',
+      title: 'Contract mismatch',
+      location: 'output.txt:1',
+      origin: 'introduced',
+      scope: 'in_scope',
+      proof: {
+        state: 'observed',
+        detail: 'Compared the output with its declared contract.',
+      },
+    } as const;
+    review.findings = [
+      issue,
+      {
+        ...issue,
+        severity: 'critical',
+        proof: {
+          state: 'unverified',
+          reason: 'Could not reproduce on this host.',
+        },
+      },
+      { ...issue, origin: 'preexisting' },
+      { ...issue, scope: 'out_of_scope' },
+    ];
+    assert.equal(
+      reviewerReportSchema.safeParse({
+        ...review,
+        findings: Array(17).fill(issue),
+      }).success,
+      false,
+    );
+    assert.equal(
+      reviewerReportSchema.safeParse({
+        ...review,
+        findings: [{ ...issue, proof: { state: 'observed', detail: ' ' } }],
+      }).success,
+      false,
+    );
+    const rawWriterReport = buildMessage({
+      type: 'REPORT',
+      task_id: 'results',
+      message_id: 'writer-attached-review',
+      from: writerIdentity,
+      to: COORDINATOR,
+      subtask_id: 'writer',
+      attempt: 1,
+      owner_epoch: 1,
+      body: { status: 'completed', review },
+    });
+    const denied = submitMessage(taskRoot, rawWriterReport);
+    assert.equal(denied.ok, false);
+    if (!denied.ok) assert.equal(denied.reason, 'reviewer_role_required');
+
     const reviewerAck = await applyParticipant(
       {
         schema: 'pappra/collab-workflow-participant-request/1',
@@ -1043,12 +1161,19 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
       'applied',
       JSON.stringify(reviewerAck.blockers),
     );
-    const reviewerReport = await applyParticipant(
-      {
+    const reviewerRequestFile = join(domain.root, 'review-report.json');
+    writeFileSync(
+      reviewerRequestFile,
+      JSON.stringify({
         schema: 'pappra/collab-workflow-participant-request/1',
         action: 'report',
         task_root: taskRoot,
-        caller: { ...reviewerIdentity },
+        caller: {
+          agent_id: reviewerIdentity.agent_id,
+          session_id: reviewerIdentity.session_id,
+          harness: reviewerIdentity.harness,
+          cwd: reviewerIdentity.cwd,
+        },
         subtask_id: 'review',
         attempt: 1,
         caller_pane: null,
@@ -1057,15 +1182,84 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
           summary: 'Reviewed the output.',
           blockers: [],
           outputs: [],
+          review,
         },
         release: null,
-      },
-      { notify: spy.notify },
+      }),
     );
+    const loaded = loadParticipantRequest(reviewerRequestFile);
+    assert(loaded.ok, JSON.stringify(loaded));
+    const reviewerRequest = loaded.value;
+    const deniedPlan = await applyParticipant(
+      {
+        ...reviewerRequest,
+        caller: { ...writerIdentity },
+        subtask_id: 'writer',
+      },
+      { apply: false, notify: spy.notify },
+    );
+    assert.equal(deniedPlan.blockers[0]?.code, 'reviewer_role_required');
+    const malformed = submitMessage(
+      taskRoot,
+      buildMessage({
+        type: 'REPORT',
+        task_id: 'results',
+        message_id: 'malformed-review',
+        from: reviewerIdentity,
+        to: COORDINATOR,
+        subtask_id: 'review',
+        attempt: 1,
+        owner_epoch: 1,
+        body: {
+          status: 'completed',
+          review: { ...review, findings: Array(17).fill(issue) },
+        },
+      }),
+    );
+    assert.equal(malformed.ok, false);
+    if (!malformed.ok)
+      assert.equal(malformed.reason, 'review_findings_invalid');
+    const reviewerReport = await applyParticipant(reviewerRequest, {
+      notify: spy.notify,
+    });
     assert.equal(
       reviewerReport.status,
       'applied',
       JSON.stringify(reviewerReport.blockers),
+    );
+    const replay = await applyParticipant(reviewerRequest, {
+      notify: spy.notify,
+    });
+    assert.equal(replay.messages[0]?.duplicate, true);
+    assert.equal(
+      replay.messages[0]?.digest,
+      reviewerReport.messages[0]?.digest,
+    );
+    const plan = await applyAccept(
+      {
+        schema: 'pappra/collab-workflow-accept-request/1',
+        task_root: taskRoot,
+        caller: { ...COORDINATOR, cwd: domain.root },
+        subtask_id: 'review',
+        attempt: 1,
+        caller_pane: null,
+        report_message_id: reviewerReport.messages[0]!.message_id,
+        reason: 'Evaluate advisory findings.',
+      },
+      { apply: false, notify: spy.notify },
+    );
+    assert.equal(plan.status, 'planned', JSON.stringify(plan.blockers));
+    const item = plan.detail?.reviewer_advice?.reports[0];
+    assert.equal(item?.state, 'blocking_concerns');
+    assert(item && 'findings' in item);
+    assert.deepEqual(
+      item.findings.map((finding) => finding.reason),
+      [
+        'introduced_in_scope_concern',
+        'unverified_concern',
+        'preexisting_risk',
+        'out_of_scope_risk',
+      ],
     );
     const reviewerAccept = await applyAccept(
       {
@@ -1128,6 +1322,20 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
       evaluation.nodes.map((node) => `${node.node_id}:${node.status}`).sort(),
       ['review:accepted', 'writer:accepted'],
     );
+    const candidate = readRegisteredMessage(taskRoot, source.message_id);
+    assert(candidate);
+    writeFileSync(
+      messageFile(taskRoot, source.message_id),
+      JSON.stringify({
+        ...candidate,
+        body: { ...candidate.body, summary: 'Changed candidate report bytes.' },
+      }),
+    );
+    const inspected = await inspectWorkflow(taskRoot);
+    const advice = inspected.detail?.[
+      'reviewer_advice'
+    ] as import('../../src/app/collab-workflow/reviewer-advice.js').ReviewerAdvice;
+    assert.equal(advice.reports[0]?.state, 'candidate_drift');
 
     // 7. A repeat dispatch never adds a second wake.
     const repeat = await applyDispatch(

@@ -11,6 +11,7 @@ import {
 } from '../schemas/collaboration.js';
 import { isPathInside } from '../schemas/paths.js';
 import { observePath, resolveRealpath } from '../infra/fs.js';
+import { readBoundedFile } from '../infra/bounded-file.js';
 import { errorMessage, type Outcome } from '../schemas/outcome.js';
 
 /**
@@ -466,9 +467,16 @@ export async function readRegisteredMessageSafe(
       'Restore a regular message file inside the task; nothing was read into the protocol.',
     );
   }
+  const captured = readBoundedFile(file, MAX_ENVELOPE_BYTES);
+  if (!captured.ok)
+    return serviceFailure(
+      'message_registration_invalid',
+      `Registered message could not be read as a bounded regular file: ${file}`,
+      'Restore the exact registered message before using it as evidence.',
+    );
   let payload: unknown;
   try {
-    payload = JSON.parse(fs.readFileSync(file, 'utf8'));
+    payload = JSON.parse(captured.text);
   } catch (error) {
     return serviceFailure(
       'message_registration_invalid',
@@ -498,7 +506,7 @@ export async function readRegisteredMessageSafe(
   }
   return {
     ok: true,
-    value: { message, file, digest: digestOf(fs.readFileSync(file)) },
+    value: { message, file, digest: captured.digest },
   };
 }
 

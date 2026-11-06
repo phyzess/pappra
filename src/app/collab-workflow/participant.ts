@@ -8,6 +8,7 @@ import {
 import { transitionAttempt } from '../../collab/lifecycle.js';
 import { isAssignment } from '../../collab/contracts.js';
 import { nativeObservationAgeEvidence } from '../../collab/native-observation.js';
+import { reviewAttachmentFailure } from '../../collab/reviewer-report.js';
 import { releaseClaim } from '../../collab/resources.js';
 import {
   coordinatorLineage,
@@ -494,6 +495,21 @@ export async function applyParticipant(
       };
     }
     const resolved = resolveOutputs(declaration.outputs, claims);
+    if (declaration.review !== undefined) {
+      const failure = reviewAttachmentFailure(
+        record,
+        attempt,
+        declaration.review,
+      );
+      if (failure !== null)
+        blockers.push({
+          code: failure,
+          detail:
+            'Structured findings require the current digest-pinned reviewer assignment.',
+          next_action:
+            'Check the sealed reviewer assignment and review declaration.',
+        });
+    }
     blockers.push(...resolved.blockers);
     if (blockers.length === 0) {
       // A report id is deterministic per attempt and report content: an honest resend is a
@@ -505,6 +521,9 @@ export async function applyParticipant(
           summary: declaration.summary,
           blockers: [...declaration.blockers],
           outputs: resolved.outputs,
+          ...(declaration.review === undefined
+            ? {}
+            : { review: declaration.review }),
         }),
       )
         .replace('sha256:', '')
@@ -524,6 +543,9 @@ export async function applyParticipant(
           summary: declaration.summary,
           blockers: [...declaration.blockers],
           outputs: resolved.outputs.map((item) => ({ ...item })),
+          ...(declaration.review === undefined
+            ? {}
+            : { review: declaration.review }),
           // `applyMessage` admits the result with this revision; omitting it makes a pinned
           // assignment classify the report as stale instead of completing it.
           input_revision:
