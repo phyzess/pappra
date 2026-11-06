@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs, { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
+import { createFakeHerdr } from '../helpers/fake-herdr.js';
 import { runCli } from '../../src/cli/run.js';
 import { retireManagedPiSource } from '../../src/app/managed-pi-retirement.js';
 import { prepareManagedPiHandoffReceiver } from '../../src/app/managed-pi-handoff-receiver.js';
@@ -48,10 +49,7 @@ import {
   type VisibleBootstrapReport,
   type VisibleBootstrapRequest,
 } from '../../src/app/collab-bootstrap.js';
-import type {
-  HerdrAgentObservation,
-  HerdrListResult,
-} from '../../src/app/collab-notify.js';
+import type { HerdrAgentObservation } from '../../src/app/collab-notify.js';
 import type { HerdrBootstrapOps } from '../../src/app/collab-bootstrap-transport.js';
 import { makeTaskDomain } from './task-resources-fixtures.js';
 import { collabBindingSchema } from '../../src/schemas/collaboration.js';
@@ -797,14 +795,16 @@ function fakeHerdr(onList?: () => void): HerdrBootstrapOps {
     status: 'working',
     focused: false,
   };
-  const result: HerdrListResult = { ok: true, agents: [agent] };
-  return {
+  return createFakeHerdr({
     id: 'test-only-herdr',
-    listAgents: async () => {
-      onList?.();
-      return result;
+    agents: [agent],
+    transport: {
+      list: async () => {
+        onList?.();
+        return { ok: true, agents: [agent] };
+      },
     },
-  } as unknown as HerdrBootstrapOps;
+  }).ops;
 }
 
 function transitionDeps(
