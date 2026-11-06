@@ -1,0 +1,7 @@
+{"type":"session_meta","timestamp":"2026-11-06T01:00:00.000Z","payload":{"id":"recorded-codex-thread"}}
+{"type":"event_msg","timestamp":"2026-11-06T01:00:00.100Z","payload":{"type":"task_started","turn_id":"turn-1"}}
+{"type":"event_msg","timestamp":"2026-11-06T01:00:00.200Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1407585,"cached_input_tokens":1324800,"cache_write_input_tokens":0,"output_tokens":6413}}}}
+{"type":"event_msg","timestamp":"2026-11-06T01:00:00.300Z","payload":{"type":"task_complete","turn_id":"turn-1"}}
+{"type":"event_msg","timestamp":"2026-11-06T01:00:00.400Z","payload":{"type":"task_started","turn_id":"turn-2"}}
+{"type":"event_msg","timestamp":"2026-11-06T01:00:00.500Z","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":2819601,"cached_input_tokens":2712832,"cache_write_input_tokens":0,"output_tokens":13228}}}}
+{"type":"event_msg","timestamp":"2026-11-06T01:00:00.600Z","payload":{"type":"task_complete","turn_id":"turn-2"}}

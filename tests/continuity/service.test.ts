@@ -21,6 +21,9 @@ import * as store from '../../src/collab/store.js';
 import { buildMessage } from '../../src/collab/envelope.js';
 import { submitMessage } from '../../src/collab/messages.js';
 import { inspectWorkflow } from '../../src/app/collab-workflow/inspect.js';
+import { applyParticipant } from '../../src/app/collab-workflow/participant.js';
+import { loadParticipantRequest } from '../../src/app/collab-workflow.js';
+import { WORKFLOW_PARTICIPANT_REQUEST_SCHEMA } from '../../src/schemas/collab-workflow.js';
 import { owner } from '../collab/scenarios.js';
 import { diagnosticCodes } from '../../src/schemas/errors.js';
 import { sha256Digest } from '../../src/infra/fs.js';
@@ -1441,7 +1444,7 @@ test('oversized Git diff capture is unknown and cannot verify current', async ()
   }
 });
 
-test('inspect and resume observe the same attempt usage from a registered report output', async () => {
+test('inspect and resume project private usage captured through a workflow report', async () => {
   const root = makeWorkspace();
   try {
     const taskRoot = join(root, 'domain', 'tasks', 'review-task');
@@ -1474,8 +1477,6 @@ test('inspect and resume observe the same attempt usage from a registered report
     );
     assert.equal(submitMessage(taskRoot, assignment, { clock }).ok, true);
 
-    const file = join(taskRoot, 'native-usage', 'work-1.pi-session.jsonl');
-    mkdirSync(join(taskRoot, 'native-usage'), { mode: 0o700 });
     const evidence = [
       { type: 'session', id: assignee.session_id },
       {
@@ -1506,37 +1507,69 @@ test('inspect and resume observe the same attempt usage from a registered report
     ]
       .map((row) => JSON.stringify(row))
       .join('\n');
-    writeFileSync(file, evidence, { mode: 0o600 });
-    const report = buildMessage(
-      {
-        type: 'REPORT',
-        message_id: 'report-work',
-        task_id: 'review-task',
-        from: assignee,
-        to: owner,
+    const file = join(root, 'private-report.json');
+    writeFileSync(
+      file,
+      JSON.stringify({
+        schema: WORKFLOW_PARTICIPANT_REQUEST_SCHEMA,
+        action: 'report',
+        task_root: taskRoot,
+        caller: { ...assignee, cwd: root },
         subtask_id: 'work',
         attempt: 1,
-        owner_epoch: 1,
-        body: {
+        report: {
           status: 'completed',
-          outputs: [{ ref: file, digest: sha256Digest(evidence) }],
+          summary: 'Reviewed',
+          blockers: [],
+          outputs: [],
+          usage_capture: {
+            through: new Date(clock + 1500).toISOString(),
+            jsonl: evidence,
+          },
         },
-      },
-      { clock: clock + 2000 },
+        release: null,
+      }),
+      { mode: 0o600 },
     );
-    assert.equal(
-      submitMessage(taskRoot, report, { clock: clock + 2000 }).ok,
-      true,
-    );
+    const request = loadParticipantRequest(file);
+    assert(request.ok, JSON.stringify(request));
+    const notify = async () => ({
+      ok: false as const,
+      code: 'fixture_no_native',
+      message: 'No native transport in this test.',
+      retryable: false,
+      nextAction: null,
+    });
+    const report = await applyParticipant(request.value, {
+      clock: clock + 2000,
+      notify,
+    });
+    assert.equal(report.status, 'applied', JSON.stringify(report));
     const stateBefore = readFileSync(join(taskRoot, 'task.json'));
-    assert.deepEqual(store.readRecord(taskRoot)?.results[0]?.outputs, [
-      { ref: file, digest: sha256Digest(evidence) },
-    ]);
+    assert.doesNotMatch(
+      stateBefore.toString(),
+      /private transcript fixture|usage_capture/,
+    );
+    assert.deepEqual(store.readRecord(taskRoot)?.results[0]?.outputs, []);
     assert.equal(
       store.readRecord(taskRoot)?.results[0]?.classification,
       'applied',
     );
 
+    const replay = await applyParticipant(request.value, {
+      clock: clock + 3000,
+      notify,
+    });
+    assert.equal(replay.messages[0]?.duplicate, true, JSON.stringify(replay));
+    const messageId = report.detail?.message_id;
+    assert(messageId);
+    assert.doesNotMatch(
+      readFileSync(join(taskRoot, 'messages', messageId + '.json'), 'utf8'),
+      /private transcript fixture|usage_capture/,
+    );
+    // The request may be discarded after reporting. Inspect and resume use the
+    // admitted receipt and never reopen a transcript or a request path.
+    unlinkSync(file);
     const service = new CheckpointService(root);
     const saved = await service.save({
       ...initialInput(),
@@ -1566,20 +1599,6 @@ test('inspect and resume observe the same attempt usage from a registered report
       /private transcript fixture|pi-test-session/,
     );
     assert.deepEqual(readFileSync(join(taskRoot, 'task.json')), stateBefore);
-
-    writeFileSync(file, evidence + '\n');
-    const drift = await service.resume({
-      taskId: 'task-p07',
-      currentSession: 'pi-session-a',
-    });
-    assert.deepEqual(
-      drift.packet?.collaborationObservation.attemptUsage?.attempts[0]
-        ?.token_usage,
-      {
-        state: 'unavailable',
-        reason: 'evidence_unreadable_or_changed',
-      },
-    );
   } finally {
     cleanup(root);
   }

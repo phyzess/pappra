@@ -156,11 +156,7 @@ export async function inspectWorkflow(
   }
   const limit = options.limit;
   const attempts = bound(record.attempts ?? [], limit);
-  const attemptUsage = projectAttemptUsage(
-    task.taskRoot,
-    record,
-    attempts.items,
-  );
+  const attemptUsage = projectAttemptUsage(record, attempts.items);
   const messages = bound(record.messages ?? [], limit);
   const uncertainty = bound(
     (record.uncertainty ?? []).filter((item) => item.resolved_at === null),

@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import test from 'node:test';
+import { getPackageRoot } from '../../src/package-info.js';
 import {
   claudeInvocationAttempt,
   codexRolloutAttempt,
@@ -15,6 +18,49 @@ const window = {
 };
 const jsonl = (rows: readonly unknown[]) =>
   `${rows.map((row) => JSON.stringify(row)).join('\n')}\n`;
+const recording = (name: string) =>
+  readFileSync(
+    join(getPackageRoot(), 'tests', 'usage', 'fixtures', name),
+    'utf8',
+  );
+
+test('recorded Codex snapshots count the selected turn delta', () => {
+  const usage = codexRolloutAttempt(recording('codex-rollout.jsonl'), {
+    sessionId: 'recorded-codex-thread',
+    started: clock + 350,
+    finished: clock + 700,
+  });
+  assert.deepEqual(usage, {
+    input_tokens: 1412016,
+    output_tokens: 6815,
+    cache_read_input_tokens: 1388032,
+    cache_write_input_tokens: 0,
+    total_tokens: 1418831,
+  });
+});
+
+test('recorded Claude stream uses the terminal usage from its native envelope', () => {
+  const usage = claudeInvocationAttempt(
+    recording('claude-stream.jsonl'),
+    {
+      status: 'exited',
+      exit_code: 0,
+      started_at: stamp(20),
+      finished_at: stamp(30),
+    },
+    { ...window, sessionId: 'recorded-claude-session' },
+  );
+  assert.equal(usage?.total_tokens, 17);
+});
+
+test('recorded Pi turn includes assistant responses across a native tool chain', () => {
+  const usage = piSessionAttempt(recording('pi-session.jsonl'), {
+    sessionId: 'recorded-pi-session',
+    started: clock,
+    finished: clock + 5000,
+  });
+  assert.equal(usage?.total_tokens, 1931913);
+});
 
 function codexEvent(timestamp: number, type: string, payload: object) {
   return {
@@ -68,7 +114,10 @@ test('Codex rollout isolates completed turns by subtracting the prior thread tot
     codexRolloutAttempt(jsonl([rows[0], ...rows.slice(4)]), window),
     null,
   );
-  assert.equal(codexRolloutAttempt(jsonl(rows.slice(0, 9)), window), null);
+  assert.equal(
+    codexRolloutAttempt(jsonl(rows.slice(0, 9)), window)?.total_tokens,
+    71,
+  );
 });
 
 test('Claude terminal evidence requires the exact session and a complete invocation window', () => {

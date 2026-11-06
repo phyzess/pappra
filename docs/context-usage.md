@@ -27,26 +27,35 @@ reading process.
 
 ## Attempt accounting design
 
-Attempt accounting reads completed native evidence registered for the exact
-attempt. It projects counts into workflow inspection and the advisory resume
-packet. Evidence references must resolve inside the task's private evidence
-scope and match their registered digests. The reader validates the native
-identity and the attempt boundary, caps work across attempts, and exposes
-only counters and a typed reason when evidence is unavailable. These reads
-do not launch a model or participate in execution admission.
+Attempt accounting derives counters from an optional native evidence capture
+supplied in the attempt owner's final workflow report request. The capture
+is explicit input to the report, with bounded native JSONL and the matching
+execution metadata where required. The report validates the native session
+identity and the completed-work window before registering a compact
+observation and the capture digest. The raw transcript stays in the private
+request. Report admission and acceptance decisions are independent of
+whether usage is available.
 
-Register native files as outputs of the final report for the attempt. Use
-`native-usage/<subtask>-<attempt>.<source>` inside the task directory, with
-source names `codex-rollout.jsonl`, `pi-session.jsonl`, or both
-`claude-events.jsonl` and `claude-execution.json`. The Claude capture's
-`events_file` must identify its paired stream. Keep the raw files private and
-register their digests through the normal report path. The reader considers
-up to 16 attempts, with 16 MiB total native bytes per projection.
+Set `report.usage_capture` in the private JSON request to an object with
+`through` (an ISO timestamp at or before report submission) and `jsonl`
+(the native evidence text, up to 512 KiB). For Claude, also include
+`execution` with the captured `status`, `exit_code`, `started_at`, and
+`finished_at`. Keep the request outside version control. A read-only
+reviewer can attach usage with an empty `outputs` list.
+
+Workflow inspection and advisory resume project only the observation on the
+admitted report for the exact attempt, with a limit of 16 attempts. They use
+the task record already opened by the command and open no paths supplied by
+the report for accounting. This also lets a read-only reviewer report usage
+without a separate write claim for an accounting artifact.
 
 Read `detail.attempt_usage` in `pappra collab workflow inspect --json` and
 `collaborationObservation.attemptUsage` in the JSON resume packet. The
-projection includes the number of omitted attempts. Unregistered files and
-overlapping attempt windows for one native session cannot establish usage.
+projection includes the number of omitted attempts. Captures without a proven
+window, including overlapping attempt windows for one native session, report
+usage as unavailable. For a report submitted while its own native turn is
+still running, the capture can account for earlier completed turns. A capture
+with no completed work in the attempt has no usable token observation.
 
 | Host | Native source | Attribution and cache accounting |
 | --- | --- | --- |

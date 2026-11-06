@@ -23,7 +23,6 @@ export const attemptUsageSchema = z.discriminatedUnion('state', [
       'unsupported_harness',
       'attempt_boundary_unproven',
       'evidence_not_registered',
-      'evidence_unreadable_or_changed',
       'evidence_budget_exceeded',
       'native_usage_unproven',
     ]),
@@ -31,6 +30,23 @@ export const attemptUsageSchema = z.discriminatedUnion('state', [
 ]);
 
 export type AttemptUsage = z.infer<typeof attemptUsageSchema>;
+
+export const attemptUsageReceiptSchema = z
+  .strictObject({
+    schema: z.literal('pappra/attempt-usage-receipt/1'),
+    session_id: z.string(),
+    through: z.iso.datetime({ offset: true }).nullable(),
+    token_usage: attemptUsageSchema,
+  })
+  .refine(
+    ({ token_usage: usage }) =>
+      usage.state === 'unavailable' ||
+      (usage.input_tokens + usage.output_tokens === usage.total_tokens &&
+        usage.cache_read_input_tokens <= usage.input_tokens &&
+        (usage.cache_write_input_tokens ?? 0) <= usage.input_tokens),
+  );
+
+export type AttemptUsageReceipt = z.infer<typeof attemptUsageReceiptSchema>;
 
 export const attemptUsageProjectionSchema = z.strictObject({
   attempts: z

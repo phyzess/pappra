@@ -371,6 +371,8 @@ const reportDeclarationSchema = z
     summary: boundedText(WORKFLOW_MAX_OBJECTIVE),
     blockers: uniqueStrings(WORKFLOW_MAX_ACCEPTANCE),
     outputs: uniqueStrings(WORKFLOW_MAX_DECLARED_RESOURCES * 4),
+    // Usage is advisory. Unrecognized capture data must never block a report.
+    usage_capture: z.unknown().optional(),
   })
   .superRefine((value, context) => {
     if (value.status === 'needs_input' && value.blockers.length === 0)

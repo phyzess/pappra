@@ -51,7 +51,9 @@ export function codexRolloutAttempt(
   )
     return null;
 
-  const fresh = inside(millis(header['timestamp']), window);
+  const fresh =
+    inside(millis(header['timestamp']), window) &&
+    header['payload']['parent_thread_id'] == null;
   let prior: unknown = fresh
     ? {
         input_tokens: 0,
@@ -108,9 +110,8 @@ export function codexRolloutAttempt(
         break;
     }
   }
-  return turn === null && after !== null
-    ? codexAttemptCounters(after, before)
-    : null;
+  // An in-flight tail cannot change the last completed cumulative snapshot.
+  return after === null ? null : codexAttemptCounters(after, before);
 }
 
 /** The execution envelope bounds one captured Claude invocation. */
@@ -160,7 +161,7 @@ export function piSessionAttempt(
   const seen = new Set<string>();
   let tip: string | null = null;
   let openTurn = false;
-  let completeTurn = false;
+  let completedRows = 0;
   for (const row of rows.slice(1)) {
     if (row['type'] === 'session') return null;
     const message = record(row['message']) ? row['message'] : null;
@@ -191,14 +192,15 @@ export function piSessionAttempt(
     if (assistant) {
       const stop = message['stopReason'];
       if (!openTurn || (stop !== 'stop' && stop !== 'toolUse')) return null;
+      attributed.push(message['usage']);
       if (stop === 'stop') {
         openTurn = false;
-        completeTurn = true;
+        completedRows = attributed.length;
       }
-      attributed.push(message['usage']);
     } else if (usage) {
       attributed.push(row['usage']);
+      if (!openTurn && completedRows > 0) completedRows = attributed.length;
     }
   }
-  return completeTurn && !openTurn ? piAttemptCounters(attributed) : null;
+  return piAttemptCounters(attributed.slice(0, completedRows));
 }
