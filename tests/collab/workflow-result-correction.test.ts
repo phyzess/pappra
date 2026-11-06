@@ -1163,6 +1163,43 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
       'applied',
       JSON.stringify(reviewerAck.blockers),
     );
+    const reviewerAttempt = readRecord(taskRoot)?.attempts.find(
+      (entry) => entry.subtask_id === 'review',
+    );
+    assert(reviewerAttempt);
+    const started = Date.parse(reviewerAttempt.created_at);
+    const usageCapture = {
+      through: new Date(started + 3).toISOString(),
+      jsonl: [
+        { type: 'session', id: reviewerIdentity.session_id },
+        {
+          type: 'message',
+          id: 'prompt',
+          parentId: null,
+          timestamp: new Date(started + 1).toISOString(),
+          message: { role: 'user' },
+        },
+        {
+          type: 'message',
+          id: 'reply',
+          parentId: 'prompt',
+          timestamp: new Date(started + 2).toISOString(),
+          message: {
+            role: 'assistant',
+            stopReason: 'stop',
+            usage: {
+              input: 3,
+              output: 4,
+              cacheRead: 5,
+              cacheWrite: 0,
+              totalTokens: 12,
+            },
+          },
+        },
+      ]
+        .map((row) => JSON.stringify(row))
+        .join('\n'),
+    };
     const reviewerRequestFile = join(domain.root, 'review-report.json');
     writeFileSync(
       reviewerRequestFile,
@@ -1185,6 +1222,7 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
           blockers: [],
           outputs: [],
           review,
+          usage_capture: usageCapture,
         },
         release: null,
       }),
@@ -1223,6 +1261,7 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
       assert.equal(malformed.reason, 'review_findings_invalid');
     const reviewerReport = await applyParticipant(reviewerRequest, {
       notify: spy.notify,
+      clock: started + 4,
     });
     assert.equal(
       reviewerReport.status,
@@ -1231,6 +1270,7 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
     );
     const replay = await applyParticipant(reviewerRequest, {
       notify: spy.notify,
+      clock: started + 5,
     });
     assert.equal(replay.messages[0]?.duplicate, true);
     assert.equal(
@@ -1266,6 +1306,18 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
     const opened = await openWorkflowTask(taskRoot);
     assert(opened.ok);
     const reviewId = reviewerReport.messages[0]!.message_id;
+    const envelope = readRegisteredMessage(taskRoot, reviewId);
+    assert.deepEqual(envelope?.body.review, review);
+    assert.equal(JSON.stringify(envelope).includes('usage_capture'), false);
+    const combined = await inspectWorkflow(taskRoot);
+    const usage = combined.detail?.[
+      'attempt_usage'
+    ] as import('../../src/schemas/attempt-usage.js').AttemptUsageProjection;
+    const usageRow = usage.attempts.find(
+      (entry) => entry.subtask_id === 'review',
+    );
+    assert.equal(usageRow?.token_usage.state, 'available');
+    assert.equal(usageRow.token_usage.total_tokens, 12);
     const admittedReview = opened.value.record.messages.find(
       (entry) => entry.message_id === reviewId,
     );
