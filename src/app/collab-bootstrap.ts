@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../schemas/reconciliation.js';
 import { allocateSibling } from './collab-bootstrap-sibling/allocate.js';
 import { launchSibling } from './collab-bootstrap-sibling/launch.js';
 import { deliverSibling } from './collab-bootstrap-sibling/deliver.js';
@@ -132,7 +133,7 @@ export type BootstrapStatus =
   | 'invalid'
   | 'failed'
   | 'unknown'
-  | 'reconcile_required';
+  | typeof reconciliationStatus.native;
 
 export interface VisibleBootstrapRequest {
   readonly schema: typeof COLLAB_BOOTSTRAP_REQUEST_SCHEMA;
@@ -3930,7 +3931,7 @@ export async function planVisibleBootstrap(
         'plan',
         request,
         requestDigestOf(input),
-        'reconcile_required',
+        reconciliationStatus.native,
         'request_in_progress_or_ambiguous',
         'A prior apply reserved this request but did not reach a recorded terminal result.',
         'Inspect the durable pane, agent and delivery state; plan never repairs an ambiguous effect.',
@@ -4036,7 +4037,7 @@ export async function applyVisibleBootstrap(
       'apply',
       request,
       requestDigest,
-      'reconcile_required',
+      reconciliationStatus.native,
       'request_in_progress_or_ambiguous',
       `Existing bootstrap request is in phase ${String(phase)}; no effect was repeated.`,
       'Inspect the persisted pane, agent, binding and delivery state before creating a new request.',
@@ -4071,7 +4072,7 @@ export async function applyVisibleBootstrap(
         ? 'invalid'
         : existing === undefined
           ? 'needs_input'
-          : 'reconcile_required',
+          : reconciliationStatus.native,
       reservation.code,
       reservation.message,
       'Inspect the serialized request reservation; no duplicate effect is permitted.',

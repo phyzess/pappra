@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import path from 'node:path';
 import {
   buildMessage,
@@ -1062,7 +1063,7 @@ export async function applyParticipant(
         ? writing
           ? 'applied'
           : 'planned'
-        : 'needs-reconciliation',
+        : reconciliationStatus.aggregate,
     ok: blockers.length === 0,
     task_id: record.task_id,
     task_root: task.taskRoot,

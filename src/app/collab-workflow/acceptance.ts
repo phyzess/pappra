@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import {
   buildMessage,
   contentDigest,
@@ -582,7 +583,11 @@ export async function applyAcceptBatch(
       );
     } catch (error) {
       threw = true;
-      items.push({ ...item, status: 'needs-reconciliation', ok: false });
+      items.push({
+        ...item,
+        status: reconciliationStatus.aggregate,
+        ok: false,
+      });
       blockers.push({
         code: 'accept_entry_threw',
         detail: `${label(entry)}: ${error instanceof Error ? error.message : String(error)}`,
@@ -613,7 +618,7 @@ export async function applyAcceptBatch(
   return {
     ...base,
     status: threw
-      ? 'needs-reconciliation'
+      ? reconciliationStatus.aggregate
       : allOk
         ? writing
           ? 'applied'

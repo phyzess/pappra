@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import path from 'node:path';
 import type { Message } from '../../collab/types.js';
 import type { Assignment } from '../../collab/contracts.js';
@@ -776,7 +777,7 @@ export async function applyPrepare(
   if (record === null)
     return {
       ...mutableResult,
-      status: 'needs-reconciliation',
+      status: reconciliationStatus.aggregate,
       task_id: request.task_id,
       task_root: cohort.taskRoot,
       blockers: [
@@ -1166,7 +1167,8 @@ export async function applyPrepare(
         'Keep the observed binding, or use collab binding to change it explicitly.',
     });
 
-  const status = blockers.length === 0 ? 'applied' : 'needs-reconciliation';
+  const status =
+    blockers.length === 0 ? 'applied' : reconciliationStatus.aggregate;
   return {
     ...mutableResult,
     // `emptyResult` starts at ok:false (an invalid request); an applied prepare is a real

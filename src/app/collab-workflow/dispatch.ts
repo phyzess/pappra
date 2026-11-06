@@ -1,3 +1,5 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
+import type { Outcome } from '../../schemas/outcome.js';
 import {
   reclaimOwnedPanes,
   type PaneReclaimEntry,
@@ -175,9 +177,7 @@ function writeDispatchOutcome(
   file: string,
   outcome: DispatchOutcome,
   expectedDigest: string | null,
-):
-  | { readonly ok: true; readonly digest: string }
-  | { readonly ok: false; readonly detail: string } {
+): Outcome<string, { readonly ok: false; readonly detail: string }> {
   if (
     assertRealChain(taskRoot, file) !== null ||
     !outcomeDigestMatches(file, expectedDigest)
@@ -195,7 +195,7 @@ function writeDispatchOutcome(
     });
     if (!published)
       return { ok: false, detail: 'outcome_changed_before_publish' };
-    return { ok: true, digest };
+    return { ok: true, value: digest };
   } catch (error) {
     return {
       ok: false,
@@ -1505,7 +1505,7 @@ export async function applyDispatch(
           });
           return;
         }
-        outcomeExpectedDigest = fenced.digest;
+        outcomeExpectedDigest = fenced.value;
       }
       const changed = await revalidateWorkflowTask(task);
       if (!changed.ok) {
@@ -2076,7 +2076,7 @@ export async function applyDispatch(
     blockers.length === 0
       ? 'applied'
       : notified.length > 0 || intents.length > 0
-        ? 'needs-reconciliation'
+        ? reconciliationStatus.aggregate
         : 'blocked';
   return {
     ...base,

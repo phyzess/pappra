@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import path from 'node:path';
 import { validateSuccession } from '../collab-route.js';
 import { digestText } from '../collab-session-transition-validation.js';
@@ -101,7 +102,7 @@ async function ensureTaskRetirementMarker(
       report: failureReport(
         'apply',
         request,
-        'reconcile_required',
+        reconciliationStatus.native,
         'successor_route_binding_receipt_missing',
         'Task retirement requires the exact durable successor route-binding receipt.',
         'Reconcile the route binding before creating a retirement marker.',
@@ -119,7 +120,7 @@ async function ensureTaskRetirementMarker(
       report: failureReport(
         'apply',
         request,
-        'reconcile_required',
+        reconciliationStatus.native,
         'successor_route_binding_missing',
         'The recorded successor route binding is missing or has changed.',
         'Reconcile the task-local binding before retirement; no archive marker was written.',
@@ -176,7 +177,9 @@ async function ensureTaskRetirementMarker(
         report: failureReport(
           'apply',
           request,
-          intent.kind === 'invalid' ? 'needs_input' : 'reconcile_required',
+          intent.kind === 'invalid'
+            ? 'needs_input'
+            : reconciliationStatus.native,
           intent.code,
           intent.message,
           intent.nextAction,
@@ -241,7 +244,7 @@ async function ensureTaskRetirementMarker(
         report: failureReport(
           'apply',
           request,
-          'reconcile_required',
+          reconciliationStatus.native,
           'task_retirement_receipt_mismatch',
           'The completed reversible retirement marker no longer matches its durable receipt.',
           'Reconcile the marker and task journal; do not overwrite or re-create it.',
@@ -261,7 +264,7 @@ async function ensureTaskRetirementMarker(
         report: failureReport(
           'apply',
           request,
-          'reconcile_required',
+          reconciliationStatus.native,
           'task_retirement_outcome_unknown',
           'A prior retirement marker effect is pending/unknown and its exact artifact is not available for reconciliation.',
           'Inspect the task-local path and journal; never replay an ambiguous archive write.',
@@ -322,7 +325,7 @@ async function ensureTaskRetirementMarker(
       report: failureReport(
         'apply',
         request,
-        'reconcile_required',
+        reconciliationStatus.native,
         'task_retirement_outcome_unknown',
         `The retirement marker write did not return a confirmed result (${written.code}).`,
         'Inspect the exact task-local artifact and journal; do not replay the write blindly.',

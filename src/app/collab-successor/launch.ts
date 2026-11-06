@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -80,7 +81,7 @@ export interface SuccessorLaunchResult {
     | 'identity_unavailable'
     | 'blocked'
     | 'invalid'
-    | 'reconcile_required'
+    | typeof reconciliationStatus.native
     | 'already_recorded'
     | 'failed';
   readonly request_id: string | null;
@@ -386,7 +387,7 @@ export async function runSuccessorLaunch(
     return result({
       ...base,
       task_id: taskId,
-      status: 'reconcile_required',
+      status: reconciliationStatus.native,
       steps: stepStates,
       blockers: [
         {
@@ -665,7 +666,7 @@ export async function runSuccessorLaunch(
     return result({
       ...common,
       steps,
-      status: outcome.unknown ? 'reconcile_required' : 'failed',
+      status: outcome.unknown ? reconciliationStatus.native : 'failed',
       blockers: [
         {
           code: `${step}_${outcome.unknown ? 'unknown' : 'failed'}`,
@@ -678,7 +679,7 @@ export async function runSuccessorLaunch(
   if (!begin('split'))
     return result({
       ...common,
-      status: 'reconcile_required',
+      status: reconciliationStatus.native,
       blockers: [
         { code: 'journal_unsafe', detail: 'A step file already exists.' },
       ],
@@ -696,7 +697,7 @@ export async function runSuccessorLaunch(
     return result({
       ...common,
       steps,
-      status: 'reconcile_required',
+      status: reconciliationStatus.native,
       pane_id: paneId,
       blockers: [
         {
@@ -908,7 +909,7 @@ export async function runSuccessorLaunch(
     return result({
       ...common,
       steps,
-      status: 'reconcile_required',
+      status: reconciliationStatus.native,
       pane_id: paneId,
       identity,
       evidence,

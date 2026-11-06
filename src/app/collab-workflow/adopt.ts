@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../../schemas/reconciliation.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readSuccessorOutcome } from '../collab-successor/journal.js';
@@ -537,7 +538,7 @@ export async function applyAdopt(
     };
   return {
     ...common,
-    status: 'needs-reconciliation',
+    status: reconciliationStatus.aggregate,
     blockers: [
       {
         code:

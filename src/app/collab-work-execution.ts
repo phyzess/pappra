@@ -1,3 +1,4 @@
+import { reconciliationStatus } from '../schemas/reconciliation.js';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -122,7 +123,7 @@ export interface WorkExecutionNodeResult {
     | 'planned'
     | 'dispatched'
     | 'blocked'
-    | 'reconciliation-required'
+    | typeof reconciliationStatus.workOrRole
     | 'not-dispatchable';
   readonly blockers: readonly string[];
   readonly next_action: string | null;
@@ -164,7 +165,11 @@ export interface WorkExecutionReport {
   readonly schema: typeof COLLAB_WORK_EXECUTION_SCHEMA;
   readonly ok: boolean;
   readonly status:
-    'planned' | 'applied' | 'blocked' | 'needs-reconciliation' | 'invalid';
+    | 'planned'
+    | 'applied'
+    | 'blocked'
+    | typeof reconciliationStatus.aggregate
+    | 'invalid';
   readonly diagnostics: readonly string[];
   readonly apply: boolean;
   readonly task_root: string;
@@ -303,7 +308,7 @@ function nodeResult(
     acceptance: 'not-applicable',
     ...extras,
     next_action:
-      status === 'reconciliation-required'
+      status === reconciliationStatus.workOrRole
         ? (extras.next_action ?? DISPATCH_RECONCILIATION_NEXT_ACTION)
         : (extras.next_action ?? null),
   };
@@ -533,14 +538,14 @@ function makeReport(input: {
   const awaiting = [...input.awaiting].sort();
   const rejected = [...input.rejected].sort();
   const uncertain = nodes.some(
-    (node) => node.execution_status === 'reconciliation-required',
+    (node) => node.execution_status === reconciliationStatus.workOrRole,
   );
   const changed = nodes.some((node) => node.execution_status === 'dispatched');
   const blocked = nodes.some((node) => node.execution_status === 'blocked');
   const status =
     input.status ??
     (uncertain
-      ? 'needs-reconciliation'
+      ? reconciliationStatus.aggregate
       : changed
         ? 'applied'
         : input.apply && blocked
@@ -567,7 +572,7 @@ function makeReport(input: {
         (node) =>
           node.execution_status === 'planned' ||
           node.execution_status === 'dispatched' ||
-          node.execution_status === 'reconciliation-required',
+          node.execution_status === reconciliationStatus.workOrRole,
       ).length,
       actual_overlap: input.actualOverlap ?? false,
     },
@@ -918,7 +923,7 @@ function eligibility(
     node,
     blockers.length
       ? blockers.includes('dispatch_intent_exists_reconcile')
-        ? 'reconciliation-required'
+        ? reconciliationStatus.workOrRole
         : 'blocked'
       : 'planned',
     blockers,
@@ -1197,7 +1202,7 @@ function observationResult(
         : observation.status === 'in_flight_unknown' ||
             observation.status === 'unknown' ||
             observation.status === 'already_recorded'
-          ? 'reconciliation-required'
+          ? reconciliationStatus.workOrRole
           : 'blocked';
   return nodeResult(
     node,
@@ -1317,9 +1322,9 @@ export async function runWorkExecution(
     return planReport(
       initialNodes,
       initialNodes.some(
-        (node) => node.execution_status === 'reconciliation-required',
+        (node) => node.execution_status === reconciliationStatus.workOrRole,
       )
-        ? 'needs-reconciliation'
+        ? reconciliationStatus.aggregate
         : initialNodes.some((node) => node.execution_status === 'blocked')
           ? 'blocked'
           : 'planned',
@@ -1478,7 +1483,7 @@ export async function runWorkExecution(
         freshNode.node_id,
         nodeResult(
           freshNode,
-          'reconciliation-required',
+          reconciliationStatus.workOrRole,
           ['dispatch_intent_exists_reconcile'],
           {
             work_plan_status:
@@ -1515,7 +1520,7 @@ export async function runWorkExecution(
         freshNode.node_id,
         nodeResult(
           freshNode,
-          'reconciliation-required',
+          reconciliationStatus.workOrRole,
           [
             persisted.ok
               ? 'dispatch_intent_duplicate'
