@@ -26,6 +26,7 @@ installing it; `@beta` is the release channel the package is published on.
 ```sh
 mkdir pappra-demo && cd pappra-demo
 git init
+git -c user.name="Pappra demo" -c user.email="demo@example.invalid" commit --allow-empty -m init
 ```
 
 Now run Pappra with no arguments. In a terminal, that starts the guided setup: the `init`
@@ -54,9 +55,7 @@ What just happened:
   never lands in Git.
 - The setup also installed one copy of Pappra under your user data folder and recorded it in
   `.pappra/local/machine.json`. That keeps the setup working even if `npx` clears its cache.
-  To skip that copy, use the explicit form with `--no-runtime`:
-  `npx @phyzess/pappra@beta init --no-runtime`, plus `--yes --apply` when you want it to
-  write.
+  For configuration-only setup, run `npx @phyzess/pappra@beta init --yes --no-runtime --apply`.
 - The guided health check prints a summary and every error; `pappra doctor` prints the same
   checks one line at a time whenever you want them: a few `[WARNING]`, `[UNKNOWN]`,
   `[PARTIAL]` or `[UNSUPPORTED]` lines for things you have not set up (hosts, code graphs)
@@ -94,18 +93,15 @@ reports; it never starts any work.
 
 ```sh
 npx @phyzess/pappra@beta checkpoint --task demo --objective 'Try Pappra' \
-  --acceptance 'Resume stays advisory' \
-  --author-session demo --native-session demo \
-  --context-completeness complete --json
-npx @phyzess/pappra@beta resume demo --session demo
+  --acceptance 'A new session can pick it up' --next-action 'Write the first test'
+npx @phyzess/pappra@beta resume demo
 ```
 
-You should see `Execution allowed: no` and some `Blocked:` lines. **That is the correct
-result, not an error.** A resume packet is advisory: a readable checkpoint never gives an
-agent permission to start work. This demo checkpoint also has no decisions or next steps, so
-Pappra says the context is incomplete instead of pretending otherwise. The command still
-exits `0`; only stale verification makes it exit non-zero. In machine-readable (`--json`)
-output the same information is `executionAllowed:false` with non-empty `blockingReasons`.
+Expect `Execution allowed: no`, `Verification: current` and `Next: Write the first test`.
+Resume exits `0` when it reads a valid packet with current verification. A missing packet
+or stale or unknown verification exits `1`. The `Blocked:` lines explain why the packet
+carries no execution authority. With `--json`, look for `executionAllowed: false` and
+`blockingReasons`.
 
 That is the core of Pappra. Everything below is optional.
 
@@ -128,8 +124,10 @@ jump to what matches your situation.
 
 ## Reconfigure, manage the runtime copy, and other `init` details
 
-`init --print-choices` prints the derived choices as a document and writes nothing; with a
-file instead, use `--config`:
+`init --print-choices` prints a `pappra/init-choices/1` document to stdout. With `--json`,
+the same document is under `.choices` alongside discovery metadata. Pass the choices
+document to `--config` to preview it. On a checkout of current main, `--no-interactive`
+can be combined with `--config` to keep the supplied choices and suppress prompts.
 
 ```sh
 npx @phyzess/pappra@beta init --print-choices        # print the derived document, write nothing
@@ -217,13 +215,14 @@ cd /path/to/workspace
 PAPPRA="npx @phyzess/pappra@beta"
 
 # 1. Inventory the derived shape without writing (works even before .pappra exists).
-$PAPPRA init --print-choices --json
+$PAPPRA init --print-choices > .pappra-choices.json
 
 # 2. Keep that document, then narrow it:
 #    - repositories: write access only for the checkouts you actively change
 #    - excludes: node_modules, dist, coverage, vendored deps, worktrees, temp clones
 #    - knowledge.sources: root rule files plus the notes directory you actually curate
 #    - validation: a few real lint/test commands, not one per package
+$PAPPRA init --config .pappra-choices.json --json
 $PAPPRA init --config .pappra-choices.json --apply --json
 $PAPPRA doctor --json
 $PAPPRA docs scan --apply --json

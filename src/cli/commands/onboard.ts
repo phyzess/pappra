@@ -229,6 +229,7 @@ function printHandoff(
     workspaceRoot: root,
     share: [
       '.pappra/workspace.json',
+      '.pappra/knowledge/records/ (shared records, if present)',
       '.pappra-choices.json (or the choices file used for onboard), after review',
       'repository checkouts recreated from shared sources at the same relative paths',
       'explicitly shared project documents outside those checkouts',

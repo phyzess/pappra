@@ -1,7 +1,7 @@
 # Workspace portability
 
 For the same project at a new root or on another machine, carry the shared
-configuration and explicitly shared documents, then regenerate local bindings.
+configuration, shared knowledge records and shared documents, then regenerate local bindings.
 For a different project, derive choices from that project's rules, repositories
 and documents using the [adoption recipe](../skills/pappra/references/adoption.md).
 
@@ -9,7 +9,8 @@ and documents using the [adoption recipe](../skills/pappra/references/adoption.m
 
 | Share / copy                                                   | Why                                                                                                                                             |
 | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.pappra/workspace.json`                                       | policy: repositories, knowledge sources, code engine, validation, excludes. Paths are workspace-relative or logical `external:<id>` references. |
+| `.pappra/workspace.json` | Workspace policy. Paths are workspace-relative or logical `external:<id>` references. |
+| `.pappra/knowledge/records/`, if present | Shared catalog records preserve document IDs, source references and review history. Copy the corresponding shared documents at the same workspace-relative paths. |
 | the reviewed choices file (for example `.pappra-choices.json`) | reproducible `pappra init` / `pappra onboard` input for the same project                                                                        |
 | repository checkouts recreated from shared sources             | keep the same relative paths so workspace config stays valid                                                                                    |
 | explicitly shared project documents outside those checkouts    | restore the intended knowledge inputs before rebuilding the catalog                                                                             |
@@ -48,10 +49,12 @@ cd /path/to/workspace
 pappra onboard --dry-run --json      # review scope + host versions
 pappra onboard --yes --json
 pappra doctor --json
-pappra docs scan --apply --json      # rebuild the knowledge catalog
+pappra docs scan --apply --json      # register newly discovered documents
 pappra code prepare --repo <repo> --apply --json
 ```
 
+Bring over the shared records before scanning at the destination. Use
+`pappra docs check --json` to verify them against the copied documents.
 `onboard` creates `machine.json` and installs the durable runtime copy. If host wiring
 is wanted and authorized, add `--apply-host` to the apply command for verified hosts.
 Host trust is never approved automatically: Codex needs one hook

@@ -2,9 +2,10 @@
 
 - Agents and scripts: a terminal can prompt. Bare `pappra`, flagless
   `pappra onboard` and the plan-then-confirm commands below ask the person;
-  pass `--json` or `--no-interactive` (or run without a TTY) and keep using
-  explicit `--apply`, `--yes` and `--config`. A prompt answer is the person's
-  decision and must never be answered by an agent.
+  use `--json`, `--no-interactive` where supported, or a non-TTY. Independently
+  parsed commands such as `collab workflow`, `context` and `session` use their
+  own option lists. Keep `--apply`, `--yes` and `--config` explicit where the
+  command expects them. Leave interactive decisions to the person.
 - `pappra onboard` plans or applies a whole workspace setup (config, durable runtime,
   verified host wiring). `--dry-run` writes nothing; `--apply-host` still leaves host trust
   to the person. With no flags on a terminal it runs the guided setup, or the
@@ -29,7 +30,8 @@
   `--apply` stays preview-only, and the single apply confirmation belongs to
   the interactive no-`--apply` flow. When no file changes are planned that
   flow asks whether to verify the runtime and continue with the optional
-  setup steps. `--apply` itself never prompts.
+  setup steps. `--apply` itself never prompts. On current main, `--config --no-interactive`
+  retains the supplied settings. Without `--config`, `--no-interactive` uses discovery.
   `knowledge.sources` are existing documents registered later by
   `docs scan --apply`, while `knowledge.newDocuments` is only the destination
   for future authored documents and is not created by init.

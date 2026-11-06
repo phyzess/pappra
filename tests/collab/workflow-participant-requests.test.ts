@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
+  applyAccept,
   applyDispatch,
   applyParticipant,
   applyPrepare,
@@ -355,6 +356,38 @@ test('dispatch writes exclusive, digest-stable participant request files', async
       ),
     );
     assert.deepEqual(readFileSync(reportFile), bytesBefore);
+
+    const finalReportFile = join(f.taskRoot, 'final-report.json');
+    report.report.status = 'completed';
+    report.report.summary = 'Produced the declared output.';
+    writeFileSync(finalReportFile, JSON.stringify(report), { mode: 0o600 });
+    const finalReport = parseWorkflowParticipantRequest(
+      JSON.parse(readFileSync(finalReportFile, 'utf8')),
+    );
+    assert.ok(finalReport.ok);
+    const submitted = await applyParticipant(finalReport.value, {
+      notify: silentNotify,
+    });
+    assert.equal(
+      submitted.status,
+      'applied',
+      JSON.stringify(submitted.blockers),
+    );
+    const accepted = await applyAccept(
+      {
+        schema: 'pappra/collab-workflow-accept-request/1',
+        task_root: f.taskRoot,
+        caller: { ...COORDINATOR, cwd: f.domain.root },
+        subtask_id: 'writer-one',
+        attempt: 1,
+        report_message_id: submitted.messages[0]!.message_id,
+        caller_pane: 'w3:p3B',
+        reason: 'Verified the declared output.',
+      },
+      { notify: silentNotify },
+    );
+    assert.equal(accepted.status, 'applied', JSON.stringify(accepted.blockers));
+    assert.deepEqual(readFileSync(reportFile), bytesBefore);
   } finally {
     f.domain.cleanup();
   }
@@ -380,6 +413,8 @@ test('ASSIGN notification text gains a bounded second line', async () => {
       /^COLLAB_MESSAGE task=cohort type=ASSIGN message=.* digest=/,
     );
     assert.match(lines[1]!, /Participant request files are under/);
+    assert.match(lines[1]!, /separate private copy of report\.json/);
+    assert.match(lines[1]!, /set report\.status to completed/);
     assert.match(
       lines[1]!,
       /node dist\/cli\/main\.js collab workflow ack\|report\|release/,

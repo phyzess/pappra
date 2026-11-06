@@ -50,6 +50,7 @@ pappra collab workflow <prepare|dispatch|ack|report|accept|await|release|reclaim
   reclaim  --request <abs reclaim.json> [--apply] [--json]
   adopt    --request <abs adopt.json> [--apply] [--json]
   inspect  --task-root <abs task root> [--limit <1-500>] [--json]
+  inspect  --task-root <abs task root> --interruption <subtask-id> --json
 ```
 
 `--goal` is accepted as an alias for `--request` on `prepare`.
@@ -280,7 +281,13 @@ dispatch sees the intent and reports `dispatch_already_attempted`; a possibly
 delivered notification is never replayed. Delivery status is reported as
 recorded, and never implies consumption, execution or acceptance.
 
-Dispatch also derives ready-to-run participant request files for each dispatched attempt under `workflow/participant-requests/<subtask>-<attempt>/`: `ack.json`, `report.json` and `release.json`. They are valid `pappra/collab-workflow-participant-request/1` documents with the assignee as caller, the bound pane as `caller_pane`, only the file-scoped write resources (declared with `scope: "file"`) as report `outputs` and the deterministic accept message id as `release.correlates_to`. Each file carries both `report` and `release`, and the unused one is an explicit `null`, so all three parse as participant requests without editing. They are created once with an exclusive write, are digest-stable on rerun, and are never overwritten once present. Edit only the `summary` field of `report.json`; never hand-write a `COLLAB_MESSAGE` line in chat, because that is not a registered message and is never accepted.
+Dispatch creates `ack.json`, `report.json` and `release.json` under
+`workflow/participant-requests/<subtask>-<attempt>/`. Each request pins the assignee,
+the bound pane and the attempt. The report template starts with `status: "running"`
+and lists file-scoped write resources as candidate outputs. The release request
+correlates to the deterministic accept message id. Each file carries both
+`report` and `release`, with an unused field set to `null`. Keep the generated
+files intact so dispatch can compare their bytes on a retry.
 
 A refusal that is provably pre-effect also records a typed
 `dispatch-<subtask>-<attempt>.outcome.json` with `effect: "none"` beside the
@@ -317,14 +324,29 @@ must equal the registered attempt assignee on agent id, session id and harness;
 anything else is `sender_denied`. There is no on-behalf-of path: a coordinator
 that submitted a peer identity would fabricate a participant.
 
-For each dispatched attempt the coordinator has already written `workflow/participant-requests/<subtask>-<attempt>/{ack,report,release}.json`. Use those files exactly as given: `node dist/cli/main.js collab workflow ack|report|release --request <file> --apply --json`. A typed `COLLAB_MESSAGE` line in chat is not registered and is never accepted.
+Submit the generated `ack.json` with `workflow ack`. After the coordinator
+accepts the completed report, submit `release.json` with `workflow release`.
+For a report, copy the generated `report.json` to a separate private request file.
+Keep its caller, task and attempt fields. Set `report.status` to `completed` when
+the work is complete and ready for acceptance, or to the actual progress or
+blocked status. Fill in the summary, list the regular output files within your
+write claims, and include any blockers. A read-only reviewer uses an empty
+outputs list. Submit the edited copy with this command.
+
+```sh
+pappra collab workflow report --request /absolute/private/final-report.json --apply --json
+```
+
+Use `node dist/cli/main.js` in place of `pappra` in Pappra's development checkout.
+The command registers the REPORT and computes its output digests. The coordinator
+can then evaluate an admitted `completed` report for explicit acceptance.
 
 - `report` computes output digests from the files that actually exist inside the
   attempt's own write claims. An output outside the claim, or an unreadable
   output, is refused: no digest is invented. A report id is deterministic per
   attempt and content, so an honest resend is a duplicate while a genuinely
-  different later report gets its own id. Only an admission classified `applied`
-  completes the attempt; a late or superseded report stays evidence.
+  different later report gets its own id. An `applied` report with status
+  `completed` records completion. A late or superseded report stays evidence.
 - `needs_input` requires at least one concrete blocker, so a blocked review
   stays distinguishable from a completed report.
 - `release` verifies its correlation first: when `release.correlates_to` names a
@@ -613,11 +635,19 @@ the blocker's `next_action` at it. It resolves nothing by itself.
 
 ## Inspect
 
-`inspect` is read-only and reports what is actually present: the sealed manifest
-and binding digests, attempts with their state, native observation, active claim
-count and applied result, deferred assignments, open uncertainty and registered
-messages. A missing manifest or binding is reported as absent, never
-reconstructed from the request that once produced it.
+`inspect` reads the sealed manifest and binding digests, attempt state and native
+observations, active claims, deferred assignments, open uncertainty and registered
+messages. A missing manifest or binding is reported as absent.
+
+In `--json` output, `detail.attempts[].result` prefers the admitted final result
+(`completed`, `failed` or `cancelled`) for that attempt. If there is no final
+result, it uses the latest applied progress result or `null`. A later progress
+report leaves the final result visible.
+
+Use `inspect --interruption <subtask-id> --json` for [persisted interruption
+evidence](collaboration-reference.md#inspecting-an-attempt-interruption). The JSON detail also includes
+`reviewer_advice` for [structured findings](#structured-reviewer-findings) and `attempt_usage`
+for [observed native token counters](context-usage.md#attempt-accounting-design).
 
 `inspect` warns `ack_not_registered` for every dispatched attempt whose dispatch intent exists but has no applied ACK message. The warning is read-only, never a blocker, and never starts a timer.
 
@@ -626,8 +656,8 @@ reconstructed from the request that once produced it.
 for attempts and messages, declaration order for deferred reviewers so a long
 task cannot flood the coordinator's context. `detail.totals` always carries the
 full counts and a per-state attempt tally, and `detail.truncated` says which
-lists were cut; a truncated list is never presented as complete. Without
-`--limit` the output is unchanged apart from those two fields.
+lists were cut. Reviewer advice and attempt usage have their own bounds and
+report omitted entries separately.
 
 ## Relationship to lower-level commands
 

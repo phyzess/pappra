@@ -941,7 +941,7 @@ function deriveParticipantRequestFiles(
           code: 'participant_request_conflict',
           detail: `Participant request ${file} already exists with different content.`,
           next_action:
-            'Edit only the summary field of the provided report.json; never edit derived request files directly.',
+            'Compare the conflicting file with the sealed assignment before retrying. Edit a separate private copy for reporting.',
         },
       };
     }

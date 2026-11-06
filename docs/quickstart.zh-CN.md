@@ -23,6 +23,7 @@
 ```sh
 mkdir pappra-demo && cd pappra-demo
 git init
+git -c user.name="Pappra demo" -c user.email="demo@example.invalid" commit --allow-empty -m init
 ```
 
 现在不带任何参数运行 Pappra。在终端里，这会启动引导式配置：`init` 向导、一份将要写入的计划预览，
@@ -47,9 +48,8 @@ MCP 服务，需要你在那个 Agent 里自己决定。
 - 出现了一个 `.pappra/` 目录。`.pappra/workspace.json` 是共享设置，应当提交到 Git。
   `.pappra/local/` 只属于这台电脑，并且会自动忽略自身，所以不会进入 Git。
 - 配置过程还在你的用户数据目录里安装了一份 Pappra 的副本，并记录在 `.pappra/local/machine.json`
-  中。这样即使 `npx` 清理了缓存，这套配置也能继续工作。如果你不想要这份副本，可以改用显式写法并
-  带上 `--no-runtime`：`npx @phyzess/pappra@beta init --no-runtime`，再加上 `--yes --apply`
-  就会真正写入。
+  中。这样即使 `npx` 清理了缓存，这套配置也能继续工作。如果只需要写入工作区配置，可以运行
+  `npx @phyzess/pappra@beta init --yes --no-runtime --apply`。
 - 引导式健康检查会打印一行汇总和所有错误；`pappra doctor` 随时可以把同一批检查逐条打印出来：
   出现几条 `[WARNING]`、`[UNKNOWN]`、`[PARTIAL]` 或 `[UNSUPPORTED]`，对应的是你还没有配置的东西
   （宿主、代码图），这很正常，`[ERROR]` 才是需要修的。
@@ -84,17 +84,14 @@ npx @phyzess/pappra@beta doctor
 
 ```sh
 npx @phyzess/pappra@beta checkpoint --task demo --objective 'Try Pappra' \
-  --acceptance 'Resume stays advisory' \
-  --author-session demo --native-session demo \
-  --context-completeness complete --json
-npx @phyzess/pappra@beta resume demo --session demo
+  --acceptance 'A new session can pick it up' --next-action 'Write the first test'
+npx @phyzess/pappra@beta resume demo
 ```
 
-你应该会看到 `Execution allowed: no` 和几行 `Blocked:`。**这是正确的结果，不是错误。** 恢复包是
-建议性的：能读到检查点，并不意味着 Agent 获准开始工作。这个演示用的检查点也没有任何决策和下一步，
-所以 Pappra 如实地告诉你上下文不完整，而不是假装没问题。命令依然以 `0` 退出；只有验证已过期时才会
-以非零状态退出。在机器可读的（`--json`）输出里，同样的信息表现为 `executionAllowed:false` 加上
-非空的 `blockingReasons`。
+输出应包含 `Execution allowed: no`、`Verification: current` 和 `Next: Write the first test`。
+读到有效且验证状态为 `current` 的恢复包时，命令退出 `0`。恢复包缺失，或验证状态为 `stale` 或
+`unknown` 时，命令退出 `1`。`Blocked:` 各行说明恢复包为何没有执行权限。使用 `--json` 时，
+可查看 `executionAllowed: false` 和 `blockingReasons`。
 
 这就是 Pappra 的核心。下面的内容都是可选的。
 
@@ -115,8 +112,9 @@ npm install -g @phyzess/pappra@beta
 
 ## 重新配置、管理运行时副本，以及 `init` 的其他细节
 
-`init --print-choices` 会把推导出的选择打印成一份文档，并且不写入任何内容；如果想改用文件，使用
-`--config`：
+`init --print-choices` 将 `pappra/init-choices/1` 文档输出到 stdout。加上 `--json` 时，
+同一份文档位于 `.choices`，外层还带有发现结果等元数据。将选择文档交给 `--config` 即可预览。
+当前 main 的构建支持将 `--no-interactive` 与 `--config` 一起使用，保留文件中的选择并关闭提示。
 
 ```sh
 npx @phyzess/pappra@beta init --print-choices        # 打印推导出的文档，不写入任何内容
@@ -192,13 +190,14 @@ cd /path/to/workspace
 PAPPRA="npx @phyzess/pappra@beta"
 
 # 1. 盘点推导出的形态，不写入任何内容（即使 .pappra 还不存在也能用）。
-$PAPPRA init --print-choices --json
+$PAPPRA init --print-choices > .pappra-choices.json
 
 # 2. 保留那份文档，然后收窄它：
 #    - repositories：只给你正在修改的检出目录写权限
 #    - excludes：node_modules、dist、coverage、第三方依赖、工作树、临时克隆
 #    - knowledge.sources：根目录规则文件，加上你真正在维护的笔记目录
 #    - validation：几条真实的 lint/test 命令，而不是每个包一条
+$PAPPRA init --config .pappra-choices.json --json
 $PAPPRA init --config .pappra-choices.json --apply --json
 $PAPPRA doctor --json
 $PAPPRA docs scan --apply --json

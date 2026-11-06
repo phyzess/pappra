@@ -99,9 +99,10 @@ and symlink target text are not copied into the checkpoint.
 
 Pappra prompts only for a person at a terminal: both stdin and stdout are TTYs, the invocation
 has no `--json` and no `--no-interactive`, and `CI` is unset or false. `init` applies the same
-rule, so a CI job that allocates a PTY does not open its wizard. `--no-interactive` is accepted
-by every command, and it (like `--json`, `CI` or a non-TTY stream) makes a bare `pappra` print
-the usage summary instead of opening the guided flow; the `--help` text says so.
+rule, so a CI job that allocates a PTY does not open its wizard. `--no-interactive` suppresses
+prompts on commands that use the global parser and on `repair`. Independently parsed
+commands such as `collab workflow`, `context` and `session` have their own options.
+A bare `pappra` prints help when prompts are disabled.
 
 A bare `pappra` uses that mode:
 
@@ -127,12 +128,11 @@ exits `1`. `host mcp install` asks only when it has something to write: an entry
 matches is reported without a question, and a conflicting entry is reported without one and
 needs an explicit `--force`.
 
-Scripts, agents and CI keep the explicit contract: `--json` never prompts, `--apply` never
-prompts, `init` takes `--yes` or `--config`, and `--no-interactive`, `CI=true` or a non-TTY
-stream turns every prompt off. Use `init --config` for reviewed settings in an existing
-project. It previews by default and accepts `--no-interactive` for scripts that use the
-same prompt policy across commands. With no configuration document, `--no-interactive`
-uses discovery just as `--yes` does. `--config` and `--yes` remain incompatible.
+For scripted init, use `--config` for reviewed settings or `--yes` for discovery.
+`init --config` previews by default. On current main it also accepts
+`--no-interactive` and retains the supplied choices. Without a config file,
+`--no-interactive` selects discovery just as `--yes` does. `--config` and `--yes`
+are mutually exclusive. `--apply` runs init without interactive confirmation.
 `pappra onboard` with no flags on a terminal runs the guided
 setup when there is no workspace; in an existing workspace it runs the optional steps (code
 index, documents, coding agents, health check) and does not show the menu. Its flags keep

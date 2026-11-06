@@ -12,11 +12,11 @@ publish pipeline.
 | package | `@phyzess/pappra` |
 | binary | `pappra` |
 | Node floor | `>=24` |
-| release tags | `beta` (moving) and exact versions such as `0.1.0-beta.23` |
+| release tags | `beta` (moving) and exact versions such as `0.1.0-beta.26` |
 | registry | public npm, via GitHub Actions trusted publishing (OIDC) |
 
 A published version is immutable: npm rejects a second upload of the same
-version. Pin either `@beta` or an exact version. The repository stores no npm
+version. Use `@beta` to follow the channel or an exact version for reproducibility. The repository stores no npm
 token; the publish job exchanges a short-lived OIDC identity for publish
 rights.
 
@@ -27,7 +27,7 @@ publishing workflow separately.
 ## Three ways to run it
 
 ```sh
-# one-shot, version-pinned, no durable install
+# one-shot CLI from the beta channel, with a durable workspace runtime
 npx @phyzess/pappra@beta init --yes --apply --json
 
 # daily use: global install, then plain `pappra`

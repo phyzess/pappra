@@ -150,8 +150,9 @@ The fixture clock supplies a clock and a sleeper that advances it without
 waiting. Use it to test receipt observation windows, readiness polling, or
 recovery backoff. For the default `pnpm test` run, the runner creates a
 temporary home and gives test workers isolated XDG paths and disabled Herdr
-routes. Explicit [native recovery experiments](provider-network-recovery.md)
-retain their separate entry points.
+routes. The [provider network recovery experiment](../tests/collab/provider-network-recovery.test.ts)
+documents its opt-in entry point. See [managed provider diagnostics](managed-pi.md#managed-provider-network-diagnostics)
+for operator-facing output.
 
 ## Admission comes first
 

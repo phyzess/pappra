@@ -10,7 +10,7 @@ invocation reaches the right handler and the invariants the routing keeps.
 
 The top-level entry lives in `run.ts`. When the invocation names no command,
 asks for no `--help` and no `--json`, and the run is interactive (both streams
-are TTYs, no `--no-interactive`, `CI` unset), `run.ts` delegates to the home
+are TTYs, no `--no-interactive`, `CI` unset, empty, `0` or `false`), `run.ts` delegates to the home
 command in `src/cli/commands/home.ts`; that command shows the guided setup or
 the workspace menu described in the [operations reference](operations.md).
 Without a terminal, or with `--json` or `--no-interactive`, a bare `pappra`

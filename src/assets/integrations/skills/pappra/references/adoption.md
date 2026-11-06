@@ -24,13 +24,14 @@ exclude generated output, vendored dependencies and unrelated worktrees.
 In a target workspace, with its explicitly selected installed CLI:
 
 ```sh
-pappra init --print-choices --json
+pappra init --print-choices > /absolute/private/adoption-choices.json
 pappra init --config /absolute/private/adoption-choices.json --no-runtime --json
 ```
 
-The first command discovers choices without writing. Keep a reviewed
-`pappra/init-choices/1` document at the second path and narrow it before planning.
-For an existing configuration, `pappra init --print-choices --reconfigure --json`
+The first command saves the discovered `pappra/init-choices/1` document through
+shell redirection. Narrow and review that file before running the preview.
+If you use `--json`, extract `.choices` from the response to create the config file.
+For an existing configuration, `pappra init --print-choices --reconfigure`
 prints the represented choices; use those as the starting point. Record why each
 repository, document source and validation candidate was selected or omitted,
 plus the observed baseline and any unresolved prerequisites, before any apply.

@@ -1103,7 +1103,7 @@ export function buildNotificationText(input: {
     input.subtaskId,
     input.attempt,
   );
-  const second = `Participant request files are under ${dir}/ as ack.json, report.json and release.json. Run node dist/cli/main.js collab workflow ack|report|release --request <file> --apply --json. A typed COLLAB_MESSAGE line in chat is not registered and is never accepted.`;
+  const second = `Participant request files are under ${dir}/ as ack.json, report.json and release.json. Edit a separate private copy of report.json and set report.status to completed for finished work. Run node dist/cli/main.js collab workflow ack|report|release --request <file> --apply --json. A typed COLLAB_MESSAGE line in chat is not registered and is never accepted.`;
   return `${first}\n${second}`;
 }
 

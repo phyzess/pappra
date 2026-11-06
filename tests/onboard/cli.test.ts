@@ -304,9 +304,13 @@ test('onboard plans without writing and prints the handoff matrix', () => {
       realpathSync(String(report.workspaceRoot)),
       realpathSync(box.workspace),
     );
-    assert(
-      (report.share as readonly string[]).includes('.pappra/workspace.json'),
-    );
+    const shared = [
+      '.pappra/workspace.json',
+      '.pappra/knowledge/records/ (shared records, if present)',
+    ];
+    for (const entry of shared) {
+      assert((report.share as readonly string[]).includes(entry));
+    }
     const excluded = [
       '.pappra/local/**',
       '.pappra/local/machine.json',
@@ -337,7 +341,7 @@ test('onboard plans without writing and prints the handoff matrix', () => {
       box.env,
     );
     assert.equal(humanHandoff.status, 0, humanHandoff.stderr);
-    for (const entry of [...excluded, ...commands]) {
+    for (const entry of [...shared, ...excluded, ...commands]) {
       assert(humanHandoff.stdout.includes(entry));
     }
     assert.equal(existsSync(box.calls), false);
