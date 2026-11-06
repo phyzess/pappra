@@ -1586,6 +1586,7 @@ test('inspect and resume project private usage captured through a workflow repor
     assert.deepEqual(usage?.attempts[0]?.token_usage, {
       state: 'available',
       harness: 'pi',
+      through: new Date(clock + 1500).toISOString(),
       input_tokens: 55,
       output_tokens: 20,
       cache_read_input_tokens: 40,

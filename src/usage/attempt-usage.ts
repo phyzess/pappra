@@ -47,13 +47,9 @@ export function captureAttemptUsage(
   clock: number,
 ): AttemptUsageReceipt {
   const session_id = attempt.assignee.session_id;
-  const receipt = (
-    token_usage: AttemptUsage,
-    through: string | null = null,
-  ): AttemptUsageReceipt => ({
+  const receipt = (token_usage: AttemptUsage): AttemptUsageReceipt => ({
     schema: 'pappra/attempt-usage-receipt/1',
     session_id,
-    through,
     token_usage,
   });
   const harness = attempt.assignee.harness;
@@ -91,20 +87,18 @@ export function captureAttemptUsage(
           : claudeInvocationAttempt(jsonl, execution, window);
 
   if (counts === null) return receipt(unavailable('native_usage_unproven'));
-  return receipt(
-    {
-      state: 'available',
-      harness,
-      ...counts,
-      evidence_digests: [
-        sha256Digest(jsonl),
-        ...(execution === undefined
-          ? []
-          : [sha256Digest(JSON.stringify(execution))]),
-      ],
-    },
+  return receipt({
+    state: 'available',
+    harness,
     through,
-  );
+    ...counts,
+    evidence_digests: [
+      sha256Digest(jsonl),
+      ...(execution === undefined
+        ? []
+        : [sha256Digest(JSON.stringify(execution))]),
+    ],
+  });
 }
 
 const keyOf = (item: { subtask_id: string; attempt: number }) =>
@@ -145,8 +139,7 @@ export function projectAttemptUsage(
     if (receipt.token_usage.state === 'unavailable') return receipt.token_usage;
     const started = Date.parse(attempt.created_at);
     const reportedAt = Date.parse(result.recorded_at);
-    const through =
-      receipt.through === null ? NaN : Date.parse(receipt.through);
+    const through = Date.parse(receipt.token_usage.through);
     if (
       receipt.token_usage.harness !== attempt.assignee.harness ||
       !Number.isFinite(started) ||
@@ -187,5 +180,6 @@ export function projectAttemptUsage(
     })),
     omitted: attempts.length - selected.length,
     accounting: 'completed_native_work_input_includes_cache_reads',
+    provenance: 'attempt_owner_report',
   };
 }

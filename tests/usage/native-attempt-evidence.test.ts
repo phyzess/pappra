@@ -39,6 +39,23 @@ test('recorded Codex snapshots count the selected turn delta', () => {
   });
 });
 
+test('a Codex fork cannot assume zero inherited usage', () => {
+  const fork = [
+    {
+      timestamp: stamp(11),
+      type: 'session_meta',
+      payload: {
+        id: 'session-a',
+        forked_from_id: 'parent-thread',
+      },
+    },
+    codexEvent(12, 'task_started', { turn_id: 'fork-turn' }),
+    codexCount(13, 120, 70, 21),
+    codexEvent(14, 'task_complete', { turn_id: 'fork-turn' }),
+  ];
+  assert.equal(codexRolloutAttempt(jsonl(fork), window), null);
+});
+
 test('recorded Claude stream uses the terminal usage from its native envelope', () => {
   const usage = claudeInvocationAttempt(
     recording('claude-stream.jsonl'),
@@ -51,6 +68,25 @@ test('recorded Claude stream uses the terminal usage from its native envelope', 
     { ...window, sessionId: 'recorded-claude-session' },
   );
   assert.equal(usage?.total_tokens, 17);
+  const [init, result] = recording('claude-stream.jsonl').trim().split('\n');
+  const foreign = JSON.stringify({
+    type: 'system',
+    subtype: 'init',
+    session_id: 'other',
+  });
+  assert.equal(
+    claudeInvocationAttempt(
+      [init, foreign, result].join('\n'),
+      {
+        status: 'exited',
+        exit_code: 0,
+        started_at: stamp(20),
+        finished_at: stamp(30),
+      },
+      { ...window, sessionId: 'recorded-claude-session' },
+    ),
+    null,
+  );
 });
 
 test('recorded Pi turn includes assistant responses across a native tool chain', () => {
@@ -212,6 +248,23 @@ test('Pi ignores prior session usage and requires a completed response', () => {
       jsonl([
         ...rows.slice(0, 6),
         assistant('other-branch', 'attempt-user', 30, 'stop'),
+      ]),
+      window,
+    ),
+    null,
+  );
+  assert.equal(
+    piSessionAttempt(
+      jsonl([...rows.slice(0, 5), assistant('done', 'tools', 30, 'stop')]),
+      window,
+    ),
+    null,
+  );
+  assert.equal(
+    piSessionAttempt(
+      jsonl([
+        ...rows.slice(0, 4),
+        assistant('early', 'attempt-user', 10, 'stop'),
       ]),
       window,
     ),

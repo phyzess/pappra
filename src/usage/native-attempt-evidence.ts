@@ -53,7 +53,10 @@ export function codexRolloutAttempt(
 
   const fresh =
     inside(millis(header['timestamp']), window) &&
-    header['payload']['parent_thread_id'] == null;
+    header['payload']['parent_thread_id'] == null &&
+    header['payload']['forked_from_id'] == null &&
+    header['payload']['history_base'] == null &&
+    !rows.some((row) => row['type'] === 'history_base');
   let prior: unknown = fresh
     ? {
         input_tokens: 0,
@@ -67,6 +70,7 @@ export function codexRolloutAttempt(
   let turn: { id: string; started: number; usage: unknown } | null = null;
   let lastAt = millis(header['timestamp']);
   for (const row of rows.slice(1)) {
+    if (row['type'] === 'session_meta') return null;
     if (row['type'] !== 'event_msg' || !record(row['payload'])) continue;
     const event = row['payload'];
     const at = millis(row['timestamp']);
@@ -92,7 +96,8 @@ export function codexRolloutAttempt(
           if (
             !inside(turn.started, window) ||
             turn.usage === null ||
-            prior === null
+            prior === null ||
+            codexAttemptCounters(turn.usage, prior) === null
           )
             return null;
           before ??= prior;
@@ -138,6 +143,8 @@ export function claudeInvocationAttempt(
     result['subtype'] !== 'success' ||
     result['is_error'] !== false ||
     result['session_id'] !== window.sessionId ||
+    rows?.filter((row) => row['type'] === 'system' && row['subtype'] === 'init')
+      .length !== 1 ||
     rows?.filter((row) => row['type'] === 'result').length !== 1
   )
     return null;
@@ -160,21 +167,26 @@ export function piSessionAttempt(
   const attributed: unknown[] = [];
   const seen = new Set<string>();
   let tip: string | null = null;
+  let lastAt = -Infinity;
   let openTurn = false;
   let completedRows = 0;
+  let tools: { pending: Set<string> | null; received: boolean } | null = null;
   for (const row of rows.slice(1)) {
     if (row['type'] === 'session') return null;
     const message = record(row['message']) ? row['message'] : null;
     const user = row['type'] === 'message' && message?.['role'] === 'user';
     const assistant =
       row['type'] === 'message' && message?.['role'] === 'assistant';
+    const toolResult =
+      row['type'] === 'message' && message?.['role'] === 'toolResult';
     const usage =
       row['type'] === 'usage' ||
       ((row['type'] === 'compaction' || row['type'] === 'branch_summary') &&
         row['usage'] !== undefined);
-    if (tip === null && !user && !assistant && !usage) continue;
+    if (tip === null && !user && !assistant && !toolResult && !usage) continue;
     const at = millis(row['timestamp']);
-    if (!Number.isFinite(at)) return null;
+    if (!Number.isFinite(at) || at < lastAt) return null;
+    lastAt = at;
     if (!inside(at, window)) continue;
     const id = row['id'];
     if (
@@ -192,11 +204,36 @@ export function piSessionAttempt(
     if (assistant) {
       const stop = message['stopReason'];
       if (!openTurn || (stop !== 'stop' && stop !== 'toolUse')) return null;
+      if (tools !== null && (!tools.received || (tools.pending?.size ?? 0) > 0))
+        return null;
       attributed.push(message['usage']);
       if (stop === 'stop') {
         openTurn = false;
         completedRows = attributed.length;
+        tools = null;
+      } else {
+        const content = message['content'];
+        const pending = Array.isArray(content) ? new Set<string>() : null;
+        if (pending !== null && Array.isArray(content)) {
+          for (const part of content) {
+            if (!record(part) || part['type'] !== 'toolCall') continue;
+            const callId = part['id'];
+            if (typeof callId !== 'string' || pending.has(callId)) return null;
+            pending.add(callId);
+          }
+          if (pending.size === 0) return null;
+        }
+        tools = { pending, received: false };
       }
+    } else if (toolResult) {
+      if (tools === null) return null;
+      const callId = message['toolCallId'];
+      if (
+        tools.pending !== null &&
+        (typeof callId !== 'string' || !tools.pending.delete(callId))
+      )
+        return null;
+      tools.received = true;
     } else if (usage) {
       attributed.push(row['usage']);
       if (!openTurn && completedRows > 0) completedRows = attributed.length;

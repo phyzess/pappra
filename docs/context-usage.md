@@ -57,6 +57,12 @@ usage as unavailable. For a report submitted while its own native turn is
 still running, the capture can account for earlier completed turns. A capture
 with no completed work in the attempt has no usable token observation.
 
+An available observation includes its `through` cutoff. The projection
+identifies its provenance as `attempt_owner_report`. The workflow derives
+counts from the supplied capture. The protocol also accepts
+reports from an attempt owner at the lower-level message entry point, where
+a receipt is the owner's attestation. Both are advisory evidence.
+
 | Host | Native source | Attribution and cache accounting |
 | --- | --- | --- |
 | Codex | Rollout `event_msg` usage snapshots and native turn boundaries | Subtract the proven starting cumulative snapshot from the final snapshot of the attempt's completed turns. Input already includes cache reads. Cache writes are a native breakdown when both snapshots expose it. |
