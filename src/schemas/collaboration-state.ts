@@ -249,6 +249,7 @@ export interface AppliedMessage {
   state: string;
   detail: string;
   body_kind: string | null;
+  review_candidate_message_id?: string;
 }
 
 export interface Notification {

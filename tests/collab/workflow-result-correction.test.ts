@@ -15,6 +15,8 @@ import {
   type WorkflowPrepareRequest,
 } from '../../src/app/collab-workflow.js';
 import { workflowIntentsDir } from '../../src/schemas/collab-workflow.js';
+import { openWorkflowTask } from '../../src/app/collab-workflow/context.js';
+import { projectReviewerAdvice } from '../../src/app/collab-workflow/reviewer-advice.js';
 import { readRecord } from '../../src/collab/store.js';
 import {
   buildMessage,
@@ -1260,6 +1262,61 @@ test('a real two-phase cohort dispatches, delivers, accepts and converges to one
         'preexisting_risk',
         'out_of_scope_risk',
       ],
+    );
+    const opened = await openWorkflowTask(taskRoot);
+    assert(opened.ok);
+    const reviewId = reviewerReport.messages[0]!.message_id;
+    const admittedReview = opened.value.record.messages.find(
+      (entry) => entry.message_id === reviewId,
+    );
+    assert(admittedReview);
+    assert.equal(admittedReview.review_candidate_message_id, source.message_id);
+    const historical = { ...admittedReview, body_kind: 'review_findings' };
+    delete historical.review_candidate_message_id;
+    const oldProjection = await projectReviewerAdvice({
+      ...opened.value,
+      record: { ...opened.value.record, messages: [historical] },
+    });
+    assert.deepEqual(
+      oldProjection.reports,
+      [],
+      'legacy free-form markers confer no reviewer role',
+    );
+    const noisy = await projectReviewerAdvice(
+      {
+        ...opened.value,
+        record: {
+          ...opened.value.record,
+          messages: [
+            ...opened.value.record.messages,
+            ...Array.from({ length: 17 }, (_, i) => ({
+              ...admittedReview,
+              message_id: `later-${i}`,
+              review_candidate_message_id: 'another-candidate',
+            })),
+          ],
+          // The sealed writer role still describes the candidate after a handoff
+          // changes the current assignee without changing the assignment digest.
+          attempts: opened.value.record.attempts.map((attempt) =>
+            attempt.subtask_id === 'writer'
+              ? {
+                  ...attempt,
+                  assignee: {
+                    ...attempt.assignee,
+                    session_id: 'successor-session',
+                  },
+                }
+              : attempt,
+          ),
+        },
+      },
+      source.message_id,
+    );
+    assert.equal(noisy.reports[0]?.state, 'blocking_concerns');
+    assert.equal(
+      noisy.omitted,
+      0,
+      'the candidate filter runs before the read cap',
     );
     const reviewerAccept = await applyAccept(
       {

@@ -144,6 +144,7 @@ const appliedMessage: Predicate = (value) =>
     state: string,
     detail: string,
     body_kind: nullable(string),
+    review_candidate_message_id: optional(string),
   });
 const uncertainty: Predicate = (value) =>
   shape(value, {

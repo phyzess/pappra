@@ -1,9 +1,6 @@
 import { contentDigest } from '../../collab/envelope.js';
 import { readRegisteredMessageSafe } from '../../collab/persisted-messages.js';
-import {
-  REVIEW_REPORT_KIND,
-  sealedWorkflowRole,
-} from '../../collab/reviewer-report.js';
+import { sealedWorkflowRole } from '../../collab/reviewer-report.js';
 import {
   reviewerReportSchema,
   type ReviewerReport,
@@ -88,12 +85,22 @@ export async function projectReviewerAdvice(
     (item) =>
       item.type === 'REPORT' &&
       item.state === 'applied' &&
-      item.body_kind === REVIEW_REPORT_KIND,
+      item.review_candidate_message_id !== undefined &&
+      (targetReport === undefined ||
+        item.message_id === targetReport ||
+        item.review_candidate_message_id === targetReport),
   );
-  const count = Number.isSafeInteger(limit)
-    ? Math.max(0, Math.min(limit!, MAX_REVIEW_REPORTS))
-    : MAX_REVIEW_REPORTS;
-  const selected = count === 0 ? [] : marked.slice(-count);
+  const count =
+    limit !== undefined && Number.isSafeInteger(limit)
+      ? Math.max(0, Math.min(limit, MAX_REVIEW_REPORTS))
+      : MAX_REVIEW_REPORTS;
+  const direct = marked.find((item) => item.message_id === targetReport);
+  const remaining = count - (direct === undefined ? 0 : 1);
+  const selected =
+    remaining <= 0
+      ? []
+      : marked.filter((item) => item !== direct).slice(-remaining);
+  if (direct !== undefined && count > 0) selected.push(direct);
   const reports = await Promise.all(
     selected.map(async (entry) => {
       const read = await readRegisteredMessageSafe(
@@ -105,22 +112,16 @@ export async function projectReviewerAdvice(
       if (
         message === null ||
         contentDigest(message) !== entry.content_digest ||
-        !review.success
+        !review.success ||
+        review.data.candidate.report_message_id !==
+          entry.review_candidate_message_id
       ) {
-        if (targetReport !== undefined && entry.message_id !== targetReport)
-          return null;
         return {
           review_message_id: entry.message_id,
           state: 'review_evidence_unavailable' as const,
         };
       }
       const { candidate, base, findings } = review.data;
-      if (
-        targetReport !== undefined &&
-        targetReport !== candidate.report_message_id &&
-        targetReport !== entry.message_id
-      )
-        return null;
       const candidate_status = await candidateStatus(task, candidate);
       const evaluated = findings.map((finding) => ({
         ...finding,
@@ -164,7 +165,7 @@ export async function projectReviewerAdvice(
     rule: REVIEW_ADVICE_RULE,
     advisory: true as const,
     omitted: marked.length - selected.length,
-    reports: reports.filter((report) => report !== null),
+    reports,
   };
 }
 

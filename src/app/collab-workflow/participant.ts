@@ -8,7 +8,7 @@ import {
 import { transitionAttempt } from '../../collab/lifecycle.js';
 import { isAssignment } from '../../collab/contracts.js';
 import { nativeObservationAgeEvidence } from '../../collab/native-observation.js';
-import { reviewAttachmentFailure } from '../../collab/reviewer-report.js';
+import { validateReviewAttachment } from '../../collab/reviewer-report.js';
 import { releaseClaim } from '../../collab/resources.js';
 import {
   coordinatorLineage,
@@ -496,14 +496,14 @@ export async function applyParticipant(
     }
     const resolved = resolveOutputs(declaration.outputs, claims);
     if (declaration.review !== undefined) {
-      const failure = reviewAttachmentFailure(
+      const attachment = validateReviewAttachment(
         record,
         attempt,
         declaration.review,
       );
-      if (failure !== null)
+      if (!attachment.ok)
         blockers.push({
-          code: failure,
+          code: attachment.code,
           detail:
             'Structured findings require the current digest-pinned reviewer assignment.',
           next_action:

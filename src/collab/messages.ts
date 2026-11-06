@@ -31,10 +31,7 @@ import {
   lineageEntry,
 } from './lineage.js';
 import { nowIso, readRecord, transact } from './store.js';
-import {
-  REVIEW_REPORT_KIND,
-  reviewAttachmentFailure,
-} from './reviewer-report.js';
+import { validateReviewAttachment } from './reviewer-report.js';
 
 // Applying a registered message to the record. Registration is atomic and separate;
 // this step is a transaction. A message never restarts native work and never releases
@@ -133,6 +130,7 @@ function recordMessage(
   state: string,
   detail: string,
   clock: number,
+  reviewCandidateMessageId?: string,
 ) {
   record.messages = record.messages ?? [];
   record.messages.push({
@@ -149,12 +147,10 @@ function recordMessage(
     applied_at: nowIso(clock),
     state,
     detail,
-    body_kind:
-      message.type === 'REPORT' && message.body.review !== undefined
-        ? REVIEW_REPORT_KIND
-        : message.body?.kind === REVIEW_REPORT_KIND
-          ? null
-          : (message.body?.kind ?? null),
+    body_kind: message.body?.kind ?? null,
+    ...(reviewCandidateMessageId === undefined
+      ? {}
+      : { review_candidate_message_id: reviewCandidateMessageId }),
   });
 }
 
@@ -613,15 +609,18 @@ export function applyMessage(
       const senderIsOwner =
         owner.agent_id === message.from.agent_id &&
         owner.session_id === message.from.session_id;
+      let reviewCandidateMessageId: string | undefined;
       if (message.body.review !== undefined) {
         if (!senderIsOwner || owner.harness !== message.from.harness)
           return { ok: false as const, reason: 'reviewer_role_required' };
-        const failure = reviewAttachmentFailure(
+        const attachment = validateReviewAttachment(
           record,
           reportTarget,
           message.body.review,
         );
-        if (failure !== null) return { ok: false as const, reason: failure };
+        if (!attachment.ok)
+          return { ok: false as const, reason: attachment.code };
+        reviewCandidateMessageId = attachment.candidateMessageId;
       }
       if (!senderIsOwner) {
         // A previous owner's receipt is evidence, never a state change for the current owner.
@@ -691,6 +690,7 @@ export function applyMessage(
         'applied',
         `report classified ${outcome.classification}`,
         clock,
+        reviewCandidateMessageId,
       );
       return {
         record,
