@@ -49,7 +49,7 @@ function textPayload(result: unknown): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-test('mcp lists the read-only tool set and answers workspace_status', async () => {
+test('every advertised MCP tool handles a valid invocation and refuses invalid input', async () => {
   const root = makeTempDir('mcp-server');
   try {
     createRepository(root);
@@ -68,25 +68,122 @@ test('mcp lists the read-only tool set and answers workspace_status', async () =
     writeFileSync(join(root, 'AGENTS.md'), '# agents\n');
     mkdirSync(join(root, 'src'));
     writeFileSync(join(root, 'src/index.ts'), 'export const a = 1;\n');
+    mkdirSync(join(root, 'assignee-cwd'));
+    writeFileSync(join(root, 'slice.txt'), 'workspace resource\n');
 
     const { client, server } = await connect(root);
     try {
+      const cases = [
+        {
+          name: 'workspace_status',
+          arguments: {},
+          expected: { ok: true, workspaceRoot: root },
+          invalid: null,
+        },
+        {
+          name: 'docs_list',
+          arguments: { includePrivate: true },
+          expected: { ok: true, documents: [] },
+          invalid: { includePrivate: 'yes' },
+        },
+        {
+          name: 'docs_check',
+          arguments: { includePrivate: true },
+          expected: { ok: true },
+          invalid: { includePrivate: 'yes' },
+        },
+        {
+          name: 'docs_scan',
+          arguments: { apply: false },
+          expected: { ok: true, mode: 'plan' },
+          invalid: { apply: 'yes' },
+        },
+        {
+          name: 'runtime_status',
+          arguments: {},
+          expected: { ok: true, binding: null, runtime: null },
+          invalid: null,
+        },
+        {
+          name: 'runtime_install',
+          arguments: { apply: false, from: 'self' },
+          expected: { ok: false, status: 'cli_required', from: 'self' },
+          invalid: { apply: false, from: 'tarball' },
+        },
+        {
+          name: 'code_status',
+          arguments: { repo: 'app' },
+          expected: {
+            registrationPresent: false,
+            registrationPath: join(root, '.pappra/local/code/app.json'),
+          },
+          invalid: { repo: 1 },
+        },
+        {
+          name: 'code_query',
+          arguments: { repo: 'app', kind: 'text', query: 'export const a' },
+          expected: { ok: true, provider: 'text' },
+          invalid: { repo: 'app', kind: 'unknown', query: 'a' },
+        },
+        {
+          name: 'code_prepare',
+          arguments: { repo: 'app', apply: false },
+          expected: { ok: true, status: 'planned' },
+          invalid: { repo: 'app', apply: 'yes' },
+        },
+        {
+          name: 'checkpoint',
+          arguments: {
+            task: 'matrix-task',
+            objective: 'Cover the MCP tools.',
+            acceptance: ['The checkpoint can be read back.'],
+            nextActions: ['Read the saved checkpoint.'],
+            contextCompleteness: 'complete',
+            authorSession: 'mcp-matrix',
+            apply: true,
+          },
+          expected: { ok: true, status: 'saved' },
+          invalid: { task: 'matrix-task', apply: true },
+        },
+        {
+          name: 'resume',
+          arguments: { task: 'matrix-task', session: 'mcp-matrix' },
+          expected: { ok: true },
+          invalid: { task: false },
+        },
+        {
+          name: 'collab_prepare',
+          arguments: { domainRoot: mcpDomain(root), goal: explicitGoal(root) },
+          expected: { ok: true },
+          invalid: { domainRoot: mcpDomain(root), objective: 'legacy input' },
+        },
+        {
+          name: 'collab_start',
+          arguments: {
+            prepared: 'missing',
+            capabilities: 'missing',
+            controller: 'fixture',
+            confirm: false,
+          },
+          expected: { ok: false, status: 'cli_required' },
+          invalid: {
+            prepared: 'missing',
+            capabilities: 'missing',
+            controller: 'unknown',
+            confirm: false,
+          },
+        },
+      ] satisfies {
+        name: string;
+        arguments: Record<string, unknown>;
+        expected: Record<string, unknown>;
+        invalid: Record<string, unknown> | null;
+      }[];
       const tools = await client.listTools();
-      assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-        'checkpoint',
-        'code_prepare',
-        'code_query',
-        'code_status',
-        'collab_prepare',
-        'collab_start',
-        'docs_check',
-        'docs_list',
-        'docs_scan',
-        'resume',
-        'runtime_install',
-        'runtime_status',
-        'workspace_status',
-      ]);
+      assert.deepEqual(
+        tools.tools.map((tool) => tool.name).sort(),
+        cases.map((entry) => entry.name).sort(),
+      );
       const readOnly = new Set([
         'workspace_status',
         'resume',
@@ -106,30 +203,35 @@ test('mcp lists the read-only tool set and answers workspace_status', async () =
           tool.name,
         );
       }
-      const status = textPayload(
-        await client.callTool({ name: 'workspace_status', arguments: {} }),
-      );
-      assert.equal(status.workspaceRoot, root);
-      assert.equal(
-        (status.config as Record<string, unknown>).name,
-        baseWorkspaceConfig().name,
-      );
-      assert.deepEqual(
-        (status.config as Record<string, unknown>).knowledgeSources,
-        ['AGENTS.md'],
-      );
-      const docs = textPayload(
-        await client.callTool({
-          name: 'docs_list',
-          arguments: { includePrivate: true },
-        }),
-      );
-      assert.equal(docs.ok, true);
-      assert.deepEqual(docs.documents, []);
-      const runtime = textPayload(
-        await client.callTool({ name: 'runtime_status', arguments: {} }),
-      );
-      assert.equal(runtime.binding, null);
+      for (const entry of cases) {
+        const { name, arguments: args, expected, invalid } = entry;
+        const result = await client.callTool({ name, arguments: args });
+        assert.notEqual(result.isError, true, name);
+        const payload = textPayload(result);
+        for (const [key, value] of Object.entries(expected)) {
+          assert.deepEqual(payload[key], value, `${name}.${key}`);
+        }
+        if (name === 'workspace_status') {
+          const config = payload.config as Record<string, unknown>;
+          assert.equal(config.name, baseWorkspaceConfig().name);
+          assert.deepEqual(config.knowledgeSources, ['AGENTS.md']);
+        }
+        if (invalid === null) {
+          // These tools take no parameters. Exercise the protocol's argument envelope.
+          await assert.rejects(
+            client.callTool({
+              name,
+              arguments: [] as unknown as Record<string, unknown>,
+            }),
+            /expected record, received array/,
+          );
+        } else {
+          const text = await refusalText(
+            client.callTool({ name, arguments: invalid }),
+          );
+          assert(text.includes(`Invalid arguments for tool ${name}`), text);
+        }
+      }
     } finally {
       await client.close();
       await server.close();
