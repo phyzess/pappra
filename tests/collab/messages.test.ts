@@ -11,6 +11,7 @@ import {
 } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+import { createFakeHerdr } from '../helpers/fake-herdr.js';
 import { buildMessage } from '../../src/collab/envelope.js';
 import {
   initTask,
@@ -307,8 +308,26 @@ class FakeTransport implements HerdrTransport {
         detail: string;
       };
     } = {},
-  ) {}
-  async verifyCaller(
+  ) {
+    this.transport = createFakeHerdr({
+      transport: {
+        verifyCaller: (options) => this.verifyScenarioCaller(options),
+        list: () => this.listScenarioAgents(),
+        prompt: (agent, text) => this.promptScenarioAgent(agent, text),
+      },
+    }).transport;
+  }
+  private readonly transport: HerdrTransport;
+  verifyCaller(options?: { readonly paneId?: string }) {
+    return this.transport.verifyCaller(options);
+  }
+  list() {
+    return this.transport.list();
+  }
+  prompt(agent: string, text: string) {
+    return this.transport.prompt(agent, text);
+  }
+  private async verifyScenarioCaller(
     options: { readonly paneId?: string } = {},
   ): Promise<HerdrCallerResult> {
     this.callerCalls += 1;
@@ -330,7 +349,7 @@ class FakeTransport implements HerdrTransport {
       }
     );
   }
-  async list() {
+  private async listScenarioAgents() {
     this.listCalls += 1;
     if (this.state.listFailure !== undefined) {
       return { ok: false as const, ...this.state.listFailure };
@@ -344,7 +363,7 @@ class FakeTransport implements HerdrTransport {
       agents: [...sender, ...(this.state.agents ?? [observation()])],
     };
   }
-  async prompt(agent: string, text: string) {
+  private async promptScenarioAgent(agent: string, text: string) {
     this.prompts.push({ agent, text });
     return this.state.prompt ?? { status: 'submitted' as const, detail: null };
   }
@@ -849,29 +868,31 @@ test('notify records an unknown outcome when the transport fails after reservati
     });
     await persist(value, message);
     const binding = bindingFor(value);
-    const transport: HerdrTransport = {
+    const { transport } = createFakeHerdr({
       id: 'throwing',
-      verifyCaller: async () => ({
-        ok: true,
-        caller: {
-          paneId: 'w3:p1',
-          workspaceId: 'w3',
-          tabId: 'w3:t1',
-          harness: 'codex',
-          cwd: '/tmp/task-root',
-          sessionKind: null,
-          sessionValue: null,
-          source: 'current',
+      transport: {
+        verifyCaller: async () => ({
+          ok: true,
+          caller: {
+            paneId: 'w3:p1',
+            workspaceId: 'w3',
+            tabId: 'w3:t1',
+            harness: 'codex',
+            cwd: '/tmp/task-root',
+            sessionKind: null,
+            sessionValue: null,
+            source: 'current',
+          },
+        }),
+        list: async () => ({
+          ok: true,
+          agents: [senderObservation(), observation({ cwd: value.taskRoot })],
+        }),
+        prompt: async () => {
+          throw new Error('socket closed after write');
         },
-      }),
-      list: async () => ({
-        ok: true,
-        agents: [senderObservation(), observation({ cwd: value.taskRoot })],
-      }),
-      prompt: async () => {
-        throw new Error('socket closed after write');
       },
-    };
+    });
     const result = await notifyRegisteredMessage({
       taskRoot: value.taskRoot,
       messageId: message.message_id,
@@ -1218,32 +1239,34 @@ test('R1: a task redirect during awaited transport observation creates nothing o
     const binding = bindingFor(value);
     const outside = join(value.root, 'outside-state');
     mkdirSync(outside);
-    const transport: HerdrTransport = {
+    const { transport } = createFakeHerdr({
       id: 'redirecting',
-      verifyCaller: async () =>
-        ({
-          ok: true,
-          caller: {
-            paneId: 'w3:p1',
-            workspaceId: 'w3',
-            tabId: 'w3:t1',
-            harness: 'codex',
-            cwd: '/tmp/task-root',
-            sessionKind: null,
-            sessionValue: null,
-            source: 'current',
-          },
-        }) satisfies HerdrCallerResult,
-      list: async () => {
-        renameSync(value.taskRoot, `${value.taskRoot}.old`);
-        symlinkSync(outside, value.taskRoot, 'dir');
-        return {
-          ok: true,
-          agents: [observation({ cwd: value.taskRoot })],
-        };
+      transport: {
+        verifyCaller: async () =>
+          ({
+            ok: true,
+            caller: {
+              paneId: 'w3:p1',
+              workspaceId: 'w3',
+              tabId: 'w3:t1',
+              harness: 'codex',
+              cwd: '/tmp/task-root',
+              sessionKind: null,
+              sessionValue: null,
+              source: 'current',
+            },
+          }) satisfies HerdrCallerResult,
+        list: async () => {
+          renameSync(value.taskRoot, `${value.taskRoot}.old`);
+          symlinkSync(outside, value.taskRoot, 'dir');
+          return {
+            ok: true,
+            agents: [observation({ cwd: value.taskRoot })],
+          };
+        },
+        prompt: async () => ({ status: 'submitted', detail: null }),
       },
-      prompt: async () => ({ status: 'submitted', detail: null }),
-    };
+    });
     const result = await notifyRegisteredMessage({
       taskRoot: value.taskRoot,
       messageId: message.message_id,

@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { createFakeHerdr } from '../helpers/fake-herdr.js';
 
 import { buildMessage } from '../../src/collab/envelope.js';
 import { submitMessage } from '../../src/collab/messages.js';
@@ -18,7 +19,10 @@ import {
   type RecoveryExecutionResult,
   type RecoveryExpectedSession,
 } from '../../src/app/collab-recovery-executor.js';
-import type { HerdrTransport } from '../../src/app/collab-notify.js';
+import type {
+  HerdrPromptResult,
+  HerdrTransport,
+} from '../../src/app/collab-notify.js';
 import {
   PI_RECOVERY_CONFIG_SCHEMA,
   createRecoveryReconciler,
@@ -101,34 +105,24 @@ interface AgentSpec {
 
 function fakeTransport(
   agents: AgentSpec[],
-  prompt: { status: string; detail: string | null } = {
+  prompt: HerdrPromptResult = {
     status: 'submitted',
     detail: null,
   },
 ): HerdrTransport {
-  return {
-    id: 'fake-herdr',
-    verifyCaller: async () => ({
-      ok: false,
-      status: 'unverified',
-      code: 'test',
-      detail: 'test',
-    }),
-    list: async () => ({
-      ok: true,
-      agents: agents.map((a) => ({
-        name: a.name,
-        harness: a.harness ?? 'pi',
-        paneId: a.paneId ?? 'w3:p4',
-        cwd: a.cwd,
-        sessionValue: a.sessionValue,
-        sessionKind: a.sessionKind ?? 'id',
-        status: 'idle',
-        focused: false,
-      })),
-    }),
-    prompt: async () => prompt as never,
-  } as HerdrTransport;
+  return createFakeHerdr({
+    agents: agents.map((a) => ({
+      name: a.name,
+      harness: a.harness ?? 'pi',
+      paneId: a.paneId ?? 'w3:p4',
+      cwd: a.cwd,
+      sessionValue: a.sessionValue,
+      sessionKind: a.sessionKind ?? 'id',
+      status: 'idle',
+      focused: false,
+    })),
+    transport: { prompt: async () => prompt },
+  }).transport;
 }
 
 function controllerRequest(

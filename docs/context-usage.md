@@ -23,7 +23,64 @@ reading process.
 | Host | Source | What is read |
 | --- | --- | --- |
 | Claude Code | status-line beacon | `context_window.used_percentage` from the status-line payload, rounded to one decimal. It is null before the first response, which is not 0%. |
-| Codex | shared app-server daemon | `last.totalTokens / modelContextWindow` from the replayed `thread/tokenUsage/updated`. `total` is cumulative spend and is never used. |
+| Codex | shared app-server daemon | `last.totalTokens / modelContextWindow` from the replayed `thread/tokenUsage/updated`. `total` is a cumulative token counter that this occupancy calculation does not use. |
+
+## Attempt accounting design
+
+Attempt accounting derives counters from an optional native evidence capture
+supplied in the attempt owner's final workflow report request. The capture
+is explicit input to the report, with bounded native JSONL and the matching
+execution metadata where required. The report validates the native session
+identity and the completed-work window before registering a compact
+observation and the capture digest. The raw transcript stays in the private
+request. Report admission and acceptance decisions are independent of
+whether usage is available.
+
+Set `report.usage_capture` in the private JSON request to an object with
+`through` (an ISO timestamp at or before report submission) and `jsonl`
+(the native evidence text, up to 512 KiB). For Claude, also include
+`execution` with the captured `status`, `exit_code`, `started_at`, and
+`finished_at`. Keep the request outside version control. A read-only
+reviewer can attach usage with an empty `outputs` list.
+
+Workflow inspection and advisory resume project only the observation on the
+admitted report for the exact attempt, with a limit of 16 attempts. They use
+the task record already opened by the command and open no paths supplied by
+the report for accounting. This also lets a read-only reviewer report usage
+without a separate write claim for an accounting artifact.
+
+Read `detail.attempt_usage` in `pappra collab workflow inspect --json` and
+`collaborationObservation.attemptUsage` in the JSON resume packet. The
+projection includes the number of omitted attempts. Captures without a proven
+window, including overlapping attempt windows for one native session, report
+usage as unavailable. For a report submitted while its own native turn is
+still running, the capture can account for earlier completed turns. A capture
+with no completed work in the attempt has no usable token observation.
+
+An available observation includes its `through` cutoff. The projection
+identifies its provenance as `attempt_owner_report`. The workflow derives
+counts from the supplied capture. The protocol also accepts
+reports from an attempt owner at the lower-level message entry point, where
+a receipt is the owner's attestation. Both are advisory evidence.
+
+| Host | Native source | Attribution and cache accounting |
+| --- | --- | --- |
+| Codex | Rollout `event_msg` usage snapshots and native turn boundaries | Subtract the proven starting cumulative snapshot from the final snapshot of the attempt's completed turns. Input already includes cache reads. Cache writes are a native breakdown when both snapshots expose it. |
+| Claude Code | Captured `stream-json` terminal result and its execution envelope | Use the completed invocation's `usage`, with its session identity and invocation window checked against the attempt. Add `cache_creation_input_tokens` and `cache_read_input_tokens` to `input_tokens`. |
+| Pi | Persisted session JSONL usage rows | Sum usage attributable to the attempt's completed work. Add `cacheRead` and `cacheWrite` to native `input`; count each observed row once. |
+
+The normalized input count includes cache reads once. The total adds output
+to that inclusive input count. These values describe native token counters,
+with publication at a completed turn or invocation boundary. Activity still
+in flight can appear later. Missing, ambiguous or out-of-budget evidence is
+`unavailable` with a reason. The counters do not establish monetary cost.
+
+Codex's `turn.completed.usage` can contain cumulative thread counters,
+including usage from earlier work in a resumed thread. The terminal count
+alone cannot establish an attempt delta. See the
+[Codex JSONL event processor](https://github.com/openai/codex/blob/main/codex-rs/exec/src/event_processor_with_jsonl_output.rs),
+the [Claude usage fields](https://platform.claude.com/docs/en/api/typescript/messages)
+and the [Pi session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md).
 
 ## Reading it
 

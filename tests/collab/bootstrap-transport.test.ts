@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createFakeHerdr } from '../helpers/fake-herdr.js';
 import {
   acceptedManagedSdkStartReceipt,
   createHerdrBootstrapOps,
@@ -13,8 +14,6 @@ import type {
   CommandResult,
   HerdrAgentObservation,
   CommandRunner,
-  HerdrListResult,
-  HerdrPromptResult,
   HerdrTransport,
 } from '../../src/app/collab-notify.js';
 import { getPackageRoot } from '../../src/package-info.js';
@@ -60,52 +59,44 @@ function commandResult(
 function fakeTransport(
   agents: readonly HerdrAgentObservation[] = [],
 ): HerdrTransport {
-  return {
-    id: 'fake-herdr',
-    verifyCaller: async () => ({
-      ok: false,
-      status: 'unverified',
-      code: 'unused',
-      detail: 'unused',
-    }),
-    list: async (): Promise<HerdrListResult> => ({ ok: true, agents }),
-    prompt: async (): Promise<HerdrPromptResult> => ({
-      status: 'failed',
-      detail: 'unused',
-    }),
-  };
+  return createFakeHerdr({
+    agents,
+    transport: { prompt: async () => ({ status: 'failed', detail: 'unused' }) },
+  }).transport;
 }
 function makeOps(run: CommandRunner) {
+  const fake = createFakeHerdr({ run });
   return createHerdrBootstrapOps({
     env: { HERDR_BIN_PATH: 'herdr-test' },
-    run,
-    transport: fakeTransport(),
+    run: fake.run,
+    transport: fake.transport,
   });
 }
 
 test('typed pane reads use nested resource ids, not the correlation id', async () => {
-  const calls: {
-    command: string;
-    args: readonly string[];
-    timeoutMs: number;
-  }[] = [];
-  const run: CommandRunner = async (command, args, timeoutMs) => {
-    calls.push({ command, args, timeoutMs });
-    if (args[0] === 'pane' && args[1] === 'get')
-      return commandResult(envelope('pane_info', { pane: basePane }));
-    return commandResult(
-      envelope('pane_process_info', {
-        process_info: {
-          pane_id: 'w1:p2',
-          shell_pid: 41,
-          foreground_process_group_id: 41,
-          tty: 'pts/2',
-          foreground_processes: [{ pid: 41, name: '/bin/zsh' }],
-        },
-      }),
-    );
-  };
-  const ops = makeOps(run);
+  const fake = createFakeHerdr({
+    commands: {
+      'pane.get': [commandResult(envelope('pane_info', { pane: basePane }))],
+      'pane.process-info': [
+        commandResult(
+          envelope('pane_process_info', {
+            process_info: {
+              pane_id: 'w1:p2',
+              shell_pid: 41,
+              foreground_process_group_id: 41,
+              tty: 'pts/2',
+              foreground_processes: [{ pid: 41, name: '/bin/zsh' }],
+            },
+          }),
+        ),
+      ],
+    },
+  });
+  const ops = createHerdrBootstrapOps({
+    env: { HERDR_BIN_PATH: 'herdr-test' },
+    run: fake.run,
+    transport: fake.transport,
+  });
   const pane = await ops.paneGet('w1:p2');
   const process = await ops.paneProcessInfo('w1:p2');
   assert.equal(pane.ok, true);
@@ -114,8 +105,13 @@ test('typed pane reads use nested resource ids, not the correlation id', async (
   assert.equal(process.ok, true);
   assert.equal(process.ok && process.value.paneId, 'w1:p2');
   assert.equal(process.ok && process.value.shellPid, 41);
-  assert.equal(calls[0]?.command, 'herdr-test');
-  assert.deepEqual(calls[1]?.args, ['pane', 'process-info', '--pane', 'w1:p2']);
+  assert.equal(fake.state.calls[0]?.args[0], 'herdr-test');
+  assert.deepEqual(fake.state.calls[1]?.args[1], [
+    'pane',
+    'process-info',
+    '--pane',
+    'w1:p2',
+  ]);
 });
 
 test('malformed typed pane payload is rejected instead of using its correlation id', async () => {

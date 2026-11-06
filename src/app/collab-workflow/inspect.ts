@@ -11,6 +11,7 @@ import { projectInterruption, type Interruption } from './interruption.js';
 import { projectReviewerAdvice } from './reviewer-advice.js';
 import { findAttempt } from '../../collab/lifecycle.js';
 import { nativeObservationAgeSummary } from '../../collab/native-observation.js';
+import { projectAttemptUsage } from '../../usage/attempt-usage.js';
 import { resolveUserDataDir } from '../../install/data-dir.js';
 import {
   adviseHandoff,
@@ -156,6 +157,7 @@ export async function inspectWorkflow(
   }
   const limit = options.limit;
   const attempts = bound(record.attempts ?? [], limit);
+  const attemptUsage = projectAttemptUsage(record, attempts.items);
   const messages = bound(record.messages ?? [], limit);
   const uncertainty = bound(
     (record.uncertainty ?? []).filter((item) => item.resolved_at === null),
@@ -232,6 +234,10 @@ export async function inspectWorkflow(
       limit: limit ?? null,
       context_advisory: advice,
       reviewer_advice: await projectReviewerAdvice(task, undefined, limit),
+      attempt_usage: {
+        ...attemptUsage,
+        omitted: attemptUsage.omitted + attempts.total - attempts.items.length,
+      },
       ...(options.interruptionSubtaskId === undefined
         ? {}
         : {
